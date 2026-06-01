@@ -574,6 +574,38 @@ def _filter_leaks(text: str) -> str:
     return text
 
 
+def _strip_surrogates(text: str) -> str:
+    """Remove lone surrogate characters that cannot be encoded as UTF-8.
+
+    On Windows, reading binary/non-UTF-8 files via surrogateescape produces
+    lone surrogates in the string. The OpenAI SDK serialises the payload with
+    json.dumps which calls str.encode('utf-8'), crashing on surrogates. Strip
+    them so the request always goes through cleanly.
+    """
+    return text.encode("utf-8", errors="replace").decode("utf-8")
+
+
+def _sanitize_messages(messages: list) -> list:
+    """Return a copy of the message list with all surrogate characters removed."""
+    out = []
+    for m in messages:
+        m2 = dict(m)
+        if isinstance(m2.get("content"), str):
+            m2["content"] = _strip_surrogates(m2["content"])
+        if m2.get("tool_calls"):
+            cleaned_calls = []
+            for tc in m2["tool_calls"]:
+                tc2 = dict(tc)
+                fn = dict(tc2.get("function") or {})
+                if isinstance(fn.get("arguments"), str):
+                    fn["arguments"] = _strip_surrogates(fn["arguments"])
+                tc2["function"] = fn
+                cleaned_calls.append(tc2)
+            m2["tool_calls"] = cleaned_calls
+        out.append(m2)
+    return out
+
+
 def ask_llm_stream(messages, tools=None, *, routing_hints=None):
     # Signal "waiting for model" — the renderer paints a spinner that
     # auto-cancels as soon as the first reasoning/content/tool_call
@@ -598,10 +630,10 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
         )
     selected_model = pick_main_model(routing_hints)
 
-    request_messages = messages
+    request_messages = _sanitize_messages(messages)
     request_tools = tools
     if tools and _tool_mode() == "text":
-        request_messages = _messages_with_tool_text_fallback(messages, tools)
+        request_messages = _messages_with_tool_text_fallback(request_messages, tools)
         request_tools = None
 
     _max_tokens = int(getenv("KRYTH_MAX_TOKENS", "16384"))

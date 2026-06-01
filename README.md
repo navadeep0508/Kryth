@@ -462,10 +462,8 @@ mypy src/
 
 <div align="center">
 
-**Join 2,000+ developers building the future**
+**Join developers building the future**
 
-[![Discord](https://img.shields.io/badge/Discord-join-7289DA?logo=discord)](https://discord.gg/kryth)
-[![Twitter](https://img.shields.io/badge/Twitter-follow-1DA1F2?logo=twitter)](https://twitter.com/kryth_ai)
 [![GitHub Stars](https://img.shields.io/github/stars/navadeep0508/KRYTH-Autonomous-AI-Coding-Agent?style=social)](https://github.com/navadeep0508/KRYTH-Autonomous-AI-Coding-Agent/stargazers)
 
 </div>
@@ -473,9 +471,8 @@ mypy src/
 ### Get Help
 
 - **📖 Documentation:** https://kryth.vercel.app/
-- **💬 Discord:** https://discord.gg/kryth (fastest response)
 - **🐛 Issues:** https://github.com/navadeep0508/KRYTH-Autonomous-AI-Coding-Agent/issues
-- **📧 Email:** support@kryth.ai
+- **📧 Email:** dev@kryth.ai (for business inquiries)
 
 ---
 
