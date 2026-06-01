@@ -2,7 +2,7 @@
 
 <div align="center">
 
-# KRYTH
+<img src="krythbanner.png" alt="KRYTH Banner" width="800"/>
 
 **Your autonomous AI development partner.**<br>
 Build complete applications, debug complex issues, and deploy to production—all from your terminal.
