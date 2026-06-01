@@ -1,0 +1,344 @@
+"""Public UI surface.
+
+The rest of the codebase imports from ``agent.ui`` only. Internal
+modules (renderer, components, diff_renderer, panels, updates,
+syntax, streaming) are implementation detail and should not be
+touched directly.
+
+Architecture:
+    emitter (agent_loop, llm, tools, ...)
+        │
+        ▼
+    BUS  (agent.ui.events)
+        │
+        ▼
+    renderer  (agent.ui.renderer)
+        │
+        ▼
+    Rich Console  (agent.ui.console)
+
+The renderer is installed once at REPL startup. Emitters publish
+``Event`` objects; the renderer transforms them into Rich output.
+
+Two convenience surfaces are exposed:
+- ``emit(kind, **data)`` — low-level, for new event types.
+- Named helpers (``banner``, ``tool_start``, ``diff``, ...) — sugar over
+  ``emit`` so call sites read like prose.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Iterable
+
+from agent.ui.events import BUS, Event, EventKind, emit
+from agent.ui.logger import get_logger
+from agent.ui import renderer as _renderer
+from agent.ui import run_summary as _summary
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+
+def install() -> None:
+    """Install the default Rich renderer + run-summary tracker on the
+    shared bus. Call once from the REPL entrypoint. Safe to call
+    multiple times.
+    """
+    _renderer.install()
+    _summary.install()
+
+
+def uninstall() -> None:
+    _renderer.uninstall()
+
+
+def begin_turn() -> None:
+    """Reset per-turn trackers. Called by the agent loop at turn start."""
+    _summary.reset()
+
+
+def publish_turn_summary(*, status: str = "done", turns_used: int = 0) -> None:
+    """If side-effects happened OR the turn ended abnormally, emit the
+    RUN_SUMMARY panel. ``status`` is one of ``done``/``max_turns``/
+    ``interrupted``/``api_error`` and is passed through to the renderer
+    so it can paint the appropriate header."""
+    summary = _summary.snapshot()
+    summary["status"] = status
+    summary["turns_used"] = turns_used
+    if status == "done" and _summary.is_empty():
+        return
+    emit(EventKind.RUN_SUMMARY, summary=summary)
+
+
+# ---------------------------------------------------------------------------
+# Named emitters — call sites stay readable.
+# ---------------------------------------------------------------------------
+
+# Lifecycle ----------------------------------------------------------
+
+def banner(model: str, base_url: str, skill_count: int = 0) -> None:
+    emit(EventKind.BANNER, model=model, base_url=base_url, skill_count=skill_count)
+
+
+def status(model: str, mode: str, tokens_in: int, tokens_out: int) -> None:
+    emit(EventKind.STATUS, model=model, mode=mode,
+         tokens_in=tokens_in, tokens_out=tokens_out)
+
+
+def turn_start() -> None:
+    emit(EventKind.TURN_START)
+
+
+def turn_end(tokens_in: int = 0, tokens_out: int = 0) -> None:
+    emit(EventKind.TURN_END, tokens_in=tokens_in, tokens_out=tokens_out)
+
+
+def turn_interrupted() -> None:
+    emit(EventKind.TURN_INTERRUPTED)
+
+
+def turn_max_reached() -> None:
+    emit(EventKind.TURN_MAX_TURNS)
+
+
+def session_reset() -> None:
+    emit(EventKind.SESSION_RESET)
+
+
+# Planning ----------------------------------------------------------
+
+def plan(plan_dict: dict) -> None:
+    emit(EventKind.PLAN, plan=plan_dict)
+
+
+def plan_prose(text: str) -> None:
+    emit(EventKind.PLAN_PROSE, text=text)
+
+
+def plan_mode_active() -> None:
+    emit(EventKind.PLAN_MODE)
+
+
+def auto_skills(names: Iterable[str]) -> None:
+    emit(EventKind.AUTO_SKILLS, skills=list(names))
+
+
+# LLM stream --------------------------------------------------------
+
+def llm_waiting(message: str = "waiting for model…") -> None:
+    emit(EventKind.LLM_WAITING, message=message)
+
+
+def llm_reasoning_chunk(piece: str) -> None:
+    emit(EventKind.LLM_REASONING_CHUNK, piece=piece)
+
+
+def llm_reasoning_end() -> None:
+    emit(EventKind.LLM_REASONING_END)
+
+
+def llm_content_chunk(piece: str) -> None:
+    emit(EventKind.LLM_CONTENT_CHUNK, piece=piece)
+
+
+def llm_content_end(*, render_markdown: bool = True) -> None:
+    emit(EventKind.LLM_CONTENT_END, render_markdown=render_markdown)
+
+
+def llm_usage(turn_in: int, turn_out: int, session_in: int, session_out: int, verbose: bool = True) -> None:
+    emit(EventKind.LLM_USAGE,
+         turn_in=turn_in, turn_out=turn_out,
+         session_in=session_in, session_out=session_out,
+         verbose=verbose)
+
+
+def llm_error(label: str, message: str, hint: str | None = None) -> None:
+    emit(EventKind.LLM_ERROR, label=label, message=message, hint=hint)
+
+
+def llm_retry(label: str, attempt: int, total: int, reason: str,
+              *, delay: float | None = None) -> None:
+    emit(EventKind.LLM_RETRY,
+         label=label, attempt=attempt, total=total, reason=reason,
+         delay=delay)
+
+
+def llm_hermes_recovery(count: int) -> None:
+    emit(EventKind.LLM_HERMES_RECOVERY, count=count)
+
+
+def llm_degenerate() -> None:
+    emit(EventKind.LLM_DEGENERATE)
+
+
+# Tool dispatch -----------------------------------------------------
+
+def tool_start(name: str, args: dict | None = None) -> None:
+    emit(EventKind.TOOL_START, name=name, args=args or {})
+
+
+def tool_result(result: str, *, error: bool = False) -> None:
+    emit(EventKind.TOOL_RESULT, result=result, error=error)
+
+
+def tool_error(message: str) -> None:
+    emit(EventKind.TOOL_ERROR, message=message)
+
+
+def tool_cancelled() -> None:
+    emit(EventKind.TOOL_CANCELLED)
+
+
+def tool_coerced(tool: str, key: str, arg_type: str, count: int) -> None:
+    emit(EventKind.TOOL_COERCED, tool=tool, key=key, arg_type=arg_type, count=count)
+
+
+def tool_denied(tool: str) -> None:
+    emit(EventKind.TOOL_DENIED, tool=tool)
+
+
+def tool_hook_blocked(message: str) -> None:
+    emit(EventKind.TOOL_HOOK_BLOCKED, message=message)
+
+
+def permission_request(tool: str, signature: str) -> str:
+    """Show the interactive permission prompt and return the user's
+    choice as ``'y'``, ``'a'``, or ``'n'``.
+
+    Bypasses the event bus on purpose: this is a synchronous,
+    blocking UI interaction, not a stream event.
+    """
+    from agent.ui.components import ask_permission_interactive
+    return ask_permission_interactive(tool, signature)
+
+
+# File / shell ------------------------------------------------------
+
+def write_preview(path: str, content: str) -> None:
+    emit(EventKind.WRITE_PREVIEW, path=path, content=content)
+
+
+def diff(diff_text: str, *, path: str | None = None, title: str | None = None) -> None:
+    emit(EventKind.DIFF, diff=diff_text, path=path, title=title)
+
+
+def shell_run(command: str, timeout: int, note: str | None = None) -> None:
+    emit(EventKind.SHELL_RUN, command=command, timeout=timeout, note=note)
+
+
+def shell_end(
+    *,
+    command: str,
+    output: str,
+    exit_code: int,
+    timeout: int,
+    note: str | None = None,
+) -> None:
+    """Close a shell run with the full output. The renderer composes
+    a single command panel from this event."""
+    emit(
+        EventKind.SHELL_END,
+        command=command,
+        output=output,
+        exit_code=exit_code,
+        timeout=timeout,
+        note=note,
+    )
+
+
+def run_summary(summary: dict) -> None:
+    """End-of-turn summary of side-effects accumulated during the run."""
+    emit(EventKind.RUN_SUMMARY, summary=summary)
+
+
+def todos(items: list[dict]) -> None:
+    emit(EventKind.TODOS, items=items)
+
+
+# Subagent ----------------------------------------------------------
+
+def subagent_start(depth: int, description: str) -> None:
+    emit(EventKind.SUBAGENT_START, depth=depth, description=description)
+
+
+def subagent_end(depth: int) -> None:
+    emit(EventKind.SUBAGENT_END, depth=depth)
+
+
+# Compaction --------------------------------------------------------
+
+def compact_start(count: int, tokens: int) -> None:
+    emit(EventKind.COMPACT_START, count=count, tokens=tokens)
+
+
+def compact_fallback(*, dropped_messages: int = 0,
+                     dropped_chars: int = 0) -> None:
+    emit(EventKind.COMPACT_FALLBACK,
+         dropped_messages=dropped_messages,
+         dropped_chars=dropped_chars)
+
+
+# Generic log -------------------------------------------------------
+
+def info(message: str) -> None:
+    emit(EventKind.LOG, level="info", message=message)
+
+
+def warn(message: str) -> None:
+    emit(EventKind.LOG, level="warn", message=message)
+
+
+def error(message: str) -> None:
+    emit(EventKind.LOG, level="error", message=message)
+
+
+def success(message: str) -> None:
+    emit(EventKind.LOG, level="success", message=message)
+
+
+def debug(message: str) -> None:
+    emit(EventKind.LOG, level="debug", message=message)
+
+
+def muted(message: str) -> None:
+    """Subtle one-liner — used for ephemeral notices that don't warrant
+    a severity level (auto-skill annotations, mode toggles)."""
+    from agent.ui.console import console
+    console.print(f"[muted]{message}[/muted]")
+
+
+# ---------------------------------------------------------------------------
+# Re-exports
+# ---------------------------------------------------------------------------
+
+__all__ = [
+    # lifecycle
+    "install", "uninstall",
+    "banner", "status",
+    "turn_start", "turn_end", "turn_interrupted", "turn_max_reached",
+    "session_reset",
+    # planning
+    "plan", "plan_prose", "plan_mode_active", "auto_skills",
+    # llm
+    "llm_waiting",
+    "llm_reasoning_chunk", "llm_reasoning_end",
+    "llm_content_chunk", "llm_content_end",
+    "llm_usage", "llm_error", "llm_retry",
+    "llm_hermes_recovery", "llm_degenerate",
+    # tools
+    "tool_start", "tool_result", "tool_error",
+    "tool_cancelled", "tool_coerced", "tool_denied", "tool_hook_blocked",
+    "permission_request",
+    # file/shell
+    "write_preview", "diff", "shell_run", "shell_end", "todos",
+    "run_summary",
+    # subagent
+    "subagent_start", "subagent_end",
+    # compact
+    "compact_start", "compact_fallback",
+    # log
+    "info", "warn", "error", "success", "debug", "muted",
+    # plumbing
+    "BUS", "Event", "EventKind", "emit", "get_logger",
+]
