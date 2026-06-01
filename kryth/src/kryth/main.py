@@ -70,7 +70,7 @@ For more information, visit: https://kryth.vercel.app/
     parser.add_argument(
         "--version",
         action="version",
-        version="kryth %(prog)s 1.1.1",
+        version="kryth %(prog)s 1.3.0",
         help="Show version information and exit"
     )
 

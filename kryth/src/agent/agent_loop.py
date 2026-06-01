@@ -613,7 +613,25 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                 turns_used=turn_count,
             )
 
+        hermes_recovered = response.get("finish_reason") in (
+            "recovered_after_stream_error", None
+        ) and any(
+            (tc.get("id") or "").startswith("hermes_") for tc in tool_calls
+        )
         _process_tool_calls(session, tool_calls)
+
+        # When tool calls came from Hermes/text-stream recovery (not structured
+        # tool_calls from the API), some models don't automatically continue
+        # after seeing the tool result. Inject a lightweight nudge so the model
+        # knows to proceed with the next step instead of stopping.
+        if hermes_recovered:
+            session.append({
+                "role": "user",
+                "content": (
+                    "[system] Tool call completed. Continue with the next step "
+                    "of the task. Keep calling tools until the task is fully done."
+                ),
+            })
 
     # Max turns reached - warn the user
     ui.warn(f"Reached maximum tool turns ({max_turns}). Task may be incomplete. Consider breaking into smaller steps or increasing KRYTH_MAX_TOOL_TURNS.")
@@ -658,8 +676,34 @@ def _should_plan(user_input: str) -> bool:
     return bool(lowered & _PLANNER_TRIGGER_WORDS)
 
 
-def build_initial_system(session):
-    project_map = build_project_map()
+def build_initial_system(session, user_input: str = ""):
+    from agent.context import ProjectSnapshot, build_focused_map
+
+    # --- Memory-First context loading ---
+    # If graph is built, use graph search for the most relevant files.
+    # Falls back to snapshot/focused map when graph isn't available.
+    graph_context: str | None = None
+    try:
+        from agent.memory import memory
+        if memory.graph.is_built() and user_input:
+            files = memory.graph.search(user_input, top_k=12)
+            if files:
+                graph_context = memory.graph.context_for(files)
+                ui.muted(f"(graph context: {len(files)} relevant files)")
+    except Exception:
+        pass
+
+    if not graph_context:
+        # Fallback: snapshot + focused map
+        snapshot = ProjectSnapshot()
+        project_map, from_cache = snapshot.get_or_build()
+        if from_cache:
+            ui.muted("(using cached project snapshot)")
+        if user_input and session.messages:
+            project_map = build_focused_map(user_input)
+    else:
+        project_map = graph_context
+
     project_doc = load_context_file()
     git_state = git_status_snapshot()
 
@@ -698,11 +742,69 @@ def run_agent(user_input, extra_system: str | None = None):
     if extra_system:
         session.append({"role": "system", "content": extra_system})
     else:
-        from agent.skills import auto_select_skills, compose_skills
-        auto = auto_select_skills(user_input)
-        if auto:
-            ui.auto_skills(auto)
-            session.append({"role": "system", "content": compose_skills(auto)})
+        # --- Ecosystem skill routing (AI-powered, parallel install) ---
+        ecosystem_context: str | None = None
+        try:
+            from agent.ecosystem.router import get_router
+            from agent.ecosystem.executor import run_skill_workflow
+            router = get_router()
+            if router.is_build_request(user_input):
+                skill_ids = router.route(user_input, use_llm=True)
+                if skill_ids:
+                    ui.auto_skills(skill_ids)
+                    ecosystem_context = run_skill_workflow(
+                        skill_ids, user_input, show_progress=True
+                    )
+        except Exception:
+            pass
+
+        if ecosystem_context:
+            session.append({"role": "system", "content": ecosystem_context})
+        else:
+            from agent.skills import auto_select_skills, compose_skills
+            auto = auto_select_skills(user_input)
+            if auto:
+                ui.auto_skills(auto)
+                session.append({"role": "system", "content": compose_skills(auto)})
+
+    # --- Parallel multi-agent build (complex projects only) ---
+    # For requests like "build a SaaS dashboard" this spawns parallel
+    # feature agents (Frontend/Backend/DB) then integrates their output,
+    # typically 3-8× faster than the sequential single-agent loop.
+    try:
+        from agent.parallel_builder import run_parallel_build, _is_complex_build
+        if _is_complex_build(user_input) and session.mode != "plan":
+            ui.info("Parallel build detected — spawning feature agents...")
+            parallel_result = run_parallel_build(
+                user_input,
+                skill_context=ecosystem_context or "",
+                max_turns_per_agent=MAX_TOOL_TURNS // 4,
+            )
+            if parallel_result:
+                # Parallel build succeeded — persist result and return early
+                session.append({"role": "user", "content": user_input})
+                session.append({"role": "assistant", "content": parallel_result})
+                _result = LoopResult(status="done", content=parallel_result, turns_used=0)
+                try:
+                    from agent.persistence import session_store
+                    store = session_store()
+                    store.update_meta(
+                        cumulative_in_tokens=session.cumulative_in_tokens,
+                        cumulative_out_tokens=session.cumulative_out_tokens,
+                        mode=session.mode, profile=session.profile,
+                    )
+                    store.write_meta_marker()
+                except Exception:
+                    pass
+                run_hooks("Stop", "", {})
+                ui.publish_turn_summary(status="done", turns_used=0)
+                ui.turn_end(
+                    tokens_in=session.cumulative_in_tokens,
+                    tokens_out=session.cumulative_out_tokens,
+                )
+                return _result
+    except Exception:
+        pass  # Fall through to normal single-agent loop
 
     plan_dict: dict | None = None
     plan_prose: str = ""

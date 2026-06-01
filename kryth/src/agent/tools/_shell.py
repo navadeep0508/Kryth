@@ -141,6 +141,7 @@ def run_command(command, timeout=15, run_in_background=False):
             runnable,
             shell=True,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",

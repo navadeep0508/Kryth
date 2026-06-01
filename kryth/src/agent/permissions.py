@@ -113,7 +113,11 @@ def check_permission(tool: str, args: dict) -> str:
     session = get_session()
     sig = _args_signature(tool, args)
 
-    remembered = session.remembered_permissions.get(f"{tool}|{sig}")
+    # Wildcard key set by "always" covers all args; exact key is legacy fallback.
+    remembered = (
+        session.remembered_permissions.get(f"{tool}|*")
+        or session.remembered_permissions.get(f"{tool}|{sig}")
+    )
     if remembered:
         return remembered
 
@@ -136,8 +140,9 @@ def check_permission(tool: str, args: dict) -> str:
 
 def remember(tool: str, args: dict, decision: str) -> None:
     session = get_session()
-    sig = _args_signature(tool, args)
-    session.remembered_permissions[f"{tool}|{sig}"] = decision
+    # Use wildcard key so "always" covers ALL future calls to this tool,
+    # not just this specific argument signature.
+    session.remembered_permissions[f"{tool}|*"] = decision
 
 
 def ask_user(tool: str, args: dict) -> str:

@@ -114,16 +114,49 @@ def pick_main_model(hints: RouteHints | None = None) -> str:
 def pick_helper_model(kind: str) -> str:
     """Pick a model for the non-main helper calls.
 
-    ``kind`` is one of ``planner / critique / diagnose / summarizer``.
-    Unknown kinds fall back to PLANNER_MODEL — the safer default.
-    """
-    _, planner_model, summarizer_model = _configured_models()
+    ``kind`` is one of ``planner / critique / diagnose / summarizer /
+    router / formatter / readme / docs``.
 
-    if kind in ("summarizer", "summarize", "compact"):
+    Routing philosophy (fast = PLANNER_MODEL, strong = MAIN_MODEL):
+    - Fast tasks: routing, formatting, docs, README, summarising — use PLANNER_MODEL.
+    - Strong tasks: planning, code generation, critique — use MAIN_MODEL if available.
+    - Fallback: PLANNER_MODEL is always safe.
+    """
+    main_model, planner_model, summarizer_model = _configured_models()
+
+    # Always-fast tasks (no code reasoning required)
+    if kind in ("summarizer", "summarize", "compact",
+                "router", "route", "intent",
+                "formatter", "format",
+                "readme", "docs", "documentation"):
         return summarizer_model
-    if kind in ("planner", "plan", "critique", "diagnose"):
-        return planner_model
+
+    # Strong tasks that benefit from the main model
+    if kind in ("planner", "plan", "critique", "diagnose", "review"):
+        # Use main model when it differs from planner (gives better plans)
+        return main_model if main_model != planner_model else planner_model
+
     return planner_model
+
+
+# Task types that can use a lighter model
+FAST_TASK_TYPES = frozenset({
+    "router", "route", "intent", "format", "formatter",
+    "readme", "docs", "summarizer", "summarize",
+})
+
+
+def pick_model_for_task(task_type: str) -> str:
+    """Route to the best model for a specific task type.
+
+    Use this when spawning helpers or subagents for known task types.
+    """
+    main_model, planner_model, summarizer_model = _configured_models()
+    if task_type in FAST_TASK_TYPES:
+        return summarizer_model
+    if task_type in ("plan", "spec", "architect"):
+        return planner_model
+    return main_model  # code generation, debugging, review
 
 
 def describe_routing() -> dict:

@@ -18,6 +18,7 @@ REPL_COMMANDS = {
     "/clear", "/todos", "/tokens", "/plan", "/skills", "/help", "/diag",
     "/log", "/resume", "/memory", "/profile", "/config", "/bridge",
     "/models", "/tools", "/status", "/session",
+    "/graph", "/init",
 }
 
 
@@ -89,9 +90,99 @@ def _cmd_plan(_args: str = "") -> None:
         ui.muted("mode → default")
 
 
-def _cmd_skills(_args: str = "") -> None:
-    names = list_skills()
-    ui.muted("available skills: " + ", ".join(f"/{n}" for n in names))
+def _cmd_skills(args: str = "") -> None:
+    """Ecosystem skill commands: list / search / install / info / installed."""
+    parts = args.strip().split(None, 1)
+    sub = parts[0].lower() if parts else "list"
+    rest = parts[1] if len(parts) > 1 else ""
+
+    try:
+        from agent.ecosystem.remote_registry import get_remote_registry
+        from agent.ecosystem.local_registry import get_local_registry
+        from agent.ecosystem.installer import get_installer
+
+        local = get_local_registry()
+        remote = get_remote_registry()
+
+        if sub == "list":
+            skills = remote.list_skills()
+            ui.info(f"  {'ID':<24} {'VERSION':<10} {'TAGS'}")
+            for s in sorted(skills, key=lambda x: x.id):
+                installed_mark = " ✓" if local.has(s.id) else ""
+                tags = ", ".join(s.tags[:3])
+                ui.muted(f"  {s.id + installed_mark:<24} {s.version:<10} {tags}")
+            ui.muted(f"\n  {len(skills)} skills available  ·  ✓ = installed")
+
+        elif sub == "search":
+            if not rest:
+                ui.warn("Usage: /skills search <query>")
+                return
+            results = remote.search(rest)
+            if not results:
+                ui.warn(f"No skills found for '{rest}'")
+                return
+            for s in results:
+                installed_mark = " [installed]" if local.has(s.id) else ""
+                ui.info(f"  {s.id}{installed_mark}")
+                ui.muted(f"    {s.description}")
+
+        elif sub == "install":
+            if not rest:
+                ui.warn("Usage: /skills install <skill-id>")
+                return
+            skill_id = rest.strip()
+            if local.has(skill_id):
+                ui.success(f"'{skill_id}' is already installed.")
+                return
+            ui.info(f"Installing {skill_id}...")
+
+            def _progress(sid: str, status: str) -> None:
+                icon = {"installing": "↓", "downloading": "↓", "installed": "✓",
+                        "not_found": "✗", "failed": "✗", "cached": "✓"}.get(status, "·")
+                ui.muted(f"  {icon} {sid} [{status}]")
+
+            installer = get_installer(progress=_progress)
+            pkg = installer.ensure_installed(skill_id)
+            if pkg:
+                ui.success(f"Installed: {pkg.name} v{pkg.version}")
+            else:
+                ui.error(f"Could not install '{skill_id}'. Check the skill ID and try again.")
+
+        elif sub == "installed":
+            pkgs = local.list_all()
+            if not pkgs:
+                ui.muted("No skills installed yet. Use /skills install <id>")
+                return
+            ui.info(f"  Installed skills ({len(pkgs)}):")
+            for p in sorted(pkgs, key=lambda x: x.id):
+                ui.muted(f"  ✓ {p.id}  v{p.version}  ({p.author})")
+
+        elif sub == "info":
+            if not rest:
+                ui.warn("Usage: /skills info <skill-id>")
+                return
+            pkg = remote.find(rest.strip())
+            if not pkg:
+                ui.warn(f"Skill '{rest}' not found.")
+                return
+            ui.info(f"  {pkg.name}  v{pkg.version}")
+            ui.muted(f"  ID:          {pkg.id}")
+            ui.muted(f"  Author:      {pkg.author}")
+            ui.muted(f"  Description: {pkg.description}")
+            ui.muted(f"  Tags:        {', '.join(pkg.tags)}")
+            ui.muted(f"  Chains:      {', '.join(pkg.chains) if pkg.chains else 'none'}")
+            ui.muted(f"  Installed:   {'yes' if local.has(pkg.id) else 'no'}")
+
+        else:
+            # Legacy: just list built-in prompt skills
+            names = list_skills()
+            ui.muted("prompt skills: " + ", ".join(f"/{n}" for n in names))
+            ui.muted("\nEcosystem commands: /skills list | search <q> | install <id> | installed | info <id>")
+
+    except Exception as exc:
+        # Fallback to legacy if ecosystem unavailable
+        names = list_skills()
+        ui.muted("skills: " + ", ".join(f"/{n}" for n in names))
 
 
 def _cmd_diag(_args: str = "") -> None:
@@ -929,6 +1020,97 @@ def _cmd_bridge(args: str = "") -> None:
 
 
 _HANDLERS["/bridge"] = _cmd_bridge
+
+
+def _cmd_graph(args: str = "") -> None:
+    """/graph              show graph status
+    /graph build         build or rebuild the project graph
+    /graph search <q>    search the graph for relevant files
+    /graph visualize     open graph.html in browser
+    /graph status        show stats
+    """
+    sub = (args.strip().split(None, 1) + ["", ""])[:2]
+    cmd, rest = sub[0].lower(), sub[1]
+
+    try:
+        from agent.memory import memory
+
+        if cmd in ("", "status"):
+            stats = memory.graph.stats()
+            if stats.files == 0:
+                ui.muted("Graph not built yet. Run /graph build or /init")
+            else:
+                ui.info(f"◈ Project Graph")
+                ui.muted(f"  Files:    {stats.files}")
+                ui.muted(f"  Symbols:  {stats.symbols}")
+                ui.muted(f"  Edges:    {stats.edges}")
+                import datetime
+                if stats.built_at:
+                    built = datetime.datetime.fromtimestamp(stats.built_at).strftime("%Y-%m-%d %H:%M")
+                    ui.muted(f"  Built:    {built}")
+                ui.muted(f"  Root:     {stats.root}")
+
+        elif cmd == "build":
+            ui.info("Building project knowledge graph...")
+            total = [0]
+            def _prog(n, path):
+                total[0] = n
+                if n % 25 == 0:
+                    ui.muted(f"  indexed {n} files ({path[:40]})")
+            result = memory.init(on_progress=_prog)
+            ui.success(f"  ✓ {result}")
+            memory.start_watcher()
+            ui.muted("  File watcher started — graph updates automatically")
+
+        elif cmd == "search":
+            if not rest:
+                ui.warn("Usage: /graph search <query>")
+                return
+            files = memory.cached_search(rest, top_k=10)
+            if not files:
+                ui.muted(f"No results for '{rest}'")
+            else:
+                ui.info(f"  Top {len(files)} files for '{rest}':")
+                for f in files:
+                    ui.muted(f"  · {f}")
+
+        elif cmd == "visualize":
+            import os, subprocess
+            html = os.path.join(os.getcwd(), ".kryth", "graph", "graph.html")
+            if not os.path.exists(html):
+                ui.warn("No graph.html found. Run /graph build first.")
+            else:
+                subprocess.Popen(["start", html], shell=True)
+                ui.success(f"Opening {html}")
+
+        else:
+            ui.muted("Usage: /graph [build | search <q> | visualize | status]")
+
+    except Exception as exc:
+        ui.error(f"Graph error: {exc}")
+
+
+def _cmd_init(args: str = "") -> None:
+    """/init   Build project knowledge graph and start file watcher."""
+    try:
+        from agent.memory import memory
+        ui.info("Initializing KRYTH memory layer...")
+        ui.muted("Building knowledge graph...")
+        count = [0]
+        def _prog(n, path):
+            count[0] = n
+            if n % 20 == 0:
+                ui.muted(f"  {n} files indexed...")
+        result = memory.init(on_progress=_prog)
+        ui.success(f"  ✓ {result}")
+        ui.muted("  File watcher started (auto-updates on change)")
+        ui.muted("  Run /graph visualize to open the interactive graph")
+    except Exception as exc:
+        ui.error(f"Init failed: {exc}")
+
+
+_HANDLERS["/graph"] = _cmd_graph
+_HANDLERS["/init"]  = _cmd_init
 
 
 def handle_repl_command(line: str) -> bool:

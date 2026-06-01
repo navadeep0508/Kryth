@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Callable, Iterable
 
 from prompt_toolkit import PromptSession
@@ -9,7 +10,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.formatted_text import HTML, ANSI
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -20,10 +21,26 @@ from agent.env import home_dir
 _HISTORY_DIR = home_dir()
 _HISTORY_FILE = _HISTORY_DIR / "history"
 
+# ANSI escape codes — dim gray border, reset
+_DIM   = "\033[2m"
+_RESET = "\033[0m"
+
 
 def _history() -> FileHistory:
     _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     return FileHistory(str(_HISTORY_FILE))
+
+
+def _term_width() -> int:
+    try:
+        import shutil
+        return shutil.get_terminal_size((80, 24)).columns
+    except Exception:
+        return 80
+
+
+def _border() -> str:
+    return _DIM + "─" * _term_width() + _RESET
 
 
 class _SlashCompleter(Completer):
@@ -75,31 +92,36 @@ def _make_bindings() -> KeyBindings:
     return kb
 
 
+# ── Styles ────────────────────────────────────────────────────────────────────
+
 _STYLE = Style.from_dict({
-    "bottom-toolbar": "bg:#111111 #888888",
-    "bottom-toolbar.label": "bg:#111111 #888888",
-    "bottom-toolbar.model": "bg:#111111 #FFFFFF bold",
-    "bottom-toolbar.mode": "bg:#111111 #E8FF3A",
-    "bottom-toolbar.tokens": "bg:#111111 #888888",
-    "bottom-toolbar.tip": "bg:#111111 #888888 italic",
-    "bottom-toolbar.sep": "bg:#111111 #4B4B4B",
-    "bottom-toolbar.profile-info": "bg:#111111 #4ADE80",
-    "bottom-toolbar.profile-warn": "bg:#111111 #E8FF3A bold",
-    "bottom-toolbar.profile-danger": "bg:#111111 #FF5A5A bold",
-    "prompt": "ansiyellow bold",
-    "prompt.ready": "ansiwhite",
-    "continuation": "ansibrightblack",
+    # bottom toolbar
+    "bottom-toolbar":            "bg:#111111 #888888",
+    "bottom-toolbar.label":      "bg:#111111 #888888",
+    "bottom-toolbar.model":      "bg:#111111 #FFFFFF bold",
+    "bottom-toolbar.mode":       "bg:#111111 #E8FF3A",
+    "bottom-toolbar.tokens":     "bg:#111111 #888888",
+    "bottom-toolbar.tip":        "bg:#111111 #888888 italic",
+    "bottom-toolbar.sep":        "bg:#111111 #4B4B4B",
+    "bottom-toolbar.profile-info":    "bg:#111111 #4ADE80",
+    "bottom-toolbar.profile-warn":    "bg:#111111 #E8FF3A bold",
+    "bottom-toolbar.profile-danger":  "bg:#111111 #FF5A5A bold",
+    # prompt
+    "prompt.arrow":   "#888888",
+    "continuation":   "#555555",
 })
 
 
 def _prompt_text():
-    return HTML("<prompt>◈</prompt><prompt.ready> Ready</prompt.ready>\n<prompt>◈</prompt> ")
+    return HTML('<prompt.arrow>&gt; </prompt.arrow>')
 
 
 def _continuation(width: int, line_number: int, wrap_count: int):
     del width, line_number, wrap_count
-    return HTML("<continuation>·</continuation> ")
+    return HTML('<continuation>  </continuation>')
 
+
+# ── Toolbar ───────────────────────────────────────────────────────────────────
 
 ToolbarData = Callable[[], dict]
 
@@ -111,6 +133,8 @@ def _profile_severity(name: str) -> str:
     except Exception:
         return "info"
 
+
+# ── Main class ────────────────────────────────────────────────────────────────
 
 class PromptUI:
     def __init__(
@@ -148,25 +172,18 @@ class PromptUI:
             self._fallback = True
             return False
 
-    def _term_width(self) -> int:
-        try:
-            import shutil
-            return shutil.get_terminal_size((80, 24)).columns
-        except Exception:
-            return 80
-
     def _render_toolbar(self):
         try:
             data = self._toolbar_data() or {}
         except Exception:
             return ""
 
-        cols = self._term_width()
+        cols = _term_width()
         model = data.get("model", "")
-        mode = data.get("mode", "default")
+        mode  = data.get("mode", "default")
         profile = data.get("profile", "default")
-        tokens = data.get("tokens")
-        depth = data.get("depth", 0)
+        tokens  = data.get("tokens")
+        depth   = data.get("depth", 0)
 
         parts: list[str] = []
         if model:
@@ -181,8 +198,8 @@ class PromptUI:
         if profile and profile != "default":
             severity = _profile_severity(profile)
             cls = {
-                "info": "bottom-toolbar.profile-info",
-                "warn": "bottom-toolbar.profile-warn",
+                "info":   "bottom-toolbar.profile-info",
+                "warn":   "bottom-toolbar.profile-warn",
                 "danger": "bottom-toolbar.profile-danger",
             }.get(severity, "bottom-toolbar.profile-info")
             parts.append(
@@ -201,13 +218,30 @@ class PromptUI:
             )
         if cols >= 120:
             parts.append(
-                "<bottom-toolbar.tip> enter submit · \\ enter newline · "
-                "ctrl-c cancel · ctrl-l clear </bottom-toolbar.tip>"
+                "<bottom-toolbar.tip>"
+                " enter submit · \\ enter newline · ctrl-c cancel · ctrl-l clear"
+                "</bottom-toolbar.tip>"
             )
         return HTML("<bottom-toolbar.sep> · </bottom-toolbar.sep>".join(parts))
 
     def read(self) -> str:
+        border = _border()
+        # Top border — printed before prompt_toolkit takes over the terminal
+        sys.stdout.write("\n" + border + "\n")
+        sys.stdout.flush()
+
         if self._ensure_session():
             assert self._session is not None
-            return self._session.prompt(_prompt_text())
-        return input("◈ Ready\n◈ ")
+            try:
+                result = self._session.prompt(_prompt_text())
+            except KeyboardInterrupt:
+                sys.stdout.write(border + "\n")
+                sys.stdout.flush()
+                raise
+        else:
+            result = input("> ")
+
+        # Bottom border — printed after the user submits
+        sys.stdout.write(border + "\n")
+        sys.stdout.flush()
+        return result

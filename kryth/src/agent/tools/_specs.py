@@ -817,4 +817,31 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_browser_errors",
+            "description": (
+                "Open a URL in a headless browser and collect all console "
+                "errors, warnings, and failed network requests. Use this "
+                "after starting a dev server to catch JavaScript runtime "
+                "errors, import failures, and 404s that don't appear in "
+                "the terminal. Essential for debugging full-stack apps."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to check, e.g. http://localhost:5173",
+                    },
+                    "wait_seconds": {
+                        "type": "integer",
+                        "description": "Seconds to wait for JS to run (default 5).",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]

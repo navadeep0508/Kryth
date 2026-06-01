@@ -36,6 +36,7 @@ from agent.tools._search import (
     lookup_dependents,
 )
 from agent.tools._shell import run_command, task_output
+from agent.tools._browser import check_browser_errors
 from agent.tools._todos import todo_write, todo_read
 from agent.tools._plan import exit_plan_mode
 from agent.tools._subagent import spawn_agent, spawn_agents_parallel
@@ -80,6 +81,7 @@ TOOLS = {
     "checkpoint": checkpoint,
     "run_task_graph": run_task_graph,
     "add_memory": add_memory,
+    "check_browser_errors": check_browser_errors,
 }
 
 
@@ -100,6 +102,7 @@ READ_ONLY_TOOLS = {
     "self_critique",
     "verify_files",
     "diagnose_error",
+    "check_browser_errors",
 }
 
 

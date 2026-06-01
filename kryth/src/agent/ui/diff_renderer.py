@@ -1,4 +1,10 @@
-"""KRYTH unified diff parsing and rendering."""
+"""KRYTH unified diff parsing and rendering.
+
+Diff lines use full-row background shading (Claude Code style):
+  + lines  →  bright green text on dark green background
+  - lines  →  bright red text on dark red background
+  context  →  syntax-highlighted, no background
+"""
 
 from __future__ import annotations
 
@@ -15,6 +21,18 @@ from agent.ui.theme import CORE
 
 
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+
+# ── Diff color palette ────────────────────────────────────────────────────────
+_ADD_FG   = "#4ADE80"     # bright green text
+_ADD_BG   = "#0d1f10"     # very dark green background
+_DEL_FG   = "#FF6B6B"     # bright red text
+_DEL_BG   = "#1f0d0d"     # very dark red background
+_ADD_MKR  = f"bold {_ADD_FG} on {_ADD_BG}"
+_DEL_MKR  = f"bold {_DEL_FG} on {_DEL_BG}"
+_ADD_BODY = f"{_ADD_FG} on {_ADD_BG}"
+_DEL_BODY = f"{_DEL_FG} on {_DEL_BG}"
+_ADD_GUT  = f"bold {_ADD_FG} on {_ADD_BG}"
+_DEL_GUT  = f"bold {_DEL_FG} on {_DEL_BG}"
 
 
 @dataclass
@@ -89,22 +107,38 @@ def parse_unified_diff(text: str) -> ParsedDiff:
     return out
 
 
-def _gutter_text(n: int | None) -> Text:
-    return Text("·" if n is None else str(n), style="diff.gutter")
+def _gutter_text(n: int | None, kind: str = "ctx") -> Text:
+    val = "·" if n is None else str(n)
+    if kind == "add":
+        return Text(val, style=_ADD_GUT)
+    if kind == "del":
+        return Text(val, style=_DEL_GUT)
+    return Text(val, style="diff.gutter")
 
 
 def _line_row(line: DiffLine, lexer: str) -> tuple[Text, Text, Text]:
     body = Text(no_wrap=False, overflow="fold")
+
     if line.kind == "add":
-        body.append("+ ", style="diff.add bold")
-        body.append_text(highlight_line(line.text, lexer))
+        # Full-row green background — marker bold, code normal weight
+        body.append("+ ", style=_ADD_MKR)
+        body.append(line.text if line.text else " ", style=_ADD_BODY)
+
     elif line.kind == "del":
-        body.append("- ", style="diff.del bold")
-        body.append_text(highlight_line(line.text, lexer))
+        # Full-row red background — marker bold, code normal weight
+        body.append("- ", style=_DEL_MKR)
+        body.append(line.text if line.text else " ", style=_DEL_BODY)
+
     else:
-        body.append("  ", style="muted")
+        # Context line: no background, syntax-highlighted
+        body.append("  ", style="diff.gutter")
         body.append_text(highlight_line(line.text, lexer))
-    return _gutter_text(line.old_no), _gutter_text(line.new_no), body
+
+    return (
+        _gutter_text(line.old_no, line.kind),
+        _gutter_text(line.new_no, line.kind),
+        body,
+    )
 
 
 def _collapse(lines: list[DiffLine], max_lines: int) -> Iterable[DiffLine | str]:
@@ -119,7 +153,11 @@ def _collapse(lines: list[DiffLine], max_lines: int) -> Iterable[DiffLine | str]
 
 
 def _hunk_header_row(hunk: Hunk) -> tuple[Text, Text, Text]:
-    body = Text.assemble((CORE, "kryth.core"), (" line ", "muted"), (str(hunk.new_start), "diff.hunk"))
+    body = Text.assemble(
+        (CORE, "kryth.core"),
+        (" line ", "muted"),
+        (str(hunk.new_start), "diff.hunk"),
+    )
     if hunk.header:
         body.append("  ")
         body.append(hunk.header, style="hint")
@@ -130,10 +168,16 @@ def _divider_row(message: str) -> tuple[Text, Text, Text]:
     return Text(""), Text(""), Text("  " + message, style="muted")
 
 
-def render_diff(parsed: ParsedDiff, *, lexer: str = "text", max_hunk_lines: int = 24, max_hunks: int = 6) -> RenderableType:
+def render_diff(
+    parsed: ParsedDiff,
+    *,
+    lexer: str = "text",
+    max_hunk_lines: int = 24,
+    max_hunks: int = 6,
+) -> RenderableType:
     grid = Table.grid(padding=(0, 1), expand=False)
-    grid.add_column(style="diff.gutter", justify="right", no_wrap=True, min_width=4)
-    grid.add_column(style="diff.gutter", justify="right", no_wrap=True, min_width=4)
+    grid.add_column(justify="right", no_wrap=True, min_width=4)
+    grid.add_column(justify="right", no_wrap=True, min_width=4)
     grid.add_column(overflow="fold")
 
     hunks = parsed.hunks
@@ -142,7 +186,7 @@ def render_diff(parsed: ParsedDiff, *, lexer: str = "text", max_hunk_lines: int 
         head = hunks[: max_hunks - 2]
         tail = hunks[-2:]
         skipped = len(hunks) - len(head) - len(tail)
-        hunks_to_render = list(head) + [None] + list(tail)  # type: ignore[list-item]
+        hunks_to_render: list = list(head) + [None] + list(tail)
     else:
         hunks_to_render = list(hunks)
 
@@ -164,9 +208,21 @@ def render_diff(parsed: ParsedDiff, *, lexer: str = "text", max_hunk_lines: int 
     return grid
 
 
-def render_diff_text(diff_text: str, *, lexer: str = "text", max_hunk_lines: int = 24, max_hunks: int = 6) -> tuple[RenderableType, ParsedDiff]:
+def render_diff_text(
+    diff_text: str,
+    *,
+    lexer: str = "text",
+    max_hunk_lines: int = 24,
+    max_hunks: int = 6,
+) -> tuple[RenderableType, ParsedDiff]:
     parsed = parse_unified_diff(diff_text)
-    return render_diff(parsed, lexer=lexer, max_hunk_lines=max_hunk_lines, max_hunks=max_hunks), parsed
+    return (
+        render_diff(parsed, lexer=lexer, max_hunk_lines=max_hunk_lines, max_hunks=max_hunks),
+        parsed,
+    )
 
 
-__all__ = ["DiffLine", "Hunk", "ParsedDiff", "parse_unified_diff", "render_diff", "render_diff_text"]
+__all__ = [
+    "DiffLine", "Hunk", "ParsedDiff",
+    "parse_unified_diff", "render_diff", "render_diff_text",
+]
