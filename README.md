@@ -2,14 +2,7 @@
 
 <div align="center">
 
-```
- ██╗  ██╗███████╗██╗   ██╗██████╗ ██╗   ██╗███████╗███████╗███████╗██╗   ██╗
- ██║  ██║██╔════╝██║   ██║██╔══██╗██║   ██║██╔════╝██╔════╝██╔════╝██║   ██║
- ███████║█████╗  ██║   ██║██████╔╝██║   ██║█████╗  █████╗  █████╗  ██║   ██║
- ██╔══██║██╔══╝  ╚██╗ ██╔╝██╔══██╗██║   ██║██╔══╝  ██╔══╝  ██╔══╝  ╚██╗ ██╔╝
- ██║  ██║███████╗ ╚████╔╝ ██║  ██║╚██████╔╝██║     ██║     ███████╗ ╚████╔╝
- ╚═╝  ╚═╝╚══════╝  ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝     ╚══════╝  ╚═══╝
-```
+# KRYTH
 
 **Your autonomous AI development partner.**<br>
 Build complete applications, debug complex issues, and deploy to production—all from your terminal.
@@ -45,14 +38,11 @@ kryth> Create a full-stack app with:
 # 1. Install
 pip install kryth
 
-# 2. Set your API key
-export OPENAI_API_KEY=sk-your-key-here
-
-# 3. Start building
+# 2. Start building
 kryth
 ```
 
-That's it. No complex setup. No configuration hell. Just pure productivity.
+That's it! When KRYTH starts, use `/config` to set your API key interactively. No complex setup. No configuration hell. Just pure productivity.
 
 ---
 
