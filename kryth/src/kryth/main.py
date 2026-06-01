@@ -49,6 +49,37 @@ def _ensure_agent_on_path() -> None:
 
 def main() -> None:
     """CLI entry point registered in pyproject.toml."""
+    import argparse
+
+    # Simple argument parsing for --version and --help
+    parser = argparse.ArgumentParser(
+        prog="kryth",
+        description="KRYTH - Autonomous AI Coding Agent. Build, debug, and deploy applications with AI.",
+        epilog="""
+Examples:
+  kryth                    Start the interactive REPL
+  kryth "create a flask api"  Execute a single prompt
+  kryth --version          Show version information
+  kryth --help             Show this help message
+
+For more information, visit: https://kryth.vercel.app/
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="kryth %(prog)s 1.1.0",
+        help="Show version information and exit"
+    )
+
+    # Parse known args to allow passing through to REPL
+    args, remaining = parser.parse_known_args()
+
+    # If --version was called, argparse handles it and exits
+    # If not, we continue to the REPL
+
     _ensure_agent_on_path()
 
     # ------------------------------------------------------------------ #

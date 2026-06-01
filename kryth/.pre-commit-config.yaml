@@ -1,0 +1,102 @@
+# KRYTH - Pre-commit hooks configuration
+# See https://pre-commit.com for more information
+
+repos:
+  # Python formatting and imports
+  - repo: https://github.com/psf/black
+    rev: 24.1.1
+    hooks:
+      - id: black
+        language_version: python3
+        args: [--line-length=88]
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: [--profile=black, --line-length=88]
+
+  # Python linting
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.0.0
+    hooks:
+      - id: flake8
+        args: [--max-line-length=88, --extend-ignore=E203]
+        additional_dependencies: [
+          flake8-bugbear,
+          flake8-comprehensions,
+          flake8-simplify,
+        ]
+
+  # Type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [
+          types-requests,
+          types-pyyaml,
+          types-setuptools,
+        ]
+        exclude: ^tests/
+        args: [--ignore-missing-imports, --no-strict-optional]
+
+  # Security checks
+  - repo: https://github.com/pycqa/bandit
+    rev: 1.7.8
+    hooks:
+      - id: bandit
+        args: [-c, .bandit.yml]
+        exclude: ^tests/
+
+  # YAML/JSON formatting
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.1
+    hooks:
+      - id: prettier
+        types: [yaml, json, markdown]
+        exclude: ^CHANGELOG.md$
+
+  # Trailing whitespace
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: check-case-conflict
+      - id: check-json
+      - id: check-toml
+      - id: check-xml
+      - id: check-builtin-literals
+      - id: debug-statements
+        exclude: ^tests/
+      - id: detect-private-key
+      - id: forbid-new-submodules
+
+  # Python import sorting (alternative to isort)
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.15.0
+    hooks:
+      - id: pyupgrade
+        args: [--py310-plus]
+
+  # Commit message validation
+  - repo: https://github.com/commitizen/commitizen
+    rev: v3.13.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  # Secrets detection
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: .*\.env.*|\.env|tests/.*

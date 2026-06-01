@@ -604,6 +604,8 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
         request_messages = _messages_with_tool_text_fallback(messages, tools)
         request_tools = None
 
+    _max_tokens = int(getenv("KRYTH_MAX_TOKENS", "16384"))
+
     try:
         stream = _chat_completion_with_compat(
             "ask_llm_stream",
@@ -611,7 +613,7 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             messages=request_messages,
             tools=request_tools,
             temperature=0,
-            max_tokens=4096,
+            max_tokens=_max_tokens,
             stream=True,
             stream_options={"include_usage": True},
             stop=_STOP_SEQUENCES,
@@ -735,7 +737,7 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             ui.llm_content_end(render_markdown=False)
         ui.warn("(LLM stream interrupted)")
         content_text = (
-            "".join(content_chunks) or "".join(reasoning_chunks) or None
+            _filter_leaks("".join(content_chunks)) or "".join(reasoning_chunks) or None
         )
         return {
             "content": content_text,
@@ -770,15 +772,12 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
         partial_calls = [
             tool_calls_accum[k] for k in sorted(tool_calls_accum.keys())
         ]
-        partial_text = "".join(content_chunks) or "".join(reasoning_chunks) or None
+        raw_partial = "".join(content_chunks)
 
-        # Some OpenAI-compatible gateways emit Hermes/Qwen-style
-        # <tool_call> content and then send a malformed delta.tool_calls
-        # payload that the OpenAI SDK rejects while parsing the stream.
-        # If the text already contains complete recoverable tool blocks,
-        # keep the turn alive and execute them instead of stopping.
-        if partial_text and "<tool_call>" in partial_text:
-            recovered = _recover_hermes_tool_calls(partial_text)
+        # Recover Hermes/Qwen tool calls from raw content BEFORE filtering
+        # strips the <tool_call> blocks.
+        if "<tool_call>" in raw_partial:
+            recovered = _recover_hermes_tool_calls(raw_partial)
             if recovered:
                 ui.llm_hermes_recovery(len(recovered))
                 return {
@@ -789,6 +788,7 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
                     "interrupted": False,
                 }
 
+        partial_text = _filter_leaks(raw_partial) or "".join(reasoning_chunks) or None
         ui.llm_error(
             label="ask_llm_stream: stream dropped",
             message=f"{type(e).__name__}: {str(e)[:200]}",
@@ -832,7 +832,21 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
     # Reasoning-only completions (no content, no tool_calls) are common on
     # nemotron / step models. Surface the reasoning text so the user
     # isn't staring at a silent "done".
-    content_text = "".join(content_chunks)
+    raw_content = "".join(content_chunks)
+
+    # Recover Hermes/Qwen tool calls from raw content BEFORE _filter_leaks
+    # strips the <tool_call> blocks — otherwise recovery never fires.
+    if not tool_calls and "<tool_call>" in raw_content:
+        recovered = _recover_hermes_tool_calls(raw_content)
+        if recovered:
+            ui.llm_hermes_recovery(len(recovered))
+            tool_calls = recovered
+            content_text = ""
+        else:
+            content_text = _filter_leaks(raw_content)
+    else:
+        content_text = _filter_leaks(raw_content)
+
     if not content_text and not tool_calls and reasoning_chunks:
         content_text = "".join(reasoning_chunks)
 
@@ -843,13 +857,6 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             cut = content_text.rfind(block)
             if cut > 0:
                 content_text = content_text[:cut].rstrip()
-
-    if not tool_calls and content_text and "<tool_call>" in content_text:
-        recovered = _recover_hermes_tool_calls(content_text)
-        if recovered:
-            ui.llm_hermes_recovery(len(recovered))
-            tool_calls = recovered
-            content_text = ""
 
     if degenerate and not tool_calls:
         return {

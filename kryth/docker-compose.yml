@@ -1,0 +1,44 @@
+# KRYTH - Docker Compose Configuration
+version: '3.8'
+
+services:
+  kryth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kryth-agent
+    volumes:
+      # Mount current directory for workspace
+      - ./:/workspace
+      # Persist KRYTH data (sessions, logs, memory)
+      - kryth-data:/root/.kryth
+      # Mount .env file for configuration
+      - ./.env:/root/.env:ro
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - AICODER_PROFILE=${AICODER_PROFILE:-default}
+    stdin_open: true
+    tty: true
+    # Optional: expose bridge port if using bridge mode
+    ports:
+      - "8765:8765"
+    # Optional: network configuration
+    networks:
+      - kryth-network
+    # Restart policy (adjust as needed)
+    restart: unless-stopped
+    # Resource limits (optional)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
+    #       cpus: '2.0'
+
+volumes:
+  kryth-data:
+    driver: local
+
+networks:
+  kryth-network:
+    driver: bridge
