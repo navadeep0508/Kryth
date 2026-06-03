@@ -37,6 +37,32 @@ from agent.tools._search import (
 )
 from agent.tools._shell import run_command, task_output
 from agent.tools._browser import check_browser_errors
+from agent.tools._opencli import (
+    open_url,
+    fill_form,
+    upload_file,
+    extract_data,
+    download_content,
+    browser_search,
+    browser_login,
+    browser_submit,
+    browser_setup,
+    browser_setup_verify,
+    browser_click,
+    browser_type,
+    browser_select,
+    browser_scroll,
+    browser_screenshot,
+    browser_back,
+    browser_eval_js,
+    browser_keys,
+    browser_tab_list,
+    browser_tab_new,
+    browser_tab_select,
+    browser_get_html,
+    browser_get_url,
+    browser_state,
+)
 from agent.tools._todos import todo_write, todo_read
 from agent.tools._plan import exit_plan_mode
 from agent.tools._subagent import spawn_agent, spawn_agents_parallel
@@ -82,6 +108,30 @@ TOOLS = {
     "run_task_graph": run_task_graph,
     "add_memory": add_memory,
     "check_browser_errors": check_browser_errors,
+    "open_url": open_url,
+    "fill_form": fill_form,
+    "upload_file": upload_file,
+    "extract_data": extract_data,
+    "download_content": download_content,
+    "browser_search": browser_search,
+    "browser_login": browser_login,
+    "browser_submit": browser_submit,
+    "browser_setup": browser_setup,
+    "browser_setup_verify": browser_setup_verify,
+    "browser_click": browser_click,
+    "browser_type": browser_type,
+    "browser_select": browser_select,
+    "browser_scroll": browser_scroll,
+    "browser_screenshot": browser_screenshot,
+    "browser_back": browser_back,
+    "browser_eval_js": browser_eval_js,
+    "browser_keys": browser_keys,
+    "browser_tab_list": browser_tab_list,
+    "browser_tab_new": browser_tab_new,
+    "browser_tab_select": browser_tab_select,
+    "browser_get_html": browser_get_html,
+    "browser_get_url": browser_get_url,
+    "browser_state": browser_state,
 }
 
 
@@ -103,6 +153,12 @@ READ_ONLY_TOOLS = {
     "verify_files",
     "diagnose_error",
     "check_browser_errors",
+    "extract_data",
+    "browser_tab_list",
+    "browser_get_html",
+    "browser_get_url",
+    "browser_state",
+    "browser_screenshot",
 }
 
 

@@ -15,7 +15,9 @@ TOOL_SPECS = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a UTF-8 text file. Output has 1-indexed line numbers "
+                "Read a file. Handles UTF-8 text and PDF files (auto-detects "
+                "format). For PDFs, extracts readable text content using any "
+                "available PDF library. Output has 1-indexed line numbers "
                 "(tab-separated). Use offset/limit for large files."
             ),
             "parameters": {
@@ -841,6 +843,552 @@ TOOL_SPECS = [
                     },
                 },
                 "required": ["url"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------
+    # OpenCLI browser automation tools
+    # Requires: npm install -g @jackwener/opencli + Chrome Browser Bridge
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "open_url",
+            "description": (
+                "Open a URL in the user's Chrome browser via OpenCLI. "
+                "Uses the named session (Chrome profile alias). Returns "
+                "the target tab ID on success. Requires @jackwener/opencli "
+                "and the Chrome Browser Bridge extension."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to navigate to."},
+                    "session": {
+                        "type": "string",
+                        "description": "Chrome profile alias (default: 'default').",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fill_form",
+            "description": (
+                "Fill a web form on the current page. Pass ``data`` as a "
+                "JSON object mapping CSS selectors to values, e.g. "
+                "{\"input[name=email]\": \"user@example.com\"}. "
+                "Detects the form first, then fills each field with "
+                "self-healing retry on selector failure."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data": {
+                        "type": "string",
+                        "description": (
+                            "JSON object: {\"<css-selector>\": \"<value>\", ...}. "
+                            "Selector can be any valid CSS selector."
+                        ),
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Chrome profile alias (default: 'default').",
+                    },
+                },
+                "required": ["data"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "upload_file",
+            "description": (
+                "Upload a local file to a file input on the current page. "
+                "Supported: PDF, DOCX, TXT, PNG, JPG, ZIP. "
+                "Auto-detects resume/document vs. image inputs. "
+                "Retries with alternate selectors on failure."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to the local file.",
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": (
+                            "CSS selector for the file input. "
+                            "If omitted, tries common file input selectors."
+                        ),
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Chrome profile alias (default: 'default').",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "extract_data",
+            "description": (
+                "Extract text/HTML content from the current page matching "
+                "a CSS selector. Returns a JSON array of matched elements. "
+                "Use after open_url to scrape structured data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector, e.g. 'h2', '.product-title', 'table'.",
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Chrome profile alias (default: 'default').",
+                    },
+                },
+                "required": ["selector"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "download_content",
+            "description": (
+                "Open a URL in a background browser tab for downloading. "
+                "Use for media, PDFs, or any content served via the browser "
+                "session (respects login cookies). Pass output directory "
+                "to save the file locally."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to download from."},
+                    "output": {
+                        "type": "string",
+                        "description": "Local directory to save to (default: '.').",
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Chrome profile alias (default: 'default').",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_search",
+            "description": (
+                "Search the web and return results. Uses DuckDuckGo by default "
+                "(no CAPTCHA, reliable). Supply a custom ``url`` for site-internal "
+                "search (e.g. a LinkedIn jobs URL or company career page). "
+                "Waits 2s for JS-rendered results before extracting. "
+                "Use result_selector='.result__title' for DuckDuckGo results."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query string."},
+                    "url": {
+                        "type": "string",
+                        "description": (
+                            "Custom URL for site-internal search. "
+                            "Omit or leave empty to use Google search."
+                        ),
+                    },
+                    "result_selector": {
+                        "type": "string",
+                        "description": (
+                            "CSS selector for result elements. "
+                            "Google results use 'h3' (default). "
+                            "Avoid commas in selectors — use simple selectors."
+                        ),
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Chrome profile alias (default: 'default').",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_login",
+            "description": (
+                "Navigate to a login page and authenticate with "
+                "username/password. Tries common email and password "
+                "selectors with self-healing retry. The session retains "
+                "the logged-in Chrome profile cookies."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Login page URL.",
+                    },
+                    "username": {
+                        "type": "string",
+                        "description": "Email address or username.",
+                    },
+                    "password": {
+                        "type": "string",
+                        "description": "Password.",
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Chrome profile alias (default: 'default').",
+                    },
+                },
+                "required": ["url", "username", "password"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_setup",
+            "description": (
+                "Run the full automated OpenCLI setup in one shot: "
+                "(1) installs Node.js >= 20 if missing, "
+                "(2) runs 'npm install -g @jackwener/opencli', "
+                "(3) opens Chrome directly to the Browser Bridge Web Store "
+                "page so the user can click 'Add to Chrome', "
+                "(4) runs 'opencli doctor'. "
+                "Call this first before any other browser_* tools. "
+                "After the extension is installed, call browser_setup_verify."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_setup_verify",
+            "description": (
+                "Re-run 'opencli doctor' to confirm the Browser Bridge "
+                "extension is connected. Call this after the user has "
+                "clicked 'Add to Chrome' in the setup step."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_submit",
+            "description": (
+                "Submit the current form or click a specific element. "
+                "If ``selector`` is empty, clicks the first submit button "
+                "found (tries common submit selectors with retry). "
+                "Call after fill_form to complete a form submission."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": (
+                            "CSS selector for the element to click. "
+                            "Omit to auto-find the submit button."
+                        ),
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Chrome profile alias (default: 'default').",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    # ------------------------------------------------------------------
+    # Browser primitive tools — full browser automation
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": (
+                "Click any element on the current page by CSS selector. "
+                "Uses self-healing retry with alternate selectors on failure. "
+                "Supported: buttons, links, checkboxes, any clickable element."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the element to click."},
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": ["selector"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": (
+                "Type text into an element on the current page by CSS selector. "
+                "Use for text inputs, textareas, and contenteditable elements. "
+                "Types one character at a time for realistic interaction."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the target element."},
+                    "text": {"type": "string", "description": "Text to type into the element."},
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": ["selector", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_select",
+            "description": (
+                "Select an option from a dropdown/select element on the current page. "
+                "Specify the CSS selector and the value to select."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the select element."},
+                    "value": {"type": "string", "description": "Option value to select."},
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": ["selector", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_scroll",
+            "description": (
+                "Scroll the current page. Default direction is 'down'. "
+                "Use to reveal lazy-loaded content or navigate long pages. "
+                "Directions: 'down', 'up', 'left', 'right'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["down", "up", "left", "right"],
+                        "description": "Scroll direction (default: 'down').",
+                    },
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": (
+                "Capture a screenshot of the current page and save it as a PNG file. "
+                "Returns the file path to the saved screenshot. Use this to visually "
+                "inspect page state, confirm UI rendering, or share visual output."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_back",
+            "description": (
+                "Navigate back one page in the browser history. "
+                "Equivalent to clicking the browser's back button."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_eval_js",
+            "description": (
+                "Execute arbitrary JavaScript in the current page context and "
+                "return the result as a string. Use for advanced page manipulation, "
+                "reading data from page state, or triggering JS functions. "
+                "Example: 'document.title', 'window.scrollTo(0, document.body.scrollHeight)'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "JavaScript expression to evaluate."},
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": ["expression"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_keys",
+            "description": (
+                "Send a keyboard shortcut or key press to the page. "
+                "Common combos: 'Escape' (close modals), 'Enter' (submit), "
+                "'Control+a' (select all), 'Control+c' (copy), 'Tab' (next field), "
+                "'ArrowDown' / 'ArrowUp' (navigate dropdowns)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "combo": {"type": "string", "description": "Key or keyboard shortcut to send (e.g. 'Escape', 'Enter', 'Control+a')."},
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": ["combo"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_tab_list",
+            "description": (
+                "List all open browser tabs with their target IDs, titles, and URLs. "
+                "Use before browser_tab_select to find the tab you want to switch to."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_tab_new",
+            "description": (
+                "Open a new browser tab. Optionally navigate to a URL in the new tab. "
+                "The new tab becomes the active tab."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Optional URL to navigate to in the new tab."},
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_tab_select",
+            "description": (
+                "Switch to a specific browser tab by its target ID. "
+                "Use browser_tab_list first to get the list of open tabs and their IDs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "Target tab ID from browser_tab_list."},
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": ["target_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_get_html",
+            "description": (
+                "Get the full HTML content of the current page. "
+                "Useful for reading page structure, finding elements, or scraping "
+                "content that's not easily accessible via extract_data's CSS selector."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_get_url",
+            "description": (
+                "Get the current URL of the active browser tab. "
+                "Useful after navigation or form submission to confirm the page changed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_state",
+            "description": (
+                "Get the full browser state: current URL, page title, viewport dimensions, "
+                "and connectivity status. Call this to understand what page you're on and "
+                "its current state before performing actions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "description": "Chrome profile alias (default: 'default')."},
+                },
+                "required": [],
             },
         },
     },

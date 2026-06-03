@@ -49,6 +49,8 @@ class Session:
         self.messages = []
         self.todos = []
         self.tool_call_count = 0
+        self.cumulative_in_tokens = 0
+        self.cumulative_out_tokens = 0
         self.mode = "default"
         self.remembered_permissions = {}
         self.denial_counts = {}

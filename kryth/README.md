@@ -181,6 +181,51 @@ Visit our beautiful landing page to learn more about KRYTH:
 
 ---
 
+## ⚙️ Configuration
+
+KRYTH can be configured using environment variables to customize its behavior.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KRYTH_AUTO_INIT` | `true` | Automatically build the code graph on first use. Set to `false` to disable auto-initialization and manually call `memory.build_graph()`. |
+| `OPENAI_API_KEY` | (required) | Your OpenAI API key for GPT-4/GPT-3.5 access. |
+| `ANTHROPIC_API_KEY` | (optional) | Your Anthropic API key for Claude models. |
+| `KRYTH_MODEL` | `gpt-4` | Default LLM model to use (`gpt-4`, `gpt-3.5-turbo`, `claude-3`, etc.). |
+| `KRYTH_MAX_TOKENS` | `4096` | Maximum tokens for LLM responses. |
+| `KRYTH_TEMPERATURE` | `0.7` | Temperature for LLM generation (0.0-1.0). |
+
+### Example `.env` file
+
+```bash
+# Create a .env file in your project root
+OPENAI_API_KEY=sk-your-openai-key-here
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key-here
+KRYTH_MODEL=gpt-4
+KRYTH_AUTO_INIT=true
+KRYTH_TEMPERATURE=0.7
+```
+
+### Auto-Initialization
+
+By default, KRYTH automatically builds its internal code graph the first time you query context or run a task. This "auto-init" feature means you don't need to manually run `memory.build_graph()`—KRYTH does it on-demand.
+
+To disable auto-initialization (e.g., for performance tuning or manual control):
+
+```bash
+export KRYTH_AUTO_INIT=false
+```
+
+Then you must explicitly build the graph:
+
+```python
+from agent.memory import memory
+memory.build_graph()
+```
+
+---
+
 ## 📈 SEO Keywords & Search Terms
 
 ### Primary Keywords

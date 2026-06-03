@@ -130,8 +130,8 @@ def llm_waiting(message: str = "waiting for model…") -> None:
     emit(EventKind.LLM_WAITING, message=message)
 
 
-def llm_reasoning_chunk(piece: str) -> None:
-    emit(EventKind.LLM_REASONING_CHUNK, piece=piece)
+def llm_reasoning_chunk(piece: str, elapsed: float = 0.0) -> None:
+    emit(EventKind.LLM_REASONING_CHUNK, piece=piece, elapsed=elapsed)
 
 
 def llm_reasoning_end() -> None:

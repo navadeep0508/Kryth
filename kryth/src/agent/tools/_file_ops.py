@@ -317,10 +317,80 @@ def _looks_binary(path: str) -> str | None:
     return None
 
 
+def _extract_pdf_text(path: str) -> str | None:
+    """Extract text from a PDF using whichever library is available.
+
+    Tries PyMuPDF, pdfminer, pypdf, pdfplumber, and pdftotext CLI
+    in order. Returns None if no PDF library is installed.
+    """
+    # PyMuPDF (fitz) — fastest, best quality
+    try:
+        import fitz
+        doc = fitz.open(path)
+        pages = [page.get_text() for page in doc]
+        doc.close()
+        return "\n".join(pages)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # pdfminer.six — widely available
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        return pdfminer_extract(path)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # pypdf — lightweight
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path)
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # pdfplumber — good for structured extraction
+    try:
+        import pdfplumber
+        with pdfplumber.open(path) as pdf:
+            return "\n".join(page.extract_text() or "" for page in pdf.pages)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # pdftotext CLI (poppler-utils)
+    import subprocess as _sp
+    try:
+        result = _sp.run(["pdftotext", path, "-"], capture_output=True, text=True, timeout=30)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+    except Exception:
+        pass
+
+    return None
+
+
 def read_file(path, offset=0, limit=None):
     path = _clean_path(path)
     binary_kind = _looks_binary(path)
-    if binary_kind is not None:
+    if binary_kind == "pdf":
+        pdf_text = _extract_pdf_text(path)
+        if pdf_text is not None:
+            lines = pdf_text.splitlines(keepends=True)
+            # Continue to normal line-numbered read below
+        else:
+            return err(
+                "UNSUPPORTED",
+                f"{path} is a PDF with no text extractor available",
+                "Install one of: pip install PyMuPDF pdfminer.six pypdf pdfplumber",
+            )
+    elif binary_kind is not None:
         try:
             size = os.path.getsize(path)
         except OSError:
@@ -334,20 +404,20 @@ def read_file(path, offset=0, limit=None):
                 f"or shell commands for binary inspection."
             ),
         )
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        return err("NOT_FOUND", f"file not found: {path}")
-    except UnicodeDecodeError as e:
-        return err(
-            "UNSUPPORTED",
-            f"{path} is not UTF-8 text",
-            f"decode failed: {e}",
-        )
-    except Exception as e:
-        return err("EXEC_FAILED", f"could not read {path}", str(e))
+    else:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            return err("NOT_FOUND", f"file not found: {path}")
+        except UnicodeDecodeError as e:
+            return err(
+                "UNSUPPORTED",
+                f"{path} is not UTF-8 text",
+                f"decode failed: {e}",
+            )
+        except Exception as e:
+            return err("EXEC_FAILED", f"could not read {path}", str(e))
 
     total = len(lines)
     if offset < 0:

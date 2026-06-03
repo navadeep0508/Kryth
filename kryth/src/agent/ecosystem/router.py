@@ -73,10 +73,12 @@ Available skills:
 Rules:
 - Return ONLY a JSON array of skill IDs, nothing else.
 - Include 1-6 skills maximum. Less is more.
-- Only include skills that are genuinely needed.
+- Only include skills that are genuinely needed for the specific request.
 - For full-stack apps include both frontend and backend skills.
 - Always include tailwind-designer when there's any UI work.
 - For SaaS/ecommerce, include auth-builder and database-designer.
+- Consider the user's intent carefully — don't over-select. If the request is simple, pick fewer skills.
+- If the request mentions a specific technology (e.g., "React", "FastAPI", "Next.js"), include the corresponding builder skill.
 
 Example output: ["react-builder", "tailwind-designer", "fastapi-builder"]"""
 
@@ -89,6 +91,8 @@ def _llm_route(user_input: str) -> List[str]:
         skill_list = "\n".join(
             f"- {s.id}: {s.description}" for s in skills
         )
+        # Build set of valid skill IDs for validation
+        valid_ids = {s.id for s in skills}
         client = _get_client()
         response = client.chat.completions.create(
             model=PLANNER_MODEL,
@@ -106,7 +110,9 @@ def _llm_route(user_input: str) -> List[str]:
         if start >= 0 and end > start:
             ids = json.loads(text[start:end + 1])
             if isinstance(ids, list):
-                return [str(s) for s in ids]
+                # Validate: only keep IDs that exist in the registry
+                validated = [str(s) for s in ids if str(s) in valid_ids]
+                return validated
     except Exception:
         pass
     return []
@@ -119,15 +125,16 @@ class SkillRouter:
         """Return ordered list of skill IDs needed for the request.
 
         Uses LLM routing first (smarter), falls back to keyword matching.
+        Only routes build requests; non-build queries return empty.
         """
         if not user_input or user_input.startswith("/"):
             return []
-
+        if not self.is_build_request(user_input):
+            return []
         if use_llm:
             ids = _llm_route(user_input)
             if ids:
                 return ids
-
         return _keyword_route(user_input)
 
     def is_build_request(self, user_input: str) -> bool:

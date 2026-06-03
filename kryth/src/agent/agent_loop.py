@@ -33,7 +33,8 @@ from agent.tools import (
 from agent.tools._results import err, is_error
 
 
-MAX_TOOL_TURNS = int(getenv("KRYTH_MAX_TOOL_TURNS", "500"))
+# Effectively unlimited - set to 100000 by default (can be overridden via env var)
+MAX_TOOL_TURNS = int(getenv("KRYTH_MAX_TOOL_TURNS", "100000"))
 COMPACT_AT_TOKENS = 80000
 KEEP_RECENT_AFTER_COMPACT = 12
 
@@ -606,10 +607,10 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
 
         # Detect infinite tool loops
         if _detect_tool_loop(tool_calls, session.messages):
-            ui.warn("Tool loop detected - same tool called repeatedly. Stopping to prevent infinite loop.")
+            ui.warn("Tool loop detected — same tool called repeatedly. Breaking loop.")
             return LoopResult(
-                status="done",
-                content="Loop detected, stopping execution.",
+                status="interrupted",
+                content="",
                 turns_used=turn_count,
             )
 
@@ -678,6 +679,17 @@ def _should_plan(user_input: str) -> bool:
 
 def build_initial_system(session, user_input: str = ""):
     from agent.context import ProjectSnapshot, build_focused_map
+    from agent.env import getenv_bool
+
+    # --- Auto-init: build graph on first use if enabled ---
+    try:
+        from agent.memory import memory
+        if not memory.graph.is_built() and getenv_bool("KRYTH_AUTO_INIT", True):
+            ui.muted("Building project knowledge graph (first run)...")
+            memory.init(auto=True)
+            ui.muted("Graph built · file watcher started")
+    except Exception:
+        pass
 
     # --- Memory-First context loading ---
     # If graph is built, use graph search for the most relevant files.
@@ -739,6 +751,27 @@ def run_agent(user_input, extra_system: str | None = None):
         build_initial_system(session)
         session.ensure_system()
 
+    # Inject fresh graph context on every turn (auto-updates via file watcher)
+    try:
+        from agent.memory import memory
+        if memory.graph.is_built():
+            files = memory.graph.search(user_input, top_k=12)
+            if files:
+                fresh_context = memory.graph.context_for(files)
+                # Remove any old dynamic context
+                session.messages[:] = [
+                    m for m in session.messages
+                    if not (m.get("role") == "system" and m.get("content", "").startswith("[Dynamic graph context]"))
+                ]
+                inject_msg = {"role": "system", "content": f"[Dynamic graph context]\n{fresh_context}"}
+                # Insert after the first system message (index 0) or at front
+                if session.messages and session.messages[0].get("role") == "system":
+                    session.messages.insert(1, inject_msg)
+                else:
+                    session.messages.insert(0, inject_msg)
+    except Exception:
+        pass
+
     if extra_system:
         session.append({"role": "system", "content": extra_system})
     else:
@@ -762,23 +795,25 @@ def run_agent(user_input, extra_system: str | None = None):
             session.append({"role": "system", "content": ecosystem_context})
         else:
             from agent.skills import auto_select_skills, compose_skills
-            auto = auto_select_skills(user_input)
+            auto = auto_select_skills(
+                user_input,
+                project_context=getattr(session, "project_map", ""),
+            )
             if auto:
                 ui.auto_skills(auto)
                 session.append({"role": "system", "content": compose_skills(auto)})
 
-    # --- Parallel multi-agent build (complex projects only) ---
-    # For requests like "build a SaaS dashboard" this spawns parallel
-    # feature agents (Frontend/Backend/DB) then integrates their output,
-    # typically 3-8× faster than the sequential single-agent loop.
+    # --- Parallel multi-agent build ---
+    # run_parallel_build asks the LLM whether parallel agents are needed and
+    # which ones. Returns None when the normal single-agent loop should run.
     try:
-        from agent.parallel_builder import run_parallel_build, _is_complex_build
-        if _is_complex_build(user_input) and session.mode != "plan":
-            ui.info("Parallel build detected — spawning feature agents...")
+        from agent.parallel_builder import run_parallel_build
+        if session.mode != "plan":
             parallel_result = run_parallel_build(
                 user_input,
                 skill_context=ecosystem_context or "",
-                max_turns_per_agent=MAX_TOOL_TURNS // 4,
+                project_context=getattr(session, "project_map", ""),
+                max_turns_per_agent=60,
             )
             if parallel_result:
                 # Parallel build succeeded — persist result and return early
@@ -808,7 +843,17 @@ def run_agent(user_input, extra_system: str | None = None):
 
     plan_dict: dict | None = None
     plan_prose: str = ""
-    if _should_plan(user_input):
+    # Skip the planner for short/simple prompts — it would waste an LLM call
+    # on something the main model can handle directly. A prompt needs at least
+    # 6 words to benefit from planning; single-agent starters (fix/debug/explain)
+    # are also fast-tracked.
+    _skip_planner = False
+    try:
+        from agent.parallel_builder import _quick_reject
+        _skip_planner = _quick_reject(user_input)
+    except Exception:
+        _skip_planner = len(user_input.strip().split()) < 6
+    if _should_plan(user_input) and not _skip_planner:
         plan_dict, plan_prose = ask_planner(user_input)
         if plan_dict:
             ui.plan(plan_dict)

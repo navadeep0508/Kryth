@@ -188,37 +188,102 @@ def _is_build_request(user_input: str) -> bool:
     return bool(_BUILD_VERBS.search(user_input))
 
 
-def auto_select_skills(user_input: str) -> list[str]:
-    """Return skill names matching ``user_input`` based on keyword rules.
+def auto_select_skills(user_input: str, project_context: str = "") -> list[str]:
+    """Return the skill names the LLM decides are needed for this request.
 
-    Returns an empty list when:
-    - input is empty or starts with ``/`` (explicit /skill invocation),
-    - or there is no build verb (questions / follow-ups).
+    The LLM sees the user request AND the current project context so it can
+    make an informed decision (e.g. won't inject React skills for a Python CLI).
 
-    Always prepends ``system`` when any stack/archetype matches, so a
-    "build a flask blog" picks up the master quality bar even though
-    "blog" isn't in any skill's regex.
+    Returns [] when:
+    - input is empty or starts with / (explicit skill invocation)
+    - there is no build verb (questions, follow-ups)
+    - the LLM says no skills are needed
+
+    Falls back to keyword matching only if the LLM is unreachable.
+    Always includes 'system' when any other skill is selected.
     """
     if not user_input or user_input.lstrip().startswith("/"):
         return []
     if not _is_build_request(user_input):
         return []
 
-    selected: set[str] = set()
+    # Build concise skill menu for the LLM
+    skill_lines: list[str] = []
+    for name in BUILT_IN_SKILLS:
+        body = BUILT_IN_SKILLS.get(name, "")
+        first_line = body.strip().split("\n")[0] if body else ""
+        if first_line.startswith("[Skill:"):
+            first_line = first_line.split("]", 1)[1].strip()
+        skill_lines.append(f"- {name}: {first_line[:100]}")
+
+    ctx_section = ""
+    if project_context:
+        ctx_section = f"\n\nCurrent project context:\n{project_context[:1500]}"
+
+    system_prompt = (
+        "You are a skill selector for an AI coding agent.\n"
+        "Given a user request and the current project, choose which skills are "
+        "genuinely needed. Consider the project context — don't inject frontend "
+        "skills for a backend-only project or vice versa.\n\n"
+        "Available skills:\n"
+        + "\n".join(skill_lines)
+        + "\n\nRules:\n"
+        "- Select ONLY skills directly relevant to THIS request in THIS project.\n"
+        "- Less is more: if the request is a small addition, 1-2 skills is usually right.\n"
+        "- Include 'modern-ui' for any visible UI work.\n"
+        "- Include 'system' when any other skill is selected.\n"
+        "- Return ONLY a JSON array, e.g. [\"react\", \"tailwind\", \"system\"]\n"
+        "- Return [] if no skills are relevant.\n"
+        "- Do not include skills not in the list above."
+    )
+
+    # LLM selection
+    try:
+        import json as _json
+        from agent.llm import _get_client, PLANNER_MODEL
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=PLANNER_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_input + ctx_section},
+            ],
+            temperature=0,
+            max_tokens=200,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        start = text.find("[")
+        end   = text.rfind("]")
+        if start >= 0 and end > start:
+            selected = _json.loads(text[start:end + 1])
+            if isinstance(selected, list):
+                valid = [s for s in selected if s in BUILT_IN_SKILLS]
+                if valid:
+                    if any(s != "system" for s in valid) and "system" not in valid:
+                        valid.append("system")
+                    for specific, generic in _SKILL_CONFLICTS:
+                        if specific in valid and generic in valid:
+                            valid.remove(generic)
+                    return sorted(valid, key=lambda n: (_SKILL_PRIORITY.get(n, 9), n))
+                return []  # LLM explicitly returned []
+    except Exception:
+        pass
+
+    # Keyword fallback — only reached when LLM is unavailable
+    selected_kw: set[str] = set()
     for pattern, skills in AUTO_SKILL_RULES:
         if pattern.search(user_input):
-            selected.update(skills)
+            selected_kw.update(skills)
 
-    # The master "system" skill always applies to build requests — the
-    # archetype/stack matches just add specificity on top. Even a bare
-    # "build a flask blog" should get the quality bar.
-    selected.add("system")
+    if not selected_kw:
+        return []
 
+    selected_kw.add("system")
     for specific, generic in _SKILL_CONFLICTS:
-        if specific in selected and generic in selected:
-            selected.discard(generic)
+        if specific in selected_kw and generic in selected_kw:
+            selected_kw.discard(generic)
 
-    return sorted(selected, key=lambda n: (_SKILL_PRIORITY.get(n, 9), n))
+    return sorted(selected_kw, key=lambda n: (_SKILL_PRIORITY.get(n, 9), n))
 
 
 def compose_skills(names: list[str]) -> str:

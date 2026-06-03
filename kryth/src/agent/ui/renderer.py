@@ -191,7 +191,7 @@ def _on_llm_reasoning_start(e: Event) -> None:
 
 def _on_llm_reasoning_chunk(e: Event) -> None:
     _activity.streaming()
-    _stream.reasoning_chunk(e.data["piece"])
+    _stream.reasoning_chunk(e.data["piece"], elapsed=e.data.get("elapsed", 0.0))
 
 
 def _on_llm_reasoning_end(e: Event) -> None:

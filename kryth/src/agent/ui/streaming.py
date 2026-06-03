@@ -9,6 +9,15 @@ from agent.ui.console import console
 from agent.ui.motion import motion_enabled, sleep, DIAMOND_THINKING_FRAMES
 from agent.ui.theme import CORE
 
+# Parallel build mode: when True, the "Evaluating..." spinner is suppressed
+# to avoid garbled output when multiple agents run concurrently.
+_parallel_mode = False
+
+def set_parallel_mode(enabled: bool) -> None:
+    """Enable or disable parallel mode for the streaming output."""
+    global _parallel_mode
+    _parallel_mode = enabled
+
 # Acid gold in ANSI — matches kryth.core (#E8FF3A)
 _ANSI_GOLD = "\033[38;2;232;255;58m"
 _ANSI_MUTED = "\033[38;2;136;136;136m"
@@ -104,6 +113,11 @@ class StreamPrinter:
         if self._reasoning_started:
             return
         self._reasoning_started = True
+        if _parallel_mode:
+            # In parallel mode, skip spinner output to avoid garbling.
+            self._reasoning_frame = 0
+            self._pulse_frame = 0
+            return
         self._reasoning_frame = 0
         self._pulse_frame = 0
         glyph = DIAMOND_THINKING_FRAMES[0]
@@ -113,24 +127,26 @@ class StreamPrinter:
             f"{label_style}Evaluating...{_ANSI_RESET}"
         )
 
-    def reasoning_chunk(self, piece: str) -> None:
+    def reasoning_chunk(self, piece: str, elapsed: float = 0.0) -> None:
         if not self._reasoning_started:
             self.begin_reasoning()
-        self._reasoning_frame = (self._reasoning_frame + 1) % len(DIAMOND_THINKING_FRAMES)
-        self._pulse_frame = (self._pulse_frame + 1) % len(_PULSE_STYLES)
-        glyph = DIAMOND_THINKING_FRAMES[self._reasoning_frame]
-        label_style = _PULSE_STYLES[self._pulse_frame]
-        _write_inplace(
-            f"\r{_ANSI_BOLD}{_ANSI_GOLD}{glyph}{_ANSI_RESET} "
-            f"{label_style}Evaluating...{_ANSI_RESET}"
-        )
+        if not _parallel_mode:
+            self._reasoning_frame = (self._reasoning_frame + 1) % len(DIAMOND_THINKING_FRAMES)
+            self._pulse_frame = (self._pulse_frame + 1) % len(_PULSE_STYLES)
+            glyph = DIAMOND_THINKING_FRAMES[self._reasoning_frame]
+            label_style = _PULSE_STYLES[self._pulse_frame]
+            _write_inplace(
+                f"\r{_ANSI_BOLD}{_ANSI_GOLD}{glyph}{_ANSI_RESET} "
+                f"{label_style}Evaluating...{_ANSI_RESET}"
+            )
         if motion_enabled():
             sleep(0.06)
         del piece
 
     def end_reasoning(self) -> None:
         if self._reasoning_started:
-            _write_inplace(f"\r{' ' * 20}\r")
+            if not _parallel_mode:
+                _write_inplace(f"\r{' ' * 20}\r")
             self._reasoning_started = False
 
     def begin_content(self) -> None:

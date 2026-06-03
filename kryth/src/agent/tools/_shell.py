@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 from agent import ui
@@ -120,8 +121,131 @@ def _spawn_background(command):
     return task_id, out_path
 
 
+def _run_with_live_box(
+    runnable: str,
+    command: str,
+    timeout: int,
+    note: str | None,
+) -> tuple[str, int]:
+    """Run a command and stream its output in a live Rich panel.
+
+    Shows a live scrolling box while the command runs. Ctrl+C sends
+    SIGINT to the process (graceful stop) and returns what was captured.
+    Returns (full_output, exit_code).
+    """
+    import threading
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich.console import Group
+    from agent.ui.console import console as _console
+
+    lines: list[str] = []
+    MAX_DISPLAY = 20           # lines visible in the panel at once
+    lock = threading.Lock()
+    proc = None
+
+    def _render() -> Panel:
+        with lock:
+            visible = lines[-MAX_DISPLAY:] if lines else ["(waiting for output…)"]
+        body = Text("\n".join(visible), overflow="fold", no_wrap=False)
+        title = Text.assemble(
+            ("◈", "bold #E8FF3A"),
+            (" EXEC  ", "bold white"),
+            (command[:60], "#CFCFCF"),
+        )
+        return Panel(body, title=title, title_align="left",
+                     border_style="#333333", padding=(0, 1), expand=False)
+
+    def _reader(stream):
+        for raw in iter(stream.readline, ""):
+            line = raw.rstrip("\n")
+            with lock:
+                lines.append(line)
+
+    try:
+        proc = subprocess.Popen(
+            runnable,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        reader_thread = threading.Thread(target=_reader, args=(proc.stdout,), daemon=True)
+        reader_thread.start()
+
+        with Live(_render(), console=_console, refresh_per_second=8,
+                  auto_refresh=True, transient=False) as live:
+            try:
+                deadline = time.monotonic() + timeout
+                while proc.poll() is None:
+                    if time.monotonic() > deadline:
+                        proc.kill()
+                        with lock:
+                            lines.append(f"[timed out after {timeout}s]")
+                        break
+                    live.update(_render())
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                # Ctrl+C — send SIGINT so the child can clean up
+                try:
+                    proc.send_signal(__import__("signal").SIGINT)
+                except Exception:
+                    proc.kill()
+                with lock:
+                    lines.append("[interrupted by user (Ctrl+C)]")
+                live.update(_render())
+
+        reader_thread.join(timeout=2)
+        exit_code = proc.returncode if proc.returncode is not None else 130
+
+    except Exception as exc:
+        with lock:
+            lines.append(f"[error: {exc}]")
+        exit_code = 1
+
+    full_output = "\n".join(lines)
+    return full_output, exit_code
+
+
 def run_command(command, timeout=15, run_in_background=False):
     command = COMMAND_ALIASES.get(command, command)
+
+    # Auto-detect long-running commands and run them in background
+    if not run_in_background:
+        # Patterns for commands that typically run indefinitely (dev servers, watchers, etc.)
+        long_running_patterns = [
+            r"npm run dev",
+            r"npm start",
+            r"yarn dev",
+            r"yarn start",
+            r"vite",
+            r"webpack.*--watch",
+            r"python -m http\.server",
+            r"flask run",
+            r"uvicorn",
+            r"ng serve",
+            r"next dev",
+            r"nuxt dev",
+            r"parcel",
+            r"react-scripts start",
+            r"ngrok",
+            r"serve",
+            r"nodemon",
+            r"ts-node-dev",
+            r"webpack-dev-server",
+            r"vite dev",
+        ]
+        import re
+        for pattern in long_running_patterns:
+            if re.search(pattern, command, re.IGNORECASE):
+                ui.info(f"Auto-detected long-running command, running in background")
+                run_in_background = True
+                break
 
     if run_in_background:
         task_id, out_path = _spawn_background(command)
@@ -137,23 +261,11 @@ def run_command(command, timeout=15, run_in_background=False):
         runnable, note = _prepare_command(command)
         ui.shell_run(command=command, timeout=bounded_timeout, note=note)
 
-        result = subprocess.run(
-            runnable,
-            shell=True,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=bounded_timeout,
+        # Live streaming box — shows output as it arrives, supports Ctrl+C
+        full_output, exit_code = _run_with_live_box(
+            runnable, command, bounded_timeout, note
         )
 
-        full_output = (result.stdout or "") + (result.stderr or "")
-        exit_code = result.returncode
-
-        # Render a unified command panel: header + smart-summarized
-        # body + exit-code/severity footer. The renderer composes the
-        # whole thing — this tool just hands over the raw output.
         ui.shell_end(
             command=command,
             output=full_output,
@@ -162,8 +274,6 @@ def run_command(command, timeout=15, run_in_background=False):
             note=note,
         )
 
-        # The model still gets the (trimmed) full output as the tool
-        # return value, so it can reason about it on the next turn.
         for_model = trim_head_tail(full_output)
         if exit_code != 0:
             return err(

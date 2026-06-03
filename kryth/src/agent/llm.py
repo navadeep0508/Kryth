@@ -695,6 +695,10 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
     degenerate = False
     saw_content = False
     saw_reasoning = False
+    _reasoning_start: float | None = None
+    # Track open <think> tags in the content stream for models that
+    # don't use a separate reasoning_content field (e.g. Qwen3, DeepSeek-R1).
+    _think_depth = 0
 
     try:
         for chunk in stream:
@@ -706,7 +710,7 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             choice = chunk.choices[0]
             delta = choice.delta
 
-            # Multi-provider reasoning support with fallback chain
+            # --- Separate reasoning field (OpenAI o1, DeepSeek-R1 API, etc.) ---
             reasoning_piece = (
                 getattr(delta, "reasoning_content", None)
                 or getattr(delta, "reasoning", None)
@@ -714,38 +718,68 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
                 or getattr(delta, "reasoning_text", None)
             )
             if reasoning_piece:
-                ui.llm_reasoning_chunk(reasoning_piece)
+                if _reasoning_start is None:
+                    _reasoning_start = time.monotonic()
+                elapsed = time.monotonic() - _reasoning_start
+                ui.llm_reasoning_chunk(reasoning_piece, elapsed=elapsed)
                 reasoning_chunks.append(reasoning_piece)
                 saw_reasoning = True
 
+            # --- Content stream (may contain <think> blocks for some models) ---
             if delta.content:
                 raw_piece = delta.content
 
-                if not raw_piece:
+                # Detect in-content <think> / </think> tags (Qwen3, local models).
+                # Count opens BEFORE closes so a chunk like "text</think>" that exits
+                # the block is handled correctly within the same chunk.
+                low_piece = raw_piece.lower()
+                for tag in ("<think>", "<thinking>"):
+                    _think_depth += low_piece.count(tag)
+                for tag in ("</think>", "</thinking>"):
+                    _think_depth = max(0, _think_depth - low_piece.count(tag))
+
+                if _think_depth > 0:
+                    # Still inside a <think> block — treat as reasoning, not content.
+                    if _reasoning_start is None:
+                        _reasoning_start = time.monotonic()
+                    elapsed = time.monotonic() - _reasoning_start
+                    ui.llm_reasoning_chunk(raw_piece, elapsed=elapsed)
+                    saw_reasoning = True
+                    reasoning_chunks.append(raw_piece)
+                    # Do NOT append to content_chunks — think-block text is
+                    # internal reasoning, not the final answer.
                     continue
 
+                # Real content (outside any think block)
                 if saw_reasoning and not saw_content:
                     ui.llm_reasoning_end()
 
-                # Stream directly - no rebuilding
                 if raw_piece.strip():
                     ui.llm_content_chunk(raw_piece)
                     saw_content = True
 
                 content_chunks.append(raw_piece)
+                _reasoning_start = None
 
-                # Periodic degenerate-tail check.
+            # Periodic degenerate-tail check
+            if delta.content or reasoning_piece:
                 chunks_since_check += 1
-                if chunks_since_check >= _DEGEN_CHECK_EVERY:
-                    chunks_since_check = 0
-                    joined = "".join(content_chunks)
-                    if _is_degenerate_tail(joined):
-                        degenerate = True
-                        try:
-                            stream.close()
-                        except Exception:
-                            pass
-                        break
+            if chunks_since_check >= _DEGEN_CHECK_EVERY:
+                chunks_since_check = 0
+                if _is_degenerate_tail("".join(content_chunks)):
+                    degenerate = True
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                    break
+                if _is_degenerate_tail("".join(reasoning_chunks)):
+                    degenerate = True
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                    break
 
             if getattr(delta, "tool_calls", None):
                 for dc in delta.tool_calls:
