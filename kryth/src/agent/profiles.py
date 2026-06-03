@@ -191,7 +191,7 @@ PROFILES: Dict[str, ProfileSpec] = {
 }
 
 
-DEFAULT_PROFILE: str = "auto"
+DEFAULT_PROFILE: str = "default"
 
 
 def names() -> list[str]:

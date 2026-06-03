@@ -1,20 +1,22 @@
-"""Playwright-based browser automation — fast, reliable, no external deps.
+"""Playwright-based browser automation — KRYTH v2 integration.
 
-Replaces OpenCLI for browser automation. Uses Playwright's native Python
-API instead of wrapping CLI commands. Supports both headless and headed
-browser modes.
+Delegates to the new agent.browser layer for all browser operations.
+Provides backward-compatible API for existing tool calls while leveraging
+the new self-healing selectors, persistent profiles, and human-like behavior.
 
 Install: pip install playwright && playwright install chromium
 """
 
 from __future__ import annotations
 
-import base64
+import logging
 import os
-import tempfile
-import time
 from pathlib import Path
 from typing import Optional
+
+from agent.browser._human import is_human_like
+
+logger = logging.getLogger(__name__)
 
 
 def _err(msg: str) -> str:
@@ -25,96 +27,20 @@ def _ok(msg: str) -> str:
     return msg
 
 
-def _playwright_available() -> bool:
-    try:
-        import playwright.sync_api
-        return True
-    except ImportError:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Global Playwright browser instance (lazy, shared across calls)
-# ---------------------------------------------------------------------------
-
-_playwright = None
-_browser = None
-_page = None
-_page_id = 0
-
-
-def _ensure_page() -> tuple:
-    """Start Playwright and return (browser, page)."""
-    global _playwright, _browser, _page, _page_id
-    if _page is not None:
-        try:
-            # Check if page is still alive
-            _page.title()
-            return _browser, _page
-        except Exception:
-            _page = None
-
-    from playwright.sync_api import sync_playwright
-
-    if _playwright is None:
-        _playwright = sync_playwright().start()
-
-    if _browser is None or not _browser.is_connected():
-        try:
-            _browser = _playwright.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            # Fall back to headless if headed fails
-            _browser = _playwright.chromium.launch(headless=True)
-
-    context = _browser.contexts[0] if _browser.contexts else _browser.new_context(
-        viewport={"width": 1280, "height": 720},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
-    )
-    _page = context.new_page()
-    _page_id += 1
-    return _browser, _page
-
-
-def _get_page():
-    """Get or create a page. Creates a new one if the current is closed."""
-    global _page
-    _, page = _ensure_page()
-    return page
-
-
-def _cleanup():
-    """Clean up browser resources. Called at the end of the session."""
-    global _playwright, _browser, _page
-    try:
-        if _page is not None:
-            _page.close()
-    except Exception:
-        pass
-    try:
-        if _browser is not None:
-            _browser.close()
-    except Exception:
-        pass
-    try:
-        if _playwright is not None:
-            _playwright.stop()
-    except Exception:
-        pass
-    _playwright = None
-    _browser = None
-    _page = None
+def _get_controller():
+    """Lazy-import and return a PageController from the browser module."""
+    from agent.browser.browser_manager import get_page
+    from agent.browser.page_controller import PageController
+    from agent.vision import VisionEngine
+    page = get_page()
+    vision = VisionEngine()
+    return PageController(page, vision_fallback=vision.find_element)
 
 
 def ensure_available() -> str | None:
     """Return an error string if Playwright is not installed, else None."""
-    if not _playwright_available():
+    from agent.browser.browser_manager import BrowserManager
+    if not BrowserManager.is_available():
         return (
             "Playwright is not installed. Run: pip install playwright && "
             "playwright install chromium"
@@ -129,66 +55,64 @@ def ensure_available() -> str | None:
 
 def open_url(url: str) -> str:
     """Navigate to a URL."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        # Wait for page to settle
-        try:
-            page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            pass
-        return _ok(f"navigated to {url}")
+        controller = _get_controller()
+        return controller.navigate(url)
     except Exception as e:
         return _err(f"open failed: {e}")
 
 
 def get_url() -> str:
     """Get the current page URL."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        return _get_page().url
+        controller = _get_controller()
+        return controller.url()
     except Exception as e:
         return _err(f"get_url failed: {e}")
 
 
 def get_title() -> str:
     """Get the current page title."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        return _get_page().title()
+        controller = _get_controller()
+        return controller.title()
     except Exception as e:
         return _err(f"get_title failed: {e}")
 
 
 def get_html() -> str:
     """Get the full page HTML."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        return _get_page().content()
+        controller = _get_controller()
+        return controller.extract_html()
     except Exception as e:
         return _err(f"get_html failed: {e}")
 
 
 def state() -> str:
     """Get full browser state."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
+        controller = _get_controller()
+        s = controller.get_state()
         return (
-            f"URL: {page.url}\n"
-            f"Title: {page.title()}\n"
-            f"Viewport: {page.viewport_size}\n"
+            f"URL: {s.get('url', '')}\n"
+            f"Title: {s.get('title', '')}\n"
+            f"Viewport: {s.get('viewport', {})}\n"
         )
     except Exception as e:
         return _err(f"state failed: {e}")
@@ -196,12 +120,12 @@ def state() -> str:
 
 def back() -> str:
     """Navigate back."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        _get_page().go_back()
-        return _ok("navigated back")
+        controller = _get_controller()
+        return controller.back()
     except Exception as e:
         return _err(f"back failed: {e}")
 
@@ -212,112 +136,85 @@ def back() -> str:
 
 
 def click(selector: str) -> str:
-    """Click an element by CSS selector."""
-    err = ensure_available()
-    if err:
-        return err
+    """Click an element by selector (self-healing chain)."""
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        el = page.wait_for_selector(selector, timeout=5000)
-        if not el:
-            return _err(f"CSS selector '{selector}' matched 0 elements")
-        el.click()
-        return _ok(f"clicked {selector}")
+        controller = _get_controller()
+        return controller.click(selector)
     except Exception as e:
         return _err(f"click failed: {e}")
 
 
 def type_text(selector: str, text: str) -> str:
-    """Type text into an element by CSS selector."""
-    err = ensure_available()
-    if err:
-        return err
+    """Type text into an element by selector."""
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        el = page.wait_for_selector(selector, timeout=5000)
-        if not el:
-            return _err(f"CSS selector '{selector}' matched 0 elements")
-        el.type(text)
-        return _ok(f"typed into {selector}")
+        controller = _get_controller()
+        return controller.type_text(selector, text)
     except Exception as e:
         return _err(f"type failed: {e}")
 
 
 def fill(selector: str, value: str) -> str:
-    """Fill a form field by CSS selector."""
-    err = ensure_available()
-    if err:
-        return err
+    """Fill a form field by selector."""
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        el = page.wait_for_selector(selector, timeout=5000)
-        if not el:
-            return _err(f"CSS selector '{selector}' matched 0 elements")
-        el.fill(value)
-        return _ok(f"filled {selector}")
+        controller = _get_controller()
+        return controller.fill(selector, value)
     except Exception as e:
         return _err(f"fill failed: {e}")
 
 
 def select(selector: str, value: str) -> str:
     """Select an option from a dropdown."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        el = page.wait_for_selector(selector, timeout=5000)
-        if not el:
-            return _err(f"CSS selector '{selector}' matched 0 elements")
-        el.select_option(value)
-        return _ok(f"selected {value} in {selector}")
+        controller = _get_controller()
+        return controller.select_option(selector, value)
     except Exception as e:
         return _err(f"select failed: {e}")
 
 
 def keys(combo: str) -> str:
     """Send keyboard shortcut."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        page.keyboard.press(combo)
-        return _ok(f"sent {combo}")
+        controller = _get_controller()
+        return controller.press_key(combo)
     except Exception as e:
         return _err(f"keys failed: {e}")
 
 
 def scroll(direction: str = "down") -> str:
     """Scroll the page."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        dx, dy = 0, 0
-        if direction == "down":
-            dy = 800
-        elif direction == "up":
-            dy = -800
-        elif direction == "right":
-            dx = 800
-        elif direction == "left":
-            dx = -800
-        page.evaluate(f"window.scrollBy({dx}, {dy})")
-        return _ok(f"scrolled {direction}")
+        controller = _get_controller()
+        return controller.scroll(direction)
     except Exception as e:
         return _err(f"scroll failed: {e}")
 
 
 def eval_js(expression: str) -> str:
     """Run JavaScript in the page."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        result = _get_page().evaluate(expression)
-        return str(result)
+        controller = _get_controller()
+        return controller.evaluate(expression)
     except Exception as e:
         return _err(f"eval_js failed: {e}")
 
@@ -328,48 +225,26 @@ def eval_js(expression: str) -> str:
 
 
 def extract(selector: str = "") -> str:
-    """Extract text from elements matching a CSS selector."""
-    err = ensure_available()
-    if err:
-        return err
+    """Extract text from elements matching a selector."""
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        if not selector or selector in ("body", "*"):
-            # Return entire page text
-            text = page.inner_text("body") if page.query_selector("body") else page.content()
-            return text[:10000]  # cap at 10k chars
-        elements = page.query_selector_all(selector)
-        if not elements:
-            return "[]"
-        texts = [el.inner_text().strip() for el in elements if el]
-        import json
-        return json.dumps([t for t in texts if t])
+        controller = _get_controller()
+        return controller.extract_text(selector)
     except Exception as e:
         return _err(f"extract failed: {e}")
 
 
 def find(selector: str) -> str:
-    """Find elements by CSS selector and return their details."""
-    err = ensure_available()
-    if err:
-        return err
+    """Find elements by selector and return their details."""
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        elements = page.query_selector_all(selector)
-        if not elements:
-            return "[]"
-        results = []
-        for el in elements[:20]:
-            tag = el.evaluate("el => el.tagName.toLowerCase()")
-            text = el.inner_text().strip()[:80]
-            attrs = el.evaluate("""el => {
-                const a = {};
-                for (const attr of el.attributes) a[attr.name] = attr.value;
-                return a;
-            }""")
-            results.append({"tag": tag, "text": text, "attrs": attrs})
-        import json
-        return json.dumps(results, ensure_ascii=False)
+        controller = _get_controller()
+        text = controller.extract_text(selector)
+        return text or "[]"
     except Exception as e:
         return _err(f"find failed: {e}")
 
@@ -381,13 +256,12 @@ def find(selector: str) -> str:
 
 def screenshot() -> str:
     """Take a screenshot. Returns the file path."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        tmp = Path(tempfile.mkdtemp()) / "screenshot.png"
-        _get_page().screenshot(path=str(tmp), full_page=False)
-        return str(tmp)
+        controller = _get_controller()
+        return controller.screenshot(encoding="binary")
     except Exception as e:
         return _err(f"screenshot failed: {e}")
 
@@ -399,44 +273,33 @@ def screenshot() -> str:
 
 def tab_list() -> str:
     """List all open pages/tabs."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        global _playwright, _browser
-        _, _ = _ensure_page()
-        if _browser is None:
+        from agent.browser.browser_manager import get_browser
+        manager = get_browser()
+        tabs = manager.list_tabs()
+        if not tabs:
             return "[]"
-        contexts = _browser.contexts
-        if not contexts:
-            return "[]"
-        results = []
-        for ctx in contexts:
-            for i, p in enumerate(ctx.pages):
-                try:
-                    results.append(f"[{i}] {p.title()} — {p.url}")
-                except Exception:
-                    results.append(f"[{i}] (closed)")
-        return "\n".join(results) if results else "[]"
+        return "\n".join(
+            f"[{t['index']}] {t['title']} — {t['url']}"
+            for t in tabs
+        )
     except Exception as e:
         return _err(f"tab_list failed: {e}")
 
 
 def tab_new(url: str = "") -> str:
     """Open a new tab. Optionally navigate to a URL."""
-    global _page
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        _, page = _ensure_page()
-        ctx = _browser.contexts[0] if _browser.contexts else None
-        if ctx is None:
-            return _err("no browser context available")
-        new_page = ctx.new_page()
-        _page = new_page
+        from agent.browser.browser_manager import get_browser
+        manager = get_browser()
+        manager.new_tab(url)
         if url:
-            new_page.goto(url, wait_until="domcontentloaded", timeout=30000)
             return _ok(f"opened new tab with {url}")
         return _ok("opened new tab")
     except Exception as e:
@@ -444,38 +307,19 @@ def tab_new(url: str = "") -> str:
 
 
 def tab_select(target_id: str) -> str:
-    """Switch to a specific tab by its index (as shown in tab_list)."""
-    global _page
-    err = ensure_available()
-    if err:
-        return err
+    """Switch to a specific tab by its index or URL/title substring."""
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        _, _ = _ensure_page()
-        if _browser is None:
-            return _err("no browser available")
-        contexts = _browser.contexts
-        if not contexts:
-            return _err("no browser contexts")
-        # Try to match by index
+        from agent.browser.browser_manager import get_browser
+        manager = get_browser()
         if target_id.isdigit():
-            idx = int(target_id)
-            all_pages = []
-            for ctx in contexts:
-                all_pages.extend(ctx.pages)
-            if 0 <= idx < len(all_pages):
-                _page = all_pages[idx]
-                _page.bring_to_front()
-                return _ok(f"switched to tab [{idx}]")
-        # Try to match by URL or title substring
-        for ctx in contexts:
-            for p in ctx.pages:
-                try:
-                    if target_id in p.url or target_id in p.title():
-                        _page = p
-                        _page.bring_to_front()
-                        return _ok(f"switched to tab matching '{target_id}'")
-                except Exception:
-                    continue
+            success = manager.switch_tab(int(target_id))
+        else:
+            success = manager.switch_tab(target_id)
+        if success:
+            return _ok(f"switched to tab matching '{target_id}'")
         return _err(f"tab '{target_id}' not found")
     except Exception as e:
         return _err(f"tab_select failed: {e}")
@@ -488,18 +332,15 @@ def tab_select(target_id: str) -> str:
 
 def download(url: str, output_dir: str = ".") -> str:
     """Download content from a URL into a local directory."""
-    err = ensure_available()
-    if err:
-        return err
+    err_check = ensure_available()
+    if err_check:
+        return err_check
     try:
-        page = _get_page()
-        os.makedirs(output_dir, exist_ok=True)
-        with page.expect_download(timeout=30000) as download_info:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        dl = download_info.value
-        suggested = dl.suggested_filename
-        dest = os.path.join(output_dir, suggested)
-        dl.save_as(dest)
-        return _ok(f"downloaded to {dest}")
+        from agent.browser.downloads import DownloadHandler
+        from agent.browser.browser_manager import get_page
+        page = get_page()
+        handler = DownloadHandler(page, download_dir=output_dir)
+        result = handler.download_url(url)
+        return _ok(f"downloaded to {result}")
     except Exception as e:
         return _err(f"download failed: {e}")
