@@ -83,52 +83,58 @@ class ProjectSpec:
 # LLM agent planner — single call that decides everything
 # ---------------------------------------------------------------------------
 
-_PLANNER_SYSTEM = """You are a build planner for an AI coding agent.
+_PLANNER_SYSTEM = """You are a parallel build planner for an AI coding agent.
 
-Given the user request and current project context, decide whether the task needs
-MULTIPLE INDEPENDENT agents working in parallel, and if so — exactly which ones.
+Given a user request, decide if it needs MULTIPLE INDEPENDENT parallel agents.
 
-Return STRICT JSON only (no markdown fence, no prose):
+Return STRICT JSON only — no markdown, no prose:
 
 {
-  "needs_parallel": false,
-  "reason": "one sentence explanation",
+  "needs_parallel": true,
+  "reason": "one sentence",
   "project_name": "my-app",
   "description": "one-line description",
-  "tech_stack": {"frontend": "SASS+JS", "backend": "Node"},
-  "agents": [],
-  "integration_notes": ""
+  "tech_stack": {"frontend": "React+Vite", "backend": "FastAPI"},
+  "agents": [
+    {
+      "id": "backend",
+      "name": "Backend API",
+      "description": "Build complete backend: Express/FastAPI with all routes, auth, DB models, middleware. Include package.json/requirements.txt. No placeholders.",
+      "depends_on": [],
+      "files": ["backend/"]
+    },
+    {
+      "id": "frontend",
+      "name": "Frontend UI",
+      "description": "Build complete frontend: React/Next/Vue with all pages, components, state, API calls. Include package.json. No placeholders.",
+      "depends_on": [],
+      "files": ["frontend/"]
+    }
+  ],
+  "integration_notes": "Frontend calls backend at http://localhost:4000"
 }
 
-When needs_parallel is true, populate agents:
-[
-  {
-    "id": "structure",
-    "name": "HTML Structure",
-    "description": "Complete self-contained task — include all sections, semantic HTML, real content",
-    "depends_on": [],
-    "files": ["index.html"]
-  }
-]
+DECISION RULES:
+needs_parallel = true (MANDATORY) when the request involves ANY of:
+  - Full-stack app (frontend + backend)
+  - Website/web app/SaaS/dashboard/platform
+  - Multiple independent components (e.g. API + UI + DB schema)
+  - Words: website, webapp, app, platform, saas, fullstack, full-stack, react, vue, next, angular, dashboard, landing, portfolio, blog, ecommerce, shop, marketplace
 
-RULES — read carefully:
-- needs_parallel = false for: bug fixes, refactoring, explanations, code review,
-  adding a single feature to existing code, small scripts.
-- needs_parallel = true for ANY of these:
-  * Building a website, landing page, dashboard, or web app (split into:
-    HTML structure agent + SCSS/styles agent + JS/interactivity agent)
-  * Full-stack apps with separate frontend and backend
-  * Projects with 3+ independent file groups that can be written simultaneously
-  * Any request with words: website, app, dashboard, landing, saas, sass, scss,
-    react, vue, next, api, fullstack, full-stack, modern, complete, all working
-- For website/SASS/CSS builds ALWAYS use 3 agents:
-  1. "html" agent → writes all HTML files with real content and structure
-  2. "styles" agent → writes all SCSS/CSS files with real design, animations, responsive
-  3. "scripts" agent → writes all JS files with real interactivity
-- Each agent owns a completely separate file type — they never conflict.
-- Use the MINIMUM agents needed. For a simple website: 3 (html, styles, scripts).
-- Do NOT include an integration agent — integration is handled separately.
-- agents must be [] when needs_parallel is false.
+needs_parallel = false ONLY for:
+  - Bug fixes ("fix the login bug")
+  - Single-file scripts ("write a python script to sort files")
+  - Explanations or analysis ("explain how X works")
+  - Refactoring existing code
+
+AGENT DESIGN:
+- Each agent owns a COMPLETELY SEPARATE part of the codebase
+- 2 agents for simple full-stack: backend + frontend
+- 3 agents for complex: backend + frontend + infrastructure (docker/nginx/CI)
+- Each agent writes COMPLETE, WORKING code — no TODOs, no stubs
+- If agents share interfaces, put the contract in "integration_notes"
+
+agents[] must be [] when needs_parallel is false.
 """
 
 
@@ -184,30 +190,36 @@ def _llm_plan_agents(user_input: str, project_context: str = "") -> Optional[Pro
 # These opening words almost always signal single-agent work.
 _SINGLE_AGENT_STARTERS = re.compile(
     r"^(fix|debug|explain|what|why|how|show|list|print|check|review|"
-    r"refactor|rename|move|delete|remove|update|change|add|help|tell|"
-    r"can you|could you|please|describe|summarize|read|open|run|test)\b",
+    r"refactor|rename|move|delete|remove|help|tell|"
+    r"can you|could you|please|describe|summarize|read|open)\b",
     re.I,
 )
 
-# Keywords that always signal a multi-file build regardless of length
-_BUILD_KEYWORDS = re.compile(
-    r"\b(website|webpage|web\s*app|landing\s*page|dashboard|saas|sass|scss|"
-    r"react|vue|next\.?js|svelte|fullstack|full.stack|frontend|backend|"
-    r"portfolio|blog|app|application|modern|complete)\b",
+# Any of these → always send to LLM parallel planner regardless of word count
+_PARALLEL_KEYWORDS = re.compile(
+    r"\b(website|webpage|web\s*app|webapp|landing\s*page|dashboard|saas|"
+    r"platform|marketplace|app|application|fullstack|full.stack|"
+    r"react|vue|next\.?js|svelte|angular|nuxt|"
+    r"frontend|backend|api\s+server|rest\s+api|graphql|"
+    r"portfolio|blog|ecommerce|e.commerce|shop|store|crm|cms|"
+    r"sass|scss|tailwind|bootstrap|"
+    r"modern|complete|production|working)\b",
     re.I,
 )
 
 
 def _quick_reject(user_input: str) -> bool:
-    """Return True when we can rule out parallel without an LLM call."""
+    """Return True only for obvious single-agent work."""
     text = user_input.strip()
     if not text or text.startswith("/"):
         return True
-    # Build keywords always go to the LLM planner regardless of length
-    if _BUILD_KEYWORDS.search(text):
+    # Explicit build/app keywords → always evaluate for parallel
+    if _PARALLEL_KEYWORDS.search(text):
         return False
-    if len(text.split()) < 8:
-        return True  # very short → almost certainly not a multi-component build
+    # Short prompts without build intent → reject
+    if len(text.split()) < 6:
+        return True
+    # Explicit single-agent starter verbs
     if _SINGLE_AGENT_STARTERS.match(text):
         return True
     return False

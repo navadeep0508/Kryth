@@ -119,6 +119,32 @@ For more information, visit: https://kryth.vercel.app/
     else:
         _no_key_at_startup = False
 
+    # 5. Prompt for NVIDIA API key on first run (used for vision).
+    if not os.environ.get("NVIDIA_API_KEY", "").strip():
+        try:
+            from kryth.config import _load, _save, CONFIG_FILE
+            cfg = _load()
+            if not cfg.get("nvidia_api_key", "").strip():
+                print(
+                    "\n  KRYTH Vision uses NVIDIA AI (stepfun-ai/step-3.7-flash).\n"
+                    "  Get a free API key at: https://build.nvidia.com\n"
+                    "  NVIDIA_API_KEY (press Enter to skip): ",
+                    end="", flush=True,
+                )
+                try:
+                    nvidia_key = input().strip()
+                except (EOFError, KeyboardInterrupt):
+                    nvidia_key = ""
+                if nvidia_key:
+                    cfg["nvidia_api_key"] = nvidia_key
+                    _save(cfg)
+                    os.environ["NVIDIA_API_KEY"] = nvidia_key
+                    print("  NVIDIA API key saved.\n")
+                else:
+                    print("  Skipped — vision fallback will be disabled.\n")
+        except Exception:
+            pass
+
     # Now safe to import the agent package.
     try:
         import agent  # noqa: F401

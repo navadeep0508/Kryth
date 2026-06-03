@@ -804,8 +804,6 @@ def run_agent(user_input, extra_system: str | None = None):
                 session.append({"role": "system", "content": compose_skills(auto)})
 
     # --- Parallel multi-agent build ---
-    # run_parallel_build asks the LLM whether parallel agents are needed and
-    # which ones. Returns None when the normal single-agent loop should run.
     try:
         from agent.parallel_builder import run_parallel_build
         if session.mode != "plan":
@@ -816,7 +814,6 @@ def run_agent(user_input, extra_system: str | None = None):
                 max_turns_per_agent=60,
             )
             if parallel_result:
-                # Parallel build succeeded — persist result and return early
                 session.append({"role": "user", "content": user_input})
                 session.append({"role": "assistant", "content": parallel_result})
                 _result = LoopResult(status="done", content=parallel_result, turns_used=0)
@@ -838,8 +835,8 @@ def run_agent(user_input, extra_system: str | None = None):
                     tokens_out=session.cumulative_out_tokens,
                 )
                 return _result
-    except Exception:
-        pass  # Fall through to normal single-agent loop
+    except Exception as _pe:
+        ui.muted(f"(parallel builder skipped: {_pe})")
 
     plan_dict: dict | None = None
     plan_prose: str = ""

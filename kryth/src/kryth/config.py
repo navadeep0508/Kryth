@@ -33,6 +33,7 @@ KEY_TO_ENV: dict[str, str] = {
     "summarizer_model": "AICODER_SUMMARIZER_MODEL",
     "base_url":         "AICODER_BASE_URL",
     "api_key":          "OPENAI_API_KEY",
+    "nvidia_api_key":   "NVIDIA_API_KEY",
 }
 
 LEGACY_ENV: dict[str, str] = {
@@ -57,6 +58,7 @@ DEFAULTS: dict[str, str] = {
     "summarizer_model": "gpt-4o-mini",
     "base_url":         "https://api.openai.com/v1",
     "api_key":          "",
+    "nvidia_api_key":   "",
 }
 
 # Human-readable labels shown in the TUI
@@ -66,10 +68,11 @@ KEY_LABELS: dict[str, str] = {
     "summarizer_model": "Summarizer model",
     "base_url":         "Base URL",
     "api_key":          "API key",
+    "nvidia_api_key":   "NVIDIA API key (vision)",
 }
 
 # Which keys are sensitive (masked in display)
-SENSITIVE = {"api_key"}
+SENSITIVE = {"api_key", "nvidia_api_key"}
 
 
 def _load() -> dict[str, str]:
