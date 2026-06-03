@@ -35,7 +35,7 @@ from agent.tools._results import err, is_error
 
 # Effectively unlimited - set to 100000 by default (can be overridden via env var)
 MAX_TOOL_TURNS = int(getenv("KRYTH_MAX_TOOL_TURNS", "100000"))
-COMPACT_AT_TOKENS = 80000
+COMPACT_AT_TOKENS = 40000   # compress aggressively — prevents token overflow
 KEEP_RECENT_AFTER_COMPACT = 12
 
 
@@ -303,6 +303,18 @@ def dispatch_tool_call(session, call):
         return
 
     # ---- Execute -------------------------------------------------
+    # Check hard limits (max searches, max pages) before running
+    try:
+        from agent.context_manager import check_limit, compress_result
+        limit_msg = check_limit(tool_name)
+        if limit_msg:
+            ui.tool_start(tool_name, args)
+            ui.warn(limit_msg)
+            _append_tool_msg(session, call_id, tool_name, limit_msg)
+            return
+    except ImportError:
+        compress_result = None
+
     ui.tool_start(tool_name, args)
     result = execute_tool(tool_name, args)
     session.tool_call_count += 1
@@ -312,13 +324,30 @@ def dispatch_tool_call(session, call):
     if post:
         result = f"{result}\n[PostToolUse hook]\n{post}"
 
-    # Tools that render their own visual representation (write_file
-    # paints a preview panel, run_command paints a command panel, etc.)
-    # skip the generic ⎿ tee — it would just duplicate what's already
-    # been shown. The model still receives the full result string.
+    # Compress large tool results before storing in context
+    # (prevents HTML pages and search results from bloating the token count)
+    try:
+        if compress_result is not None:
+            result_str = compress_result(tool_name, str(result))
+        else:
+            result_str = str(result)
+    except Exception:
+        result_str = str(result)
+
+    # Auto-compress browser results every N tool calls
+    try:
+        from agent.context_manager import compress_messages, COMPRESS_EVERY_N
+        if session.tool_call_count % COMPRESS_EVERY_N == 0:
+            session.messages, dropped = compress_messages(session.messages)
+            if dropped > 0:
+                ui.muted(f"(context: compressed {dropped:,} chars of old browser results)")
+    except Exception:
+        pass
+
+    # Tools that render their own visual representation skip the generic tee
     if tool_name not in SELF_RENDERED_TOOLS:
-        ui.tool_result(str(result), error=has_error(result))
-    _append_tool_msg(session, call_id, tool_name, str(result))
+        ui.tool_result(result_str, error=has_error(result_str))
+    _append_tool_msg(session, call_id, tool_name, result_str)
 
 
 _HIGH_SIGNAL_NEEDLES = (

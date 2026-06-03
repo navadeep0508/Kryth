@@ -62,6 +62,8 @@ from agent.tools._opencli import (
     browser_get_html,
     browser_get_url,
     browser_state,
+    save_research_finding,
+    get_research_report,
 )
 from agent.tools._todos import todo_write, todo_read
 from agent.tools._plan import exit_plan_mode
@@ -132,6 +134,8 @@ TOOLS = {
     "browser_get_html": browser_get_html,
     "browser_get_url": browser_get_url,
     "browser_state": browser_state,
+    "save_research_finding": save_research_finding,
+    "get_research_report": get_research_report,
 }
 
 
@@ -159,6 +163,7 @@ READ_ONLY_TOOLS = {
     "browser_get_url",
     "browser_state",
     "browser_screenshot",
+    "get_research_report",
 }
 
 

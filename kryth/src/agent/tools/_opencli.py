@@ -496,6 +496,7 @@ def browser_get_url(session: str = "default") -> str:
     return err("BROWSER_UNAVAILABLE", "No browser provider available.")
 
 
+
 def browser_state(session: str = "default") -> str:
     pw, oc = _pw_or_oc(session)
     if pw:
@@ -506,3 +507,39 @@ def browser_state(session: str = "default") -> str:
         except RuntimeError as e:
             return err("OPENCLI_UNAVAILABLE", str(e))
     return err("BROWSER_UNAVAILABLE", "No browser provider available.")
+
+
+# ---------------------------------------------------------------------------
+# Research memory tools — prevent context overflow during web research
+# ---------------------------------------------------------------------------
+
+def save_research_finding(url: str, title: str, summary: str, facts: str = "") -> str:
+    """Save a research finding to disk so it won't bloat the context.
+
+    After extracting key information from a page, call this to persist it,
+    then discard the raw page content. The agent can later call
+    get_research_report() to read all accumulated findings.
+    """
+    try:
+        from agent.memory.research_memory import save_finding
+        facts_list = [f.strip() for f in facts.split("\n") if f.strip()] if facts else []
+        save_finding(url, title, summary, facts_list)
+        return f"Saved finding: '{title}' ({len(summary)} chars, {len(facts_list)} facts)"
+    except Exception as e:
+        return err("EXEC_FAILED", f"save_research_finding failed: {e}")
+
+
+def get_research_report() -> str:
+    """Read all accumulated research findings saved to disk.
+
+    Use this instead of re-searching. Returns a structured report of
+    everything saved via save_research_finding().
+    """
+    try:
+        from agent.memory.research_memory import get_report, get_findings_summary, visited_count
+        n = visited_count()
+        summary = get_findings_summary()
+        report = get_report()
+        return f"Research so far ({n} pages visited):\n\n{summary}\n\n---\nFull report:\n{report}"
+    except Exception as e:
+        return err("EXEC_FAILED", f"get_research_report failed: {e}")

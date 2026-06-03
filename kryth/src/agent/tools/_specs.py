@@ -1392,4 +1392,52 @@ TOOL_SPECS = [
             },
         },
     },
+    # ------------------------------------------------------------------
+    # Research memory tools — prevent context overflow
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "save_research_finding",
+            "description": (
+                "Save a research finding to disk so it never bloats the context. "
+                "ALWAYS call this after extracting useful information from a webpage. "
+                "Pass a short summary (200-500 chars) and key facts. "
+                "Then discard the raw page content — do NOT keep it in the conversation. "
+                "Later use get_research_report() to read all accumulated findings."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Source URL."},
+                    "title": {"type": "string", "description": "Page or article title."},
+                    "summary": {
+                        "type": "string",
+                        "description": "200-500 char summary of the key information found.",
+                    },
+                    "facts": {
+                        "type": "string",
+                        "description": "Newline-separated list of key facts extracted.",
+                    },
+                },
+                "required": ["url", "title", "summary"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_research_report",
+            "description": (
+                "Read all research findings accumulated so far (saved via save_research_finding). "
+                "Call this instead of re-searching when you need to synthesize results. "
+                "Returns a structured summary of all visited pages and extracted facts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
