@@ -62,8 +62,20 @@ _client: OpenAI | None = None
 
 def _get_client() -> OpenAI:
     """Return the shared client, (re)creating it if the key or base_url
-    changed since the last call (e.g. after /config set api_key ...)."""
+    changed since the last call (e.g. after /config set api_key ...).
+
+    When model_config is available, delegates to the router for the
+    "main" role. Falls back to the original env-var path if not.
+    """
     global _client, BASE_URL, MAIN_MODEL, PLANNER_MODEL, SUMMARIZER_MODEL
+
+    # Try model_config router first (non-blocking — fails silently)
+    try:
+        from agent.model_config.router import get_client as _mc_get_client
+        return _mc_get_client("main")
+    except Exception:
+        pass
+
     current_key = os.getenv("OPENAI_API_KEY", "").strip() or "not-configured"
     current_url = getenv("KRYTH_BASE_URL", BASE_URL)
     # Refresh module-level model names in case /config changed them
@@ -630,6 +642,18 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
         )
     selected_model = pick_main_model(routing_hints)
 
+    # Override client/model from model_config if available
+    _stream_client = client
+    try:
+        from agent.model_config.router import get_llm as _mc_get_llm
+        _stream_mc_client, _stream_mc_model = _mc_get_llm("main")
+        _stream_client = _stream_mc_client
+        # Only override model if model_config has a non-default value
+        if _stream_mc_model and _stream_mc_model != selected_model:
+            selected_model = _stream_mc_model
+    except Exception:
+        pass
+
     request_messages = _sanitize_messages(messages)
     request_tools = tools
     if tools and _tool_mode() == "text":
@@ -1023,11 +1047,20 @@ def ask_planner(user_input):
     can still display it as a hint — degrades gracefully when the
     planner ignores the JSON instruction.
     """
+    # Use model_config router for planner role if available
+    _planner_client = client
+    _planner_model = PLANNER_MODEL
+    try:
+        from agent.model_config.router import get_llm as _mc_get_llm
+        _planner_client, _planner_model = _mc_get_llm("planner")
+    except Exception:
+        pass
+
     try:
         response = _retry(
             "ask_planner",
-            client.chat.completions.create,
-            model=PLANNER_MODEL,
+            _planner_client.chat.completions.create,
+            model=_planner_model,
             messages=[
                 {"role": "system", "content": _PLANNER_SYSTEM},
                 {"role": "user", "content": user_input},
@@ -1183,7 +1216,16 @@ def diagnose_error(
     return (getattr(msg, "content", None) or "").strip()
 
 
-def summarize(messages_to_compress: list) -> str:
+def summarize(messages_to_compress: list) -> str:  # noqa: C901
+    # Use model_config router for summary role if available
+    _sum_client = client
+    _sum_model = SUMMARIZER_MODEL
+    try:
+        from agent.model_config.router import get_llm as _mc_get_llm
+        _sum_client, _sum_model = _mc_get_llm("summary")
+    except Exception:
+        pass
+
     rendered = []
     for m in messages_to_compress:
         role = m.get("role", "?")
@@ -1201,8 +1243,8 @@ def summarize(messages_to_compress: list) -> str:
     try:
         response = _retry(
             "summarize",
-            client.chat.completions.create,
-            model=SUMMARIZER_MODEL,
+            _sum_client.chat.completions.create,
+            model=_sum_model,
             messages=[
                 {
                     "role": "system",

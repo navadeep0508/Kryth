@@ -24,12 +24,33 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from agent.browser.selectors import SelectorResult
-
 logger = logging.getLogger(__name__)
+
+
+class SelectorResult:
+    """Minimal compatibility shim for VisionResult / selector result types."""
+    element: object = None
+    strategy: str = ""
+    confidence: float = 0.0
+    error: str = ""
 
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_VISION_MODEL = "stepfun-ai/step-3.7-flash"
+
+
+def _get_vision_model_and_key() -> tuple[str, str]:
+    """Return (model_name, api_key) for the vision role.
+
+    Uses model_config router when available; falls back to NVIDIA env vars.
+    """
+    try:
+        from agent.model_config.router import get_llm
+        client, model = get_llm("vision")
+        # Extract api_key from client for raw HTTP call
+        api_key = getattr(client, "api_key", "") or os.environ.get("NVIDIA_API_KEY", "")
+        return model, api_key
+    except Exception:
+        return NVIDIA_VISION_MODEL, os.environ.get("NVIDIA_API_KEY", "")
 
 IMAGE_MIME_TYPES = {
     ".png": "image/png",
@@ -53,11 +74,19 @@ class VisionResult:
 
 
 def _get_nvidia_key() -> str:
-    """Return NVIDIA_API_KEY from env or config."""
+    """Return NVIDIA_API_KEY from model_config, env, or legacy config."""
+    # Try model_config vision role first
+    try:
+        _, key = _get_vision_model_and_key()
+        if key and key not in ("not-configured", "not-set"):
+            return key
+    except Exception:
+        pass
+    # Direct env var
     key = os.environ.get("NVIDIA_API_KEY", "").strip()
     if key and key != "not-configured":
         return key
-    # Also check config file
+    # Legacy config file
     try:
         from kryth.config import _load
         cfg = _load()

@@ -64,6 +64,7 @@ from agent.tools._opencli import (
     browser_state,
     save_research_finding,
     get_research_report,
+    browser_use_task,
 )
 from agent.tools._todos import todo_write, todo_read
 from agent.tools._plan import exit_plan_mode
@@ -136,6 +137,7 @@ TOOLS = {
     "browser_state": browser_state,
     "save_research_finding": save_research_finding,
     "get_research_report": get_research_report,
+    "browser_use_task": browser_use_task,
 }
 
 

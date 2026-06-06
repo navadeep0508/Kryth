@@ -1,0 +1,10 @@
+# ~/.kryth/config.yaml — Unified mode (beginner-friendly)
+# One model handles everything. Simplest setup.
+
+mode: unified
+
+provider: openrouter
+api_key: ${OPENROUTER_API_KEY}
+base_url: https://openrouter.ai/api/v1
+
+model: openai/gpt-4o

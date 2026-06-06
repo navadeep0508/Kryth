@@ -74,6 +74,13 @@ For more information, visit: https://kryth.vercel.app/
         help="Show version information and exit"
     )
 
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        default=False,
+        help="Run model health check for all configured roles and exit",
+    )
+
     # Parse known args to allow passing through to REPL
     args, remaining = parser.parse_known_args()
 
@@ -156,6 +163,23 @@ For more information, visit: https://kryth.vercel.app/
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Initialize model_config system (loads ~/.kryth/config.yaml if present)
+    try:
+        from agent.model_config.loader import load_config
+        load_config()
+    except Exception:
+        pass  # Fails silently — env-var fallback takes over
+
+    # --validate flag: run startup health check and exit
+    validate = getattr(args, "validate", False) or os.environ.get("KRYTH_VALIDATE_MODELS", "").lower() in ("1", "true")
+    if validate:
+        try:
+            from agent.model_config.validator import validate_and_report
+            validate_and_report(verbose=True)
+        except Exception as e:
+            print(f"  Validation failed: {e}", file=sys.stderr)
+        return  # Exit after validation
 
     # Delegate to the bundled REPL loop.
     from kryth._repl_main import main as _repl_main

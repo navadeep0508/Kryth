@@ -1,4 +1,8 @@
-"""Browser console error checker using Playwright."""
+"""Browser console error checker using browser_agent (browser-use).
+
+Uses the same BrowserSession pattern as run_nvidia_agent.py, but headless,
+dispatched through the shared browser worker event loop.
+"""
 
 from __future__ import annotations
 
@@ -14,55 +18,73 @@ def check_browser_errors(url: str, wait_seconds: int = 5) -> str:
     wait_seconds:
         How long to wait for the page to load and scripts to run (default 5).
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return (
-            "[ERROR] Playwright is not installed. "
-            "Run: pip install 'kryth[bridge]' && playwright install chromium"
-        )
+    import asyncio
+    from agent.providers.browser_use_provider import ensure_available, _run, _ensure_path
+
+    e = ensure_available()
+    if e:
+        return e
+
+    _ensure_path()
 
     errors: list[str] = []
     warnings: list[str] = []
-    network_errors: list[str] = []
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+    async def _check():
+        from browser_agent import BrowserSession
 
-            def on_console(msg):
-                t = msg.type
-                text = msg.text
-                if t == "error":
-                    errors.append(text)
-                elif t == "warning":
-                    warnings.append(text)
+        # Headless session, isolated from the persistent browser session
+        browser = BrowserSession(headless=True)
+        try:
+            await browser.start()
+            page = await browser.get_current_page()
+            if page is None:
+                await browser.new_page()
+                page = await browser.get_current_page()
+            if page is None:
+                return "[ERROR] Could not create browser page"
 
-            def on_request_failed(req):
-                network_errors.append(
-                    f"{req.method} {req.url} — {req.failure}"
-                )
+            # Attach console capture before navigating
+            await page.evaluate(
+                "() => {"
+                "  window.__kryth_errors = [];"
+                "  window.__kryth_warnings = [];"
+                "  const _e = console.error;"
+                "  console.error = (...a) => { window.__kryth_errors.push(a.join(' ')); _e(...a); };"
+                "  const _w = console.warn;"
+                "  console.warn = (...a) => { window.__kryth_warnings.push(a.join(' ')); _w(...a); };"
+                "}"
+            )
 
-            page.on("console", on_console)
-            page.on("requestfailed", on_request_failed)
-
-            try:
-                page.goto(url, timeout=max(wait_seconds, 10) * 1000, wait_until="domcontentloaded")
-            except Exception as e:
-                browser.close()
-                return f"[ERROR] Could not load {url}: {e}"
+            await browser.navigate_to(url)
 
             # Wait for JS to settle
+            await asyncio.sleep(wait_seconds)
+
+            raw_errors = await page.evaluate("() => window.__kryth_errors || []")
+            raw_warnings = await page.evaluate("() => window.__kryth_warnings || []")
+
+            import json as _json
+            for raw, dest in ((raw_errors, errors), (raw_warnings, warnings)):
+                if isinstance(raw, str):
+                    try:
+                        raw = _json.loads(raw)
+                    except Exception:
+                        raw = []
+                dest.extend(raw or [])
+
+            return None
+        except Exception as ex:
+            return f"[ERROR] Browser check failed: {ex}"
+        finally:
             try:
-                page.wait_for_timeout(wait_seconds * 1000)
+                await browser.close()   # matches run_nvidia_agent.py pattern
             except Exception:
                 pass
 
-            browser.close()
-
-    except Exception as e:
-        return f"[ERROR] Browser check failed: {e}"
+    err_msg = _run(_check(), timeout=max(wait_seconds + 15, 30))
+    if err_msg:
+        return err_msg
 
     lines: list[str] = []
     if errors:
@@ -73,12 +95,7 @@ def check_browser_errors(url: str, wait_seconds: int = 5) -> str:
         lines.append(f"CONSOLE WARNINGS ({len(warnings)}):")
         for w in warnings:
             lines.append(f"  [warn]  {w}")
-    if network_errors:
-        lines.append(f"NETWORK FAILURES ({len(network_errors)}):")
-        for n in network_errors:
-            lines.append(f"  [net]   {n}")
 
     if not lines:
         return f"No console errors or network failures found at {url}"
-
     return "\n".join(lines)

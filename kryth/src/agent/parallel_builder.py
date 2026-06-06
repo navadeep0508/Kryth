@@ -646,6 +646,25 @@ def _build_spec_from_preset(preset_id: int, user_input: str) -> ProjectSpec:
 
 
 # ---------------------------------------------------------------------------
+# TaskProfile gate — only run parallel for complex, independent tasks
+# ---------------------------------------------------------------------------
+
+def should_run_parallel(profile: "object") -> bool:
+    """Return True only when the TaskProfile warrants parallel execution.
+
+    Accepts any object with .complexity, .category, .has_independent_subtasks
+    so there is no hard import dependency on task_classifier at module level.
+    """
+    if getattr(profile, "complexity", None) != "complex":
+        return False
+    if getattr(profile, "category", None) == "web_automation":
+        return False
+    if not getattr(profile, "has_independent_subtasks", False):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Quick reject — only bypass for obvious non-build requests
 # ---------------------------------------------------------------------------
 
@@ -922,11 +941,19 @@ def run_parallel_build(
     project_context: str = "",
     max_turns_per_agent: int = 60,
     on_progress: Optional[Callable[[str, str], None]] = None,
+    profile: Optional[object] = None,
 ) -> Optional[str]:
     """Run parallel agents using preset-based architecture.
 
     Returns the final output string, or None if single-agent should handle it.
+
+    If a TaskProfile is provided (from task_classifier.classify_task), it is
+    checked first via should_run_parallel() before any LLM call is made.
     """
+    # Profile gate — skip immediately if classifier says not parallel
+    if profile is not None and not should_run_parallel(profile):
+        return None
+
     if _quick_reject(user_input):
         return None
 

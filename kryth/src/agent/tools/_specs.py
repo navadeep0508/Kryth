@@ -1440,4 +1440,57 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_use_task",
+            "description": (
+                "ALWAYS USE THIS for any multi-step web task. "
+                "This is the PRIMARY browser tool — an AI agent that autonomously navigates, "
+                "clicks, types, searches, scrolls, extracts, fills forms, and interacts with "
+                "any website. One call replaces open_url + browser_click + browser_type chains. "
+                "Use for: job searches, form filling, video playback, web scraping, login flows, "
+                "data extraction, site navigation, any sequence of browser actions. "
+                "Pass the COMPLETE task as natural language — the agent figures out every step. "
+                "Examples: "
+                "'Go to wellfound.com, search AI engineer internships remote, collect top 10 results with links.' "
+                "'Open YouTube, search python tutorial, click and play the first video.' "
+                "'Navigate to github.com/trending, find top 5 Python repos, list them.' "
+                "DO NOT use open_url + browser_click + browser_type manually — use THIS instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "Natural language description of the full browser task to perform. "
+                            "Be specific about the site, actions, and goal."
+                        ),
+                    },
+                    "llm_provider": {
+                        "type": "string",
+                        "description": "LLM provider: nvidia (default), openai, anthropic, google, ollama.",
+                    },
+                    "model_name": {
+                        "type": "string",
+                        "description": "Model name for the chosen provider. Default: meta/llama-3.2-90b-vision-instruct (NVIDIA vision model, supports structured output).",
+                    },
+                    "max_steps": {
+                        "type": "integer",
+                        "description": "Maximum agent steps (default 10). Increase for complex tasks.",
+                    },
+                    "headless": {
+                        "type": "boolean",
+                        "description": "Run browser without visible window (default false).",
+                    },
+                    "use_vision": {
+                        "type": "boolean",
+                        "description": "Enable screenshot/vision capabilities (default true).",
+                    },
+                },
+                "required": ["task"],
+            },
+        },
+    },
 ]

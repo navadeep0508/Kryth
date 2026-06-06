@@ -34,11 +34,21 @@ _DEFAULT_SMALL_THRESHOLD_CHARS = 6000
 def _configured_models() -> tuple[str, str, str]:
     """Return current main/planner/summarizer model names.
 
-    Keep this dynamic so changes made by /config during a REPL session
-    are visible to routing without restarting the process.
+    Reads from model_config when available (supports unified + specialized
+    YAML config). Falls back to env vars / llm module constants so existing
+    setups are unchanged.
     """
-    from agent import llm
+    try:
+        from agent.model_config.router import get_model_name as _mc_model
+        return (
+            _mc_model("main"),
+            _mc_model("planner"),
+            _mc_model("summary"),
+        )
+    except Exception:
+        pass
 
+    from agent import llm
     return (
         getenv("KRYTH_MAIN_MODEL", llm.MAIN_MODEL),
         getenv("KRYTH_PLANNER_MODEL", llm.PLANNER_MODEL),
@@ -149,27 +159,48 @@ FAST_TASK_TYPES = frozenset({
 def pick_model_for_task(task_type: str) -> str:
     """Route to the best model for a specific task type.
 
-    Use this when spawning helpers or subagents for known task types.
+    Delegates to model_config router when available (respects routing table
+    in ~/.kryth/config.yaml). Falls back to legacy logic.
     """
+    try:
+        from agent.model_config.router import pick_model_for_task as _mc_pick
+        _, model = _mc_pick(task_type)
+        return model
+    except Exception:
+        pass
+
     main_model, planner_model, summarizer_model = _configured_models()
     if task_type in FAST_TASK_TYPES:
         return summarizer_model
     if task_type in ("plan", "spec", "architect"):
         return planner_model
-    return main_model  # code generation, debugging, review
+    return main_model
 
 
 def describe_routing() -> dict:
     """Diagnostic snapshot — surfaced by /diag so users can verify what
     routing is in effect."""
     main_model, planner_model, summarizer_model = _configured_models()
-    return {
+    result = {
         "auto_route": _auto_route_enabled(),
         "small_threshold_chars": _small_threshold(),
         "main_model": main_model,
         "planner_model": planner_model,
         "summarizer_model": summarizer_model,
     }
+    # Include model_config info when available
+    try:
+        from agent.model_config.loader import get_config
+        from agent.model_config.router import get_model_name
+        cfg = get_config()
+        result["config_mode"] = cfg.mode
+        result["config_roles"] = {
+            role: get_model_name(role)
+            for role in ["main", "planner", "vision", "summary", "extraction", "reasoning"]
+        }
+    except Exception:
+        pass
+    return result
 
 
 __all__ = [

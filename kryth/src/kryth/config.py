@@ -28,51 +28,74 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 LEGACY_CONFIG_FILE = Path.home() / ".kryth_cli" / "config.json"
 
 KEY_TO_ENV: dict[str, str] = {
-    "model":            "AICODER_MAIN_MODEL",
-    "planner_model":    "AICODER_PLANNER_MODEL",
-    "summarizer_model": "AICODER_SUMMARIZER_MODEL",
-    "base_url":         "AICODER_BASE_URL",
-    "api_key":          "OPENAI_API_KEY",
-    "nvidia_api_key":   "NVIDIA_API_KEY",
+    "model":             "AICODER_MAIN_MODEL",
+    "planner_model":     "AICODER_PLANNER_MODEL",
+    "summarizer_model":  "AICODER_SUMMARIZER_MODEL",
+    "base_url":          "AICODER_BASE_URL",
+    "api_key":           "OPENAI_API_KEY",
+    "nvidia_api_key":    "NVIDIA_API_KEY",
+    # New role-specific models
+    "vision_model":      "KRYTH_VISION_MODEL",
+    "extraction_model":  "KRYTH_EXTRACTION_MODEL",
+    "reasoning_model":   "KRYTH_REASONING_MODEL",
+    # Provider keys
+    "openrouter_api_key": "OPENROUTER_API_KEY",
+    "anthropic_api_key":  "ANTHROPIC_API_KEY",
+    "google_api_key":     "GOOGLE_API_KEY",
 }
 
 LEGACY_ENV: dict[str, str] = {
-    "AICODER_MAIN_MODEL": "KRYTH_MAIN_MODEL",
-    "AICODER_PLANNER_MODEL": "KRYTH_PLANNER_MODEL",
+    "AICODER_MAIN_MODEL":      "KRYTH_MAIN_MODEL",
+    "AICODER_PLANNER_MODEL":   "KRYTH_PLANNER_MODEL",
     "AICODER_SUMMARIZER_MODEL": "KRYTH_SUMMARIZER_MODEL",
-    "AICODER_BASE_URL": "KRYTH_BASE_URL",
+    "AICODER_BASE_URL":        "KRYTH_BASE_URL",
 }
 
 LEGACY_ENV_2: dict[str, str] = {
-    "AICODER_MAIN_MODEL": "KRYTH_CLI_MAIN_MODEL",
-    "AICODER_PLANNER_MODEL": "KRYTH_CLI_PLANNER_MODEL",
+    "AICODER_MAIN_MODEL":      "KRYTH_CLI_MAIN_MODEL",
+    "AICODER_PLANNER_MODEL":   "KRYTH_CLI_PLANNER_MODEL",
     "AICODER_SUMMARIZER_MODEL": "KRYTH_CLI_SUMMARIZER_MODEL",
-    "AICODER_BASE_URL": "KRYTH_CLI_BASE_URL",
+    "AICODER_BASE_URL":        "KRYTH_CLI_BASE_URL",
 }
 
 VALID_KEYS = list(KEY_TO_ENV)   # ordered
 
 DEFAULTS: dict[str, str] = {
-    "model":            "gpt-4o-mini",
-    "planner_model":    "gpt-4o-mini",
-    "summarizer_model": "gpt-4o-mini",
-    "base_url":         "https://api.openai.com/v1",
-    "api_key":          "",
-    "nvidia_api_key":   "",
+    "model":             "gpt-4o-mini",
+    "planner_model":     "gpt-4o-mini",
+    "summarizer_model":  "gpt-4o-mini",
+    "base_url":          "https://api.openai.com/v1",
+    "api_key":           "",
+    "nvidia_api_key":    "",
+    "vision_model":      "",
+    "extraction_model":  "",
+    "reasoning_model":   "",
+    "openrouter_api_key": "",
+    "anthropic_api_key":  "",
+    "google_api_key":     "",
 }
 
 # Human-readable labels shown in the TUI
 KEY_LABELS: dict[str, str] = {
-    "model":            "Main model",
-    "planner_model":    "Planner model",
-    "summarizer_model": "Summarizer model",
-    "base_url":         "Base URL",
-    "api_key":          "API key",
-    "nvidia_api_key":   "NVIDIA API key (vision)",
+    "model":             "Main model",
+    "planner_model":     "Planner model",
+    "summarizer_model":  "Summarizer model",
+    "base_url":          "Base URL",
+    "api_key":           "API key (OpenAI)",
+    "nvidia_api_key":    "NVIDIA API key (vision)",
+    "vision_model":      "Vision model",
+    "extraction_model":  "Extraction model",
+    "reasoning_model":   "Reasoning model",
+    "openrouter_api_key": "OpenRouter API key",
+    "anthropic_api_key":  "Anthropic API key",
+    "google_api_key":     "Google API key",
 }
 
 # Which keys are sensitive (masked in display)
-SENSITIVE = {"api_key", "nvidia_api_key"}
+SENSITIVE = {
+    "api_key", "nvidia_api_key", "openrouter_api_key",
+    "anthropic_api_key", "google_api_key",
+}
 
 
 def _load() -> dict[str, str]:

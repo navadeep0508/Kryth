@@ -214,65 +214,58 @@ class ActionRunner:
     # Browser implementations (lazy-import)
     # ------------------------------------------------------------------
 
-    def _get_browser_controller(self):
-        """Lazy-import and return a PageController from the browser module."""
-        from agent.browser.browser_manager import get_page
-        from agent.browser.page_controller import PageController
-        page = get_page()
-        return PageController(page)
-
     def _browser_navigate(self, url: str = "", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.navigate(url)
+        from agent.providers.browser_use_provider import open_url
+        return open_url(url)
 
     def _browser_click(self, selector: str = "", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.click(selector)
+        from agent.providers.browser_use_provider import click
+        return click(selector)
 
     def _browser_type(self, selector: str = "", text: str = "", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.type_text(selector, text)
+        from agent.providers.browser_use_provider import type_text
+        return type_text(selector, text)
 
     def _browser_fill(self, selector: str = "", value: str = "", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.fill(selector, value)
+        from agent.providers.browser_use_provider import fill
+        return fill(selector, value)
 
     def _browser_select(self, selector: str = "", value: str = "", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.select_option(selector, value)
+        from agent.providers.browser_use_provider import select
+        return select(selector, value)
 
     def _browser_extract_text(self, selector: str = "body", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.extract_text(selector)
+        from agent.providers.browser_use_provider import extract
+        return extract(selector)
 
     def _browser_extract_html(self, **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.extract_html()
+        from agent.providers.browser_use_provider import get_html
+        return get_html()
 
     def _browser_screenshot(self, **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.screenshot()
+        from agent.providers.browser_use_provider import screenshot
+        return screenshot()
 
     def _browser_scroll(self, direction: str = "down", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.scroll(direction)
+        from agent.providers.browser_use_provider import scroll
+        return scroll(direction)
 
     def _browser_back(self, **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.back()
+        from agent.providers.browser_use_provider import back
+        return back()
 
     def _browser_evaluate(self, expression: str = "", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.evaluate(expression)
+        from agent.providers.browser_use_provider import eval_js
+        return eval_js(expression)
 
     def _browser_press_key(self, key: str = "", **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.press_key(key)
+        from agent.providers.browser_use_provider import keys
+        return keys(key)
 
     def _browser_get_url(self, **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.url()
+        from agent.providers.browser_use_provider import get_url
+        return get_url()
 
     def _browser_get_title(self, **kwargs) -> str:
-        controller = self._get_browser_controller()
-        return controller.title()
+        from agent.providers.browser_use_provider import get_title
+        return get_title()

@@ -1,7 +1,7 @@
-"""Browser automation tools — Playwright + OpenCLI fallback.
+"""Browser automation tools — browser_agent (browser-use) primary provider.
 
-Playwright is the PRIMARY provider (native Python, no browser extension
-needed). OpenCLI is the FALLBACK for users with the Browser Bridge setup.
+Uses browser_agent from kryth/src/agent/browser-use/ as the primary browser
+automation engine. OpenCLI is retained as a fallback for legacy setups.
 
 BROWSER CAPABILITIES (25 tools):
     Navigation:    open_url, browser_back, browser_tab_new, browser_tab_select
@@ -24,19 +24,18 @@ from urllib.parse import quote
 
 from agent.tools._results import err
 
-# --- Provider selection: Playwright > OpenCLI ---
-_PW_MODULE = None  # Lazy-loaded playwright_bridge module
+# --- Provider: browser_agent (browser-use) ---
+_PW_MODULE = None  # Lazy-loaded browser_use_provider module
 
 
 def _get_pw():
     global _PW_MODULE
-    if _PW_MODULE is False:  # Already checked and unavailable
+    if _PW_MODULE is False:
         return None
     if _PW_MODULE is not None:
         return _PW_MODULE
     try:
-        import playwright.sync_api
-        from agent.providers import playwright_browser as pw
+        from agent.providers import browser_use_provider as pw
         _PW_MODULE = pw
         return pw
     except ImportError:
@@ -543,3 +542,55 @@ def get_research_report() -> str:
         return f"Research so far ({n} pages visited):\n\n{summary}\n\n---\nFull report:\n{report}"
     except Exception as e:
         return err("EXEC_FAILED", f"get_research_report failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# AI-driven browser task (browser-use / browser_agent)
+# ---------------------------------------------------------------------------
+
+def browser_use_task(
+    task: str,
+    llm_provider: str = "nvidia",
+    model_name: str = "stepfun-ai/step-3.7-flash",
+    max_steps: int = 10,
+    headless: bool = False,
+    use_vision: bool = True,
+) -> str:
+    """Execute a complete browser automation task using the AI-driven browser agent.
+
+    The agent autonomously navigates, clicks, types, extracts, and interacts
+    with websites to complete the task. Shows live step progress and vision
+    output. Saves conversation history to conversations/kryth_browser_agent/.
+
+    Use this for any multi-step web task: opening a site, searching, selecting,
+    clicking buttons, filling forms, logging in, scraping data, playing media, etc.
+
+    Parameters
+    ----------
+    task:
+        Natural language description of what to do, e.g.
+        "Open YouTube, search for Python tutorials, select the top result and play it."
+    llm_provider:
+        LLM backend — "nvidia" (default), "openai", "anthropic", "google", "ollama".
+    model_name:
+        Model identifier for the chosen provider.
+        Default: "stepfun-ai/step-3.7-flash" (NVIDIA vision model).
+    max_steps:
+        Maximum agent steps before stopping (default 10).
+    headless:
+        Run browser without a visible window (default False — shows the browser).
+    use_vision:
+        Enable vision/screenshot capabilities for the agent (default True).
+    """
+    try:
+        from agent.providers.browser_use_provider import browser_task
+        return browser_task(
+            task=task,
+            llm_provider=llm_provider,
+            model_name=model_name,
+            max_steps=max_steps,
+            headless=headless,
+            use_vision=use_vision,
+        )
+    except Exception as e:
+        return err("EXEC_FAILED", f"browser_use_task failed: {e}")

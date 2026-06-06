@@ -1,0 +1,72 @@
+# ~/.kryth/config.yaml — Specialized mode (advanced cost/perf optimization)
+# Each role uses the best model for that workload.
+
+mode: specialized
+
+providers:
+  openrouter:
+    api_key: ${OPENROUTER_API_KEY}
+    base_url: https://openrouter.ai/api/v1
+
+  nvidia:
+    api_key: ${NVIDIA_API_KEY}
+    base_url: https://integrate.api.nvidia.com/v1
+
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    base_url: https://api.openai.com/v1
+
+models:
+  # Highest quality — coding, conversation, autonomous execution
+  main:
+    provider: openrouter
+    model: openai/gpt-4o
+    fallbacks:
+      - anthropic/claude-sonnet-4
+      - openai/gpt-4o-mini
+
+  # Smart and cheap — task planning, replanning, step breakdown
+  planner:
+    provider: openrouter
+    model: anthropic/claude-sonnet-4
+    fallbacks:
+      - qwen/qwen3-32b
+
+  # NVIDIA vision model — screenshots, UI understanding, OCR
+  vision:
+    provider: nvidia
+    model: stepfun-ai/step-3.7-flash
+
+  # Fast summarization — conversation compression, memory
+  summary:
+    provider: openrouter
+    model: mistralai/mistral-small
+
+  # Deterministic JSON extraction — structured data, HTML parsing
+  extraction:
+    provider: openrouter
+    model: qwen/qwen3-32b
+
+  # Deep reasoning — debugging, architecture decisions, analysis
+  reasoning:
+    provider: openrouter
+    model: deepseek/deepseek-r1
+
+# Task-type routing (maps task_type → role)
+routing:
+  browser_tasks: main
+  image_tasks: vision
+  planning_tasks: planner
+  extraction_tasks: extraction
+  complex_reasoning: reasoning
+  small_tasks: summary
+  summarization: summary
+
+# Role-level fallback chains (tried in order on failure)
+fallbacks:
+  main:
+    - anthropic/claude-sonnet-4
+    - openai/gpt-4o-mini
+  planner:
+    - qwen/qwen3-32b
+    - mistralai/mistral-small

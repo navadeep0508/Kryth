@@ -1,0 +1,135 @@
+KRYTH-Autonomous-AI-Coding-Agent/
+└── kryth/src/agent/
+    │
+    ├── [43 Python files - Main agent framework]
+    │   ├── agent_loop.py              ← Main orchestration engine
+    │   ├── llm.py                     ← LLM routing & streaming
+    │   ├── skills.py / skill_library.py
+    │   ├── model_router.py
+    │   ├── context.py / context_manager.py
+    │   ├── session.py / persistence.py / settings.py
+    │   ├── _task_graph.py / _subagent.py
+    │   ├── _shell.py / _file_ops.py / _git.py / _search.py
+    │   ├── _verify.py / _critique.py
+    │   ├── planner.py / _plan.py / _project_runner.py
+    │   └── [17 more core files...]
+    │
+    ├── browser/                       ← TIER 1: Lightweight Playwright
+    │   ├── __init__.py
+    │   ├── browser_manager.py         ← Thread-isolated wrapper (KEY FILE)
+    │   ├── playwright_browser.py      ← Playwright API wrapper
+    │   ├── page_controller.py
+    │   ├── selectors.py
+    │   ├── _human.py
+    │   ├── profiles.py
+    │   ├── downloads.py / uploads.py
+    │   └── watchdogs/
+    │       └── local_browser_watchdog.py
+    │
+    ├── tools/                         ← Tool implementations
+    │   ├── _browser.py                ← Browser tool integration
+    │   ├── _opencli.py
+    │   ├── _subagent.py
+    │   └── providers/
+    │       └── playwright_browser.py
+    │
+    ├── bridge/
+    │   ├── __init__.py
+    │   ├── server.py
+    │   └── providers/
+    │       └── openai_browser.py
+    │
+    ├── browser-use/                   ← TIER 2: Full browser-use agent
+    │   │
+    │   ├── kryth_browser_bridge.py    ← Integration bridge (KEY FILE)
+    │   ├── run_nvidia_agent.py
+    │   ├── test_browser_use_install.py
+    │   ├── .venv/                     ← Isolated virtual environment
+    │   │
+    │   └── browser_agent/             ← Main implementation (165 files, 6924 lines)
+    │       ├── __init__.py
+    │       ├── cli.py                 ← Command-line interface
+    │       ├── config.py              ← Configuration
+    │       ├── exceptions.py
+    │       ├── init_cmd.py
+    │       ├── logging_config.py
+    │       ├── observability.py
+    │       ├── utils.py
+    │       │
+    │       ├── agent/                 ← Agent core
+    │       │   ├── views.py           ← Agent settings & views
+    │       │   ├── system_prompts/    ← System prompts for LLM
+    │       │   │   ├── system_prompt_browser_use.md
+    │       │   │   ├── system_prompt_browser_use_flash.md
+    │       │   │   └── system_prompt_browser_use_no_thinking.md
+    │       │   └── message_manager/   ← Message handling
+    │       │
+    │       ├── actor/                 ← Actor pattern
+    │       ├── browser/               ← Browser control
+    │       │   ├── cloud/
+    │       │   └── watchdogs/
+    │       │       └── local_browser_watchdog.py
+    │       ├── controller/            ← Page controller
+    │       ├── dom/                   ← DOM handling
+    │       │   └── serializer/
+    │       ├── filesystem/            ← File system ops
+    │       │
+    │       ├── llm/                   ← LLM PROVIDER INTEGRATIONS (15+)
+    │       │   ├── __init__.py
+    │       │   ├── base.py            ← Abstract base class
+    │       │   ├── messages.py
+    │       │   ├── models.py
+    │       │   ├── schema.py
+    │       │   ├── views.py
+    │       │   ├── anthropic/         ← Anthropic Claude
+    │       │   ├── aws/               ← AWS Bedrock
+    │       │   ├── azure/             ← Azure OpenAI
+    │       │   ├── cerebras/          ← Cerebras
+    │       │   ├── deepseek/          ← DeepSeek
+    │       │   ├── google/            ← Google Gemini
+    │       │   ├── groq/              ← Groq
+    │       │   ├── litellm/           ← LiteLLM multi-provider
+    │       │   ├── mistral/           ← Mistral
+    │       │   ├── nvidia/            ← NVIDIA (default in bridge)
+    │       │   ├── oci_raw/           ← Oracle Cloud
+    │       │   ├── ollama/            ← Ollama (local)
+    │       │   ├── openai/            ← OpenAI
+    │       │   ├── openrouter/        ← OpenRouter
+    │       │   └── vercel/            ← Vercel
+    │       │
+    │       ├── mcp/                   ← Model Context Protocol
+    │       ├── sandbox/               ← Sandboxed execution
+    │       ├── screenshots/           ← Screenshot handling
+    │       ├── skill_cli/             ← Skill CLI integration
+    │       │   ├── browser.py
+    │       │   └── commands/
+    │       │       └── browser.py
+    │       ├── skills/                ← Built-in skills
+    │       ├── sync/                  ← Synchronization
+    │       ├── telemetry/             ← Telemetry tracking
+    │       ├── tokens/                ← Token management
+    │       └── tools/                 ← Browser tools
+    │
+    ├── providers/                     ← Provider integrations
+    │   ├── playwright_browser.py
+    │   ├── opencli/
+    │   └── browser.py
+    │
+    ├── executor/
+    ├── ecosystem/
+    ├── skills/
+    ├── ui/
+    │
+    ├── [Additional core files]
+    │   ├── vision.py                  ← Vision/image handling
+    │   ├── repo_index.py
+    │   ├── retriever.py
+    │   ├── prompts.py
+    │   ├── validators.py
+    │   ├── permissions.py
+    │   ├── hooks.py
+    │   └── [+ 7 more utility files]
+    │
+    ├── agent_loop.py                  ← ★ MAIN ENTRY POINT
+    └── __init__.py                    ← Exports: check_browser_errors
+

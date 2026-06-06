@@ -100,6 +100,12 @@ Thumbs.db
 *.bak
 *.backup
 
+# Windows special device files that shouldn't exist
+nul
+con
+prn
+aux
+
 # Cache
 .cache/
 .pip/

@@ -832,59 +832,84 @@ def run_agent(user_input, extra_system: str | None = None):
                 ui.auto_skills(auto)
                 session.append({"role": "system", "content": compose_skills(auto)})
 
-    # --- Parallel multi-agent build ---
+    # --- Task classification → route to single / pipeline / parallel ---
+    _task_profile = None
     try:
-        from agent.parallel_builder import run_parallel_build
-        if session.mode != "plan":
-            parallel_result = run_parallel_build(
-                user_input,
-                skill_context=ecosystem_context or "",
-                project_context=getattr(session, "project_map", ""),
-                max_turns_per_agent=60,
-            )
-            if parallel_result:
-                session.append({"role": "user", "content": user_input})
-                session.append({"role": "assistant", "content": parallel_result})
-                _result = LoopResult(status="done", content=parallel_result, turns_used=0)
-                try:
-                    from agent.persistence import session_store
-                    store = session_store()
-                    store.update_meta(
-                        cumulative_in_tokens=session.cumulative_in_tokens,
-                        cumulative_out_tokens=session.cumulative_out_tokens,
-                        mode=session.mode, profile=session.profile,
-                    )
-                    store.write_meta_marker()
-                except Exception:
-                    pass
-                run_hooks("Stop", "", {})
-                ui.publish_turn_summary(status="done", turns_used=0)
-                ui.turn_end(
-                    tokens_in=session.cumulative_in_tokens,
-                    tokens_out=session.cumulative_out_tokens,
-                )
-                return _result
-    except Exception as _pe:
-        ui.muted(f"(parallel builder skipped: {_pe})")
+        from agent.task_classifier import classify_task
+        _task_profile = classify_task(user_input)
+        ui.muted(f"  Task: {_task_profile.complexity} / {_task_profile.category} — {_task_profile.reason}")
+    except Exception:
+        pass  # classifier unavailable — fall through to safe defaults
 
     plan_dict: dict | None = None
     plan_prose: str = ""
-    # Skip the planner for short/simple prompts — it would waste an LLM call
-    # on something the main model can handle directly. A prompt needs at least
-    # 6 words to benefit from planning; single-agent starters (fix/debug/explain)
-    # are also fast-tracked.
-    _skip_planner = False
-    try:
-        from agent.parallel_builder import _quick_reject
-        _skip_planner = _quick_reject(user_input)
-    except Exception:
-        _skip_planner = len(user_input.strip().split()) < 6
-    if _should_plan(user_input) and not _skip_planner:
-        plan_dict, plan_prose = ask_planner(user_input)
-        if plan_dict:
-            ui.plan(plan_dict)
-        elif plan_prose:
-            ui.plan_prose(plan_prose)
+
+    _complexity = getattr(_task_profile, "complexity", "medium") if _task_profile else "medium"
+
+    if _complexity == "complex":
+        # --- Complex: attempt parallel build (gated by TaskProfile) ---
+        try:
+            from agent.parallel_builder import run_parallel_build
+            if session.mode != "plan":
+                parallel_result = run_parallel_build(
+                    user_input,
+                    skill_context=ecosystem_context or "",
+                    project_context=getattr(session, "project_map", ""),
+                    max_turns_per_agent=60,
+                    profile=_task_profile,
+                )
+                if parallel_result:
+                    session.append({"role": "user", "content": user_input})
+                    session.append({"role": "assistant", "content": parallel_result})
+                    _result = LoopResult(status="done", content=parallel_result, turns_used=0)
+                    try:
+                        from agent.persistence import session_store
+                        store = session_store()
+                        store.update_meta(
+                            cumulative_in_tokens=session.cumulative_in_tokens,
+                            cumulative_out_tokens=session.cumulative_out_tokens,
+                            mode=session.mode, profile=session.profile,
+                        )
+                        store.write_meta_marker()
+                    except Exception:
+                        pass
+                    run_hooks("Stop", "", {})
+                    ui.publish_turn_summary(status="done", turns_used=0)
+                    ui.turn_end(
+                        tokens_in=session.cumulative_in_tokens,
+                        tokens_out=session.cumulative_out_tokens,
+                    )
+                    return _result
+        except Exception as _pe:
+            ui.muted(f"(parallel builder skipped: {_pe})")
+        # Parallel returned None (no matching preset or not independent) — fall
+        # through to the pipeline/planner path below.
+        if _should_plan(user_input):
+            plan_dict, plan_prose = ask_planner(user_input)
+            if plan_dict:
+                ui.plan(plan_dict)
+            elif plan_prose:
+                ui.plan_prose(plan_prose)
+
+    elif _complexity == "medium":
+        # --- Medium: planner hint, then single-agent sequential execution ---
+        # For web automation, inject a hard directive to use browser_use_task
+        _category = getattr(_task_profile, "category", "") if _task_profile else ""
+        if _category == "web_automation":
+            plan_prose = (
+                "This is a multi-step web automation task. "
+                "You MUST call browser_use_task() with the complete task description as a single call. "
+                "Do NOT use open_url, browser_click, browser_type, or extract_data individually. "
+                "browser_use_task() handles the entire browser sequence autonomously."
+            )
+        elif _should_plan(user_input):
+            plan_dict, plan_prose = ask_planner(user_input)
+            if plan_dict:
+                ui.plan(plan_dict)
+            elif plan_prose:
+                ui.plan_prose(plan_prose)
+
+    # else: simple → no planner, no parallel, straight to inner loop
 
     if session.mode == "plan":
         ui.plan_mode_active()
@@ -893,7 +918,7 @@ def run_agent(user_input, extra_system: str | None = None):
     if plan_dict:
         user_content = f"{user_input}\n\n[plan]\n{_plan_hint_for_model(plan_dict)}"
     elif plan_prose:
-        user_content = f"{user_input}\n\n[planner hint] {plan_prose}"
+        user_content = f"{user_input}\n\n[BROWSER AUTOMATION DIRECTIVE] {plan_prose}"
     session.append({"role": "user", "content": user_content})
 
     result = run_inner_loop(session, MAX_TOOL_TURNS, verbose_usage=True)

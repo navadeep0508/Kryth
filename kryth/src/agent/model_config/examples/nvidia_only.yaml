@@ -1,0 +1,11 @@
+# ~/.kryth/config.yaml — NVIDIA NIM only (existing KRYTH setup)
+# Uses NVIDIA for all roles. Compatible with existing KRYTH configuration.
+
+mode: unified
+
+provider: nvidia
+api_key: ${NVIDIA_API_KEY}
+base_url: https://integrate.api.nvidia.com/v1
+
+# stepfun-ai/step-3.7-flash supports both text + vision
+model: stepfun-ai/step-3.7-flash
