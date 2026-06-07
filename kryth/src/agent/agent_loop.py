@@ -2,7 +2,7 @@
 
 This module is the brain: it asks the model what to do, dispatches the
 tools the model asks for, captures the results, and repeats. Every byte
-of user-facing output is emitted as an event on ``agent.ui`` — this
+of user-facing output is emitted as an event on ``agent.ui`` Ã¢-- this
 module imports rich nowhere, prints nothing directly, and could be
 swapped to a different UI by replacing the subscriber list.
 """
@@ -16,6 +16,8 @@ from typing import Literal
 
 from agent import ui
 from agent.context import build_project_map
+from agent.dynamic_builder import run_dynamic_build_with_approval
+from agent.ecosystem.router import route
 from agent.env import getenv
 from agent.hooks import HOOK_BLOCK_PREFIX, run_hooks
 from agent.llm import ask_llm_stream, ask_planner, summarize
@@ -23,6 +25,10 @@ from agent.permissions import ask_user, check_permission
 from agent.project_context import git_status_snapshot, load_context_file
 from agent.prompts import SYSTEM_PROMPT
 from agent.session import get_session
+from agent.skills import auto_select_skills, compose_skills
+from agent.task_classifier import classify_task
+from agent.task_analyzer import TaskAnalyzer
+from agent.execution_strategy import decide_execution_strategy
 from agent.tools import (
     READ_ONLY_TOOLS,
     RUN_COMMAND_ERROR_MARKER,
@@ -32,10 +38,19 @@ from agent.tools import (
 )
 from agent.tools._results import err, is_error
 
+# Orchestration engine — imported lazily to avoid circular imports at module
+# load time; the actual import happens inside run_agent when first needed.
+# The module-level name allows tests to patch agent.agent_loop.orchestrate.
+try:
+    from agent.orchestration import orchestrate, ApprovalMode
+except Exception:
+    orchestrate = None  # type: ignore[assignment]
+    ApprovalMode = None  # type: ignore[assignment]
+
 
 # Effectively unlimited - set to 100000 by default (can be overridden via env var)
 MAX_TOOL_TURNS = int(getenv("KRYTH_MAX_TOOL_TURNS", "100000"))
-COMPACT_AT_TOKENS = 40000   # compress aggressively — prevents token overflow
+COMPACT_AT_TOKENS = 40000   # compress aggressively Ã¢-- prevents token overflow
 KEEP_RECENT_AFTER_COMPACT = 12
 
 
@@ -60,7 +75,7 @@ class LoopResult:
         return self.status != "done"
 
 
-# Legacy sentinel constants — retained as module attributes so any third
+# Legacy sentinel constants Ã¢-- retained as module attributes so any third
 # party code reading them keeps working, but the loop itself returns
 # ``LoopResult`` now.
 DONE = "done"
@@ -235,7 +250,7 @@ def dispatch_tool_call(session, call):
             f"Got: {raw_args[:200]}",
         )
         ui.tool_start(tool_name, {})
-        ui.tool_error(f"bad tool args · {e}")
+        ui.tool_error(f"bad tool args Ã- {e}")
         _append_tool_msg(session, call_id, tool_name, result)
         return
 
@@ -248,7 +263,7 @@ def dispatch_tool_call(session, call):
     denial_count = session.denial_counts.get(_denial_key(tool_name, args), 0)
     if denial_count >= DENIAL_HARD_STOP:
         ui.tool_start(tool_name, args)
-        ui.tool_error(f"repeat-denial stop · {tool_name} (×{denial_count})")
+        ui.tool_error(f"repeat-denial stop Ã- {tool_name} (--{denial_count})")
         _append_tool_msg(
             session, call_id, tool_name,
             _hard_stop_denial_msg(tool_name, denial_count),
@@ -264,7 +279,7 @@ def dispatch_tool_call(session, call):
             "once your plan is ready.",
         )
         ui.tool_start(tool_name, args)
-        ui.tool_error(f"plan-mode block · {tool_name}")
+        ui.tool_error(f"plan-mode block Ã- {tool_name}")
         _append_tool_msg(session, call_id, tool_name, result)
         return
 
@@ -280,7 +295,7 @@ def dispatch_tool_call(session, call):
         if n >= DENIAL_WARN_AT:
             message += (
                 f"\nThis exact call has now been denied {n} times. "
-                f"Stop retrying with the same arguments — try a "
+                f"Stop retrying with the same arguments Ã¢-- try a "
                 f"different tool, different args, or ask the user."
             )
         _append_tool_msg(session, call_id, tool_name, message)
@@ -296,7 +311,7 @@ def dispatch_tool_call(session, call):
         if n >= DENIAL_WARN_AT:
             body += (
                 f"\nThis exact call has now been blocked {n} times. "
-                f"Stop retrying with the same arguments — adjust the "
+                f"Stop retrying with the same arguments Ã¢-- adjust the "
                 f"approach."
             )
         _append_tool_msg(session, call_id, tool_name, body)
@@ -380,9 +395,9 @@ def _focal_files(recent_messages: list, limit: int = 12) -> set[str]:
 def _relevance_tier(msg: dict, focal_files: set[str]) -> str:
     """Score a single message as ``high`` / ``medium`` / ``low``.
 
-    high:    references an error or a focal file → keep intact.
-    medium:  meaningful payload (>50 chars) → light truncation.
-    low:     bulky tool output with no clear signal → aggressive stub.
+    high:    references an error or a focal file Ã¢-- keep intact.
+    medium:  meaningful payload (>50 chars) Ã¢-- light truncation.
+    low:     bulky tool output with no clear signal Ã¢-- aggressive stub.
     """
     text = str(msg.get("content") or "")
     low = text.lower()
@@ -392,7 +407,7 @@ def _relevance_tier(msg: dict, focal_files: set[str]) -> str:
     if focal_files and any(f in text for f in focal_files):
         return "high"
     if len(text) < 250:
-        return "high"  # already concise — no point eliding
+        return "high"  # already concise Ã¢-- no point eliding
     if msg.get("role") == "assistant" and msg.get("tool_calls"):
         return "high"  # tool-call shapes are tiny and structurally important
     if len(text) < 1500:
@@ -441,7 +456,7 @@ def _python_fallback_compact(
                     "role": "tool",
                     "tool_call_id": m.get("tool_call_id", ""),
                     "name": m.get("name", ""),
-                    "content": f"{head}\n…[trimmed]…\n{tail}",
+                    "content": f"{head}\nÃ¢--[trimmed]Ã¢--\n{tail}",
                 })
                 continue
             if tier == "medium":
@@ -452,10 +467,10 @@ def _python_fallback_compact(
                     "role": "tool",
                     "tool_call_id": m.get("tool_call_id", ""),
                     "name": m.get("name", ""),
-                    "content": f"{head}\n…[trimmed]…\n{tail}",
+                    "content": f"{head}\nÃ¢--[trimmed]Ã¢--\n{tail}",
                 })
                 continue
-            # low — keep only the stub.
+            # low Ã¢-- keep only the stub.
             stub = f"[elided tool result, {len(body)} chars; ask again if needed]"
             if len(body) > len(stub):
                 dropped_messages += 1
@@ -479,11 +494,11 @@ def _python_fallback_compact(
                 elif tier == "medium" and len(text) > 800:
                     dropped_messages += 1
                     dropped_chars += len(text) - 800
-                    new["content"] = text[:600] + " …[trimmed]… " + text[-200:]
+                    new["content"] = text[:600] + " Ã¢--[trimmed]Ã¢-- " + text[-200:]
                 elif tier == "low" and len(text) > 400:
                     dropped_messages += 1
                     dropped_chars += len(text) - 400
-                    new["content"] = text[:400] + " …"
+                    new["content"] = text[:400] + " Ã¢--"
                 else:
                     new["content"] = text
             else:
@@ -636,7 +651,7 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
 
         # Detect infinite tool loops
         if _detect_tool_loop(tool_calls, session.messages):
-            ui.warn("Tool loop detected — same tool called repeatedly. Breaking loop.")
+            ui.warn("Tool loop detected Ã¢-- same tool called repeatedly. Breaking loop.")
             return LoopResult(
                 status="interrupted",
                 content="",
@@ -716,7 +731,7 @@ def build_initial_system(session, user_input: str = ""):
         if not memory.graph.is_built() and getenv_bool("KRYTH_AUTO_INIT", True):
             ui.muted("Building project knowledge graph (first run)...")
             memory.init(auto=True)
-            ui.muted("Graph built · file watcher started")
+            ui.muted("Graph built Ã- file watcher started")
     except Exception:
         pass
 
@@ -807,23 +822,20 @@ def run_agent(user_input, extra_system: str | None = None):
         # --- Ecosystem skill routing (AI-powered, parallel install) ---
         ecosystem_context: str | None = None
         try:
-            from agent.ecosystem.router import get_router
             from agent.ecosystem.executor import run_skill_workflow
-            router = get_router()
-            if router.is_build_request(user_input):
-                skill_ids = router.route(user_input, use_llm=True)
-                if skill_ids:
-                    ui.auto_skills(skill_ids)
-                    ecosystem_context = run_skill_workflow(
-                        skill_ids, user_input, show_progress=True
-                    )
+            skill_ids = route(user_input, use_llm=True)
+            if skill_ids:
+                ui.auto_skills(skill_ids)
+                ecosystem_context = run_skill_workflow(
+                    skill_ids, user_input, show_progress=True
+                )
         except Exception:
             pass
 
         if ecosystem_context:
             session.append({"role": "system", "content": ecosystem_context})
         else:
-            from agent.skills import auto_select_skills, compose_skills
+            # Local skill auto-selection fallback
             auto = auto_select_skills(
                 user_input,
                 project_context=getattr(session, "project_map", ""),
@@ -835,7 +847,6 @@ def run_agent(user_input, extra_system: str | None = None):
     # --- Task classification → route to single / pipeline / parallel ---
     _task_profile = None
     try:
-        from agent.task_classifier import classify_task
         _task_profile = classify_task(user_input)
         ui.muted(f"  Task: {_task_profile.complexity} / {_task_profile.category} — {_task_profile.reason}")
     except Exception:
@@ -843,25 +854,53 @@ def run_agent(user_input, extra_system: str | None = None):
 
     plan_dict: dict | None = None
     plan_prose: str = ""
+    ecosystem_context: str | None = locals().get("ecosystem_context")  # may be set in else branch
 
     _complexity = getattr(_task_profile, "complexity", "medium") if _task_profile else "medium"
 
-    if _complexity == "complex":
-        # --- Complex: attempt parallel build (gated by TaskProfile) ---
+    # --- Experience Engine: check what worked before ---
+    _experience_pred = None
+    if _complexity in ("complex", "medium"):
         try:
-            from agent.parallel_builder import run_parallel_build
-            if session.mode != "plan":
-                parallel_result = run_parallel_build(
-                    user_input,
-                    skill_context=ecosystem_context or "",
+            from agent.experience import get_experience
+            _exp = get_experience(".")
+            _similar = _exp.search(user_input)
+            if _similar.matches:
+                _experience_pred = _exp.predict(user_input)
+                # Show dashboard only for complex tasks to avoid noise
+                if _complexity == "complex":
+                    _exp.report(user_input, render=True)
+                else:
+                    ui.muted(
+                        f"  (experience: {len(_similar.matches)} similar tasks, "
+                        f"predicted success {_experience_pred.success_probability:.0%})"
+                    )
+        except Exception:
+            pass
+
+    if _complexity == "complex":
+        # --- Complex: full orchestration pipeline ---
+        # Intent → Capabilities → Task DAG → Team → Cost → Approval → Scheduler
+        if session.mode != "plan" and orchestrate is not None:
+            try:
+                orch_result = orchestrate(
+                    user_input=user_input,
+                    project_root=".",
                     project_context=getattr(session, "project_map", ""),
-                    max_turns_per_agent=60,
-                    profile=_task_profile,
+                    multi_agent_mode=getattr(session, "multi_agent_mode", "ASK"),
+                    max_turns_per_agent=80,
+                    max_workers=4,
                 )
-                if parallel_result:
+                # Persist updated approval mode (e.g. SESSION_APPROVED / ALWAYS_SINGLE)
+                if orch_result.mode_updated is not None and ApprovalMode is not None:
+                    session.multi_agent_mode = orch_result.mode_updated.value
+
+                if orch_result.approved and orch_result.output:
                     session.append({"role": "user", "content": user_input})
-                    session.append({"role": "assistant", "content": parallel_result})
-                    _result = LoopResult(status="done", content=parallel_result, turns_used=0)
+                    session.append({"role": "assistant", "content": orch_result.output})
+                    _result = LoopResult(
+                        status="done", content=orch_result.output, turns_used=0
+                    )
                     try:
                         from agent.persistence import session_store
                         store = session_store()
@@ -880,16 +919,24 @@ def run_agent(user_input, extra_system: str | None = None):
                         tokens_out=session.cumulative_out_tokens,
                     )
                     return _result
-        except Exception as _pe:
-            ui.muted(f"(parallel builder skipped: {_pe})")
-        # Parallel returned None (no matching preset or not independent) — fall
-        # through to the pipeline/planner path below.
+
+                if not orch_result.approved:
+                    ui.muted(f"  (multi-agent declined — {orch_result.explanation})")
+                    # Fall through to single-agent path
+
+            except Exception as _oe:
+                ui.muted(f"  (orchestration skipped: {_oe})")
+
+        # Fallback: planner + single-agent inner loop
         if _should_plan(user_input):
-            plan_dict, plan_prose = ask_planner(user_input)
-            if plan_dict:
-                ui.plan(plan_dict)
-            elif plan_prose:
-                ui.plan_prose(plan_prose)
+            try:
+                plan_dict, plan_prose = ask_planner(user_input)
+                if plan_dict:
+                    ui.plan(plan_dict)
+                elif plan_prose:
+                    ui.plan_prose(plan_prose)
+            except Exception:
+                pass
 
     elif _complexity == "medium":
         # --- Medium: planner hint, then single-agent sequential execution ---
@@ -909,7 +956,7 @@ def run_agent(user_input, extra_system: str | None = None):
             elif plan_prose:
                 ui.plan_prose(plan_prose)
 
-    # else: simple → no planner, no parallel, straight to inner loop
+    # else: simple Ã¢-- no planner, no parallel, straight to inner loop
 
     if session.mode == "plan":
         ui.plan_mode_active()
@@ -922,6 +969,22 @@ def run_agent(user_input, extra_system: str | None = None):
     session.append({"role": "user", "content": user_content})
 
     result = run_inner_loop(session, MAX_TOOL_TURNS, verbose_usage=True)
+
+    # --- Experience Engine: record task outcome ---
+    try:
+        from agent.experience import get_experience
+        _exp2 = get_experience(".")
+        _exp2.learn(
+            "task",
+            title=user_input[:80],
+            summary=result.content[:200] if result.content else "",
+            tags=[_complexity, getattr(_task_profile, "category", "coding")],
+            success=(result.status == "done"),
+            importance=0.7 if _complexity == "complex" else 0.5,
+            extra={"turns": result.turns_used, "status": result.status},
+        )
+    except Exception:
+        pass
 
     # Persist refreshed cumulative tokens / mode / profile so /resume
     # sees the post-turn state.

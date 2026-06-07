@@ -271,3 +271,173 @@ def lookup_dependents(name, directory="."):
         if len(calls) > 30:
             out.append(f"  ...({len(calls) - 30} more)")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# New retrieval-engine tools
+# ---------------------------------------------------------------------------
+
+
+def fts_search(query, path=".", limit=20):
+    """Full-text search via SQLite FTS5 index.
+
+    Faster than grep for repeated searches on the same repo because
+    results come from a pre-built on-disk index with BM25 ranking.
+    The index is built lazily on first call and updated incrementally.
+
+    Returns ranked ``path\\tscore\\tsnippet`` lines.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return err("BAD_ARGS", "query must be a non-empty string")
+
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit = 20
+
+    try:
+        from agent.retrieval.fts_index import search as _fts
+        results = _fts(query.strip(), directory=path, limit=limit)
+    except Exception as exc:
+        return err("EXEC_FAILED", "FTS search failed", str(exc))
+
+    if not results:
+        return "(no FTS matches — index may still be building; try grep as fallback)"
+
+    lines = []
+    for file_path, score, snippet in results:
+        snippet_clean = snippet.replace("\n", " ")[:120]
+        lines.append(f"{file_path}\t{score:.2f}\t{snippet_clean}")
+    return "\n".join(lines)
+
+
+def ast_search(pattern, language=None, path="."):
+    """Structural code search using AST patterns.
+
+    Finds code by *structure* rather than text, so it works regardless
+    of formatting. Supports named patterns and raw ast-grep patterns.
+
+    Named patterns:
+      python:     function, async_function, class, decorator, import,
+                  from_import, lambda, with_statement, try_except
+      javascript: function, arrow_function, class, async_function,
+                  import, export, react_component, react_hook, api_route
+
+    Falls back to repo_index AST index for Python when ast-grep is absent.
+    """
+    if not isinstance(pattern, str) or not pattern.strip():
+        return err("BAD_ARGS", "pattern must be a non-empty string")
+
+    try:
+        from agent.retrieval.ast_search import search as _ast
+        results = _ast(pattern.strip(), language=language, directory=path)
+    except Exception as exc:
+        return err("EXEC_FAILED", "AST search failed", str(exc))
+
+    if not results:
+        return (
+            f"(no structural matches for '{pattern}'; "
+            f"try grep for text-based search)"
+        )
+
+    lines = [
+        f"{r['path']}:{r.get('line', 0)}  {r.get('kind', '')}  {r.get('text', '')[:80]}"
+        for r in results[:50]
+    ]
+    if len(results) > 50:
+        lines.append(f"...({len(results) - 50} more matches)")
+    return "\n".join(lines)
+
+
+def graphify_query(query, query_type="semantic", path="."):
+    """Query the code knowledge graph via Graphify.
+
+    Uses the graphifyy knowledge graph when available, falling back to
+    the AST-based repo_index for relational queries.
+
+    query_type options:
+      semantic   — find semantically related symbols (default)
+      callers    — find all call-sites of a symbol
+      callees    — find all functions called inside a symbol
+      imports    — find modules a file imports
+      dependents — find files that depend on a symbol/module
+    """
+    if not isinstance(query, str) or not query.strip():
+        return err("BAD_ARGS", "query must be a non-empty string")
+
+    valid_types = ("semantic", "callers", "callees", "imports", "dependents")
+    if query_type not in valid_types:
+        return err(
+            "BAD_ARGS",
+            f"query_type must be one of: {', '.join(valid_types)}",
+        )
+
+    try:
+        from agent.retrieval.graphify_adapter import get_adapter
+        adapter = get_adapter(path)
+        q = query.strip()
+
+        if query_type == "callers":
+            results = adapter.get_callers(q)
+        elif query_type == "callees":
+            results = adapter.get_callees(q)
+        elif query_type == "imports":
+            results = adapter.get_imports(q)
+        elif query_type == "dependents":
+            results = adapter.get_dependents(q)
+        else:
+            results = adapter.query_related(q)
+    except Exception as exc:
+        return err("EXEC_FAILED", "Graphify query failed", str(exc))
+
+    if not results:
+        # Fall back to AST-based lookup
+        if query_type in ("callers", "dependents"):
+            return lookup_dependents(query.strip(), directory=path)
+        if query_type == "imports":
+            return lookup_imports(query.strip(), directory=path)
+        return f"(no graph results for '{query}'; try lookup_symbol or lookup_dependents)"
+
+    lines = []
+    for r in results[:40]:
+        if isinstance(r, dict):
+            parts = [
+                str(r.get("path", "")),
+                str(r.get("kind", "")),
+                str(r.get("name", "")),
+            ]
+            lines.append("  ".join(p for p in parts if p))
+        else:
+            lines.append(str(r))
+    return "\n".join(lines)
+
+
+def search_smart(query, path=".", engines=None):
+    """Intelligent multi-engine search that automatically picks the best strategy.
+
+    Classifies the query and routes to the cheapest engine first:
+      keyword    → ripgrep
+      symbol     → AST index (lookup_symbol)
+      structural → ast-grep
+      docs       → SQLite FTS5
+      relational → Graphify + repo_index
+      semantic   → sentence-transformers
+      complex    → combine all engines
+
+    Pass ``engines`` as a comma-separated list to force specific engines:
+      e.g. ``engines="ripgrep,fts"``
+    """
+    if not isinstance(query, str) or not query.strip():
+        return err("BAD_ARGS", "query must be a non-empty string")
+
+    engine_list = None
+    if isinstance(engines, str) and engines.strip():
+        engine_list = [e.strip() for e in engines.split(",") if e.strip()]
+
+    try:
+        from agent.retrieval.engine import search as _smart
+        result = _smart(query.strip(), path=path, engines=engine_list, max_results=20)
+    except Exception as exc:
+        return err("EXEC_FAILED", "smart search failed", str(exc))
+
+    return result or "(no matches found)"

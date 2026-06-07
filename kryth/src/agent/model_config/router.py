@@ -71,7 +71,7 @@ def get_llm(role: str = "main") -> tuple[Any, str]:
             # Find provider config
             pcfg = cfg.providers.get(spec.provider)
             api_key = (pcfg.api_key if pcfg else "") or _env_key_for(spec.provider)
-            base_url = (pcfg.base_url if pcfg else "") or _default_url(spec.provider)
+            base_url = (pcfg.base_url if pcfg else "") or getenv("KRYTH_BASE_URL") or _default_url(spec.provider)
             timeout = pcfg.timeout if pcfg else 60.0
             client = _get_or_create_client(
                 provider=spec.provider,

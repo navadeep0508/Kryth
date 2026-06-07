@@ -1239,6 +1239,8 @@ def summarize(messages_to_compress: list) -> str:  # noqa: C901
             )
 
     blob = "\n".join(rendered)[:12000]
+    # Sanitize: replace any characters that cannot be encoded to UTF-8 (e.g., surrogates)
+    blob = blob.encode("utf-8", errors="replace").decode("utf-8")
 
     try:
         response = _retry(

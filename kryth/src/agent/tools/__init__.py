@@ -34,6 +34,10 @@ from agent.tools._search import (
     lookup_symbol,
     lookup_imports,
     lookup_dependents,
+    fts_search,
+    ast_search,
+    graphify_query,
+    search_smart,
 )
 from agent.tools._shell import run_command, task_output
 from agent.tools._browser import check_browser_errors
@@ -74,9 +78,46 @@ from agent.tools._git import git_op
 from agent.tools._verify import verify_files
 from agent.tools._debug import diagnose_error
 from agent.tools._project_runner import run_tests, run_install
+from agent.tools._terminal import (
+    shell_exec,
+    shell_state,
+    shell_plan,
+    shell_run_plan,
+    shell_build_test_loop,
+    process_list,
+    process_kill,
+    terminal_memory_recall,
+)
 from agent.tools._checkpoint import checkpoint
 from agent.tools._task_graph import run_task_graph
-from agent.tools._specs import TOOL_SPECS
+from agent.tools._supervisor import (
+    run_supervised_mission,
+    supervisor_status,
+    supervisor_predict,
+    supervisor_health,
+    supervisor_replan,
+    supervisor_recover,
+    ownership_claim,
+    ownership_release,
+    ownership_status,
+    budget_status,
+)
+from agent.tools._specs import TOOL_SPECS as _BASE_SPECS
+from agent.tools._retrieval_specs import RETRIEVAL_TOOL_SPECS
+from agent.tools._terminal_specs import TERMINAL_TOOL_SPECS
+from agent.tools._browser_profile_specs import BROWSER_PROFILE_TOOL_SPECS
+from agent.tools._browser_profile import BROWSER_PROFILE_TOOLS
+from agent.tools._supervisor_specs import SUPERVISOR_TOOL_SPECS
+from agent.tools._mission_specs import MISSION_TOOL_SPECS
+from agent.tools._mission import MISSION_TOOLS
+from agent.tools._factory_specs import FACTORY_TOOL_SPECS
+from agent.tools._factory import FACTORY_TOOLS
+
+TOOL_SPECS = (
+    _BASE_SPECS + RETRIEVAL_TOOL_SPECS + TERMINAL_TOOL_SPECS
+    + BROWSER_PROFILE_TOOL_SPECS + SUPERVISOR_TOOL_SPECS
+    + MISSION_TOOL_SPECS + FACTORY_TOOL_SPECS
+)
 
 
 TOOLS = {
@@ -96,6 +137,10 @@ TOOLS = {
     "lookup_symbol": lookup_symbol,
     "lookup_imports": lookup_imports,
     "lookup_dependents": lookup_dependents,
+    "fts_search": fts_search,
+    "ast_search": ast_search,
+    "graphify_query": graphify_query,
+    "search_smart": search_smart,
     "todo_write": todo_write,
     "todo_read": todo_read,
     "exit_plan_mode": exit_plan_mode,
@@ -110,6 +155,15 @@ TOOLS = {
     "checkpoint": checkpoint,
     "run_task_graph": run_task_graph,
     "add_memory": add_memory,
+    # Terminal engine tools
+    "shell_exec": shell_exec,
+    "shell_state": shell_state,
+    "shell_plan": shell_plan,
+    "shell_run_plan": shell_run_plan,
+    "shell_build_test_loop": shell_build_test_loop,
+    "process_list": process_list,
+    "process_kill": process_kill,
+    "terminal_memory_recall": terminal_memory_recall,
     "check_browser_errors": check_browser_errors,
     "open_url": open_url,
     "fill_form": fill_form,
@@ -138,6 +192,23 @@ TOOLS = {
     "save_research_finding": save_research_finding,
     "get_research_report": get_research_report,
     "browser_use_task": browser_use_task,
+    # Browser profile manager tools
+    **BROWSER_PROFILE_TOOLS,
+    # Execution Supervisor tools
+    "run_supervised_mission": run_supervised_mission,
+    "supervisor_status": supervisor_status,
+    "supervisor_predict": supervisor_predict,
+    "supervisor_health": supervisor_health,
+    "supervisor_replan": supervisor_replan,
+    "supervisor_recover": supervisor_recover,
+    "ownership_claim": ownership_claim,
+    "ownership_release": ownership_release,
+    "ownership_status": ownership_status,
+    "budget_status": budget_status,
+    # Mission Graph & Workspace Intelligence tools
+    **MISSION_TOOLS,
+    # Autonomous Software Factory tools
+    **FACTORY_TOOLS,
 }
 
 
@@ -151,6 +222,10 @@ READ_ONLY_TOOLS = {
     "lookup_symbol",
     "lookup_imports",
     "lookup_dependents",
+    "fts_search",
+    "ast_search",
+    "graphify_query",
+    "search_smart",
     "todo_read",
     "todo_write",
     "task_output",
@@ -166,6 +241,31 @@ READ_ONLY_TOOLS = {
     "browser_state",
     "browser_screenshot",
     "get_research_report",
+    # Browser profile manager (read-only queries)
+    "browser_profile_list",
+    "browser_session_status",
+    "browser_profile_get_user_data_dir",
+    # Terminal engine (read-only queries)
+    "shell_state",
+    "shell_plan",
+    "process_list",
+    "terminal_memory_recall",
+    # Supervisor (read-only queries)
+    "supervisor_status",
+    "supervisor_predict",
+    "supervisor_health",
+    "ownership_status",
+    "budget_status",
+    # Mission (read-only queries)
+    "mission_status",
+    "mission_summary",
+    "mission_impact_analysis",
+    # Factory (read-only queries)
+    "factory_status",
+    "factory_architecture_audit",
+    "factory_code_review",
+    "factory_dashboard",
+    "factory_maintenance_scan",
 }
 
 

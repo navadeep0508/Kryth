@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
+import rich.box
 from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.table import Table
@@ -72,11 +73,12 @@ def hero_banner(*, model: str, base_url: str, skill_count: int, version: str, no
 
     return Panel(
         body,
-        title=Text.assemble((CORE, "kryth.core"), (" KRYTH", "title"), ("  ", ""), ("Autonomous AI Coding Assistant", "muted")),
+        title=Text.assemble((CORE, "kryth.core"), (" KRYTH", "title")),
         title_align="left",
         border_style="hud.border",
         padding=(1, 2),
         expand=True,
+        box=rich.box.ROUNDED,
     )
 
 
@@ -142,6 +144,7 @@ def startup_reveal(*, model: str, base_url: str, skill_count: int, version: str,
         border_style="hud.border",
         padding=(1, 2),
         expand=True,
+        box=rich.box.ROUNDED,
     ))
 
     console.print()
@@ -166,6 +169,7 @@ def cognition_timeline(steps: Sequence[CognitionStep], *, title: str = "thinking
         border_style="divider",
         padding=(1, 2),
         expand=False,
+        box=rich.box.ROUNDED,
     )
 
 
@@ -180,7 +184,7 @@ def execution_graph(items: Iterable[dict]) -> Panel:
         glyph, style = _STATE.get(status, _STATE["pending"])
         rows.add_row(Text(glyph, style=style), Text(str(item.get("text", "operation")), style="title"), Text(str(item.get("meta", "")), style="muted"))
 
-    return Panel(rows, title=Text.assemble((CORE, "kryth.core"), (" execution", "section.exec")), border_style="divider", padding=(1, 2), expand=False)
+    return Panel(rows, title=Text.assemble((CORE, "kryth.core"), (" execution", "section.exec")), border_style="divider", padding=(1, 2), expand=False, box=rich.box.ROUNDED)
 
 
 def diagnostic_card(*, title: str, message: str, severity: str = "info", suggestions: Sequence[str] = ()) -> Panel:
@@ -194,7 +198,7 @@ def diagnostic_card(*, title: str, message: str, severity: str = "info", suggest
         for suggestion in suggestions:
             table.add_row(Text(CORE, style="kryth.core"), Text(suggestion, style="muted"))
         body.extend([Text(""), table])
-    return Panel(Group(*body), title=Text.assemble((glyph, style), (" " + title, f"bold {style}")), border_style=style, padding=(1, 2), expand=False)
+    return Panel(Group(*body), title=Text.assemble((glyph, style), (" " + title, f"bold {style}")), border_style=style, padding=(1, 2), expand=False, box=rich.box.ROUNDED)
 
 
 def file_safety_header(path: str, *, added: int = 0, removed: int = 0, snapshot: bool = True) -> Text:

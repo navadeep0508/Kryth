@@ -309,6 +309,76 @@ def muted(message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Next-Gen UI emitters
+# ---------------------------------------------------------------------------
+
+def mission_start(goal: str, estimated_duration: str = "") -> None:
+    emit(EventKind.MISSION_START, goal=goal, estimated_duration=estimated_duration)
+
+
+def mission_progress(percent: int, stage: str = "") -> None:
+    emit(EventKind.MISSION_PROGRESS, percent=percent, stage=stage)
+
+
+def mission_complete(summary: dict | None = None) -> None:
+    emit(EventKind.MISSION_COMPLETE, summary=summary or {})
+
+
+def mission_failed(reason: str = "") -> None:
+    emit(EventKind.MISSION_FAILED, reason=reason)
+
+
+def agent_update(name: str, status: str, task: str = "", progress: int = 0) -> None:
+    """Update a named agent's status in the multi-agent dashboard."""
+    emit(EventKind.AGENT_UPDATE, name=name, status=status, task=task, progress=progress)
+
+
+def timeline_event(message: str, kind: str = "info") -> None:
+    """Append an event to the live activity timeline."""
+    emit(EventKind.TIMELINE_EVENT, message=message, kind=kind)
+
+
+def engineering_action(label: str, status: str = "running", detail: str = "") -> None:
+    """Emit a high-level engineering action (hides raw tool names)."""
+    emit(EventKind.ENGINEERING_ACTION, label=label, status=status, detail=detail)
+
+
+def engineering_section(title: str) -> None:
+    emit(EventKind.ENGINEERING_SECTION, title=title)
+
+
+def layer_change(layer: str) -> None:
+    """Switch the active UI layer: executive | engineering | terminal | debug."""
+    emit(EventKind.LAYER_CHANGE, layer=layer)
+
+
+def approval_batch(items: list, risk: str = "low", estimated_time: str = "") -> None:
+    """Request batch approval for a list of planned actions."""
+    emit(EventKind.APPROVAL_BATCH, items=items, risk=risk, estimated_time=estimated_time)
+
+
+def reflection_show(worked: str = "", failed: str = "", learned: str = "") -> None:
+    emit(EventKind.REFLECTION, worked=worked, failed=failed, learned=learned)
+
+
+def memory_display(similar_tasks: int = 0, best_workflow: str = "", success_rate: int = 0) -> None:
+    emit(EventKind.MEMORY_DISPLAY, similar_tasks=similar_tasks,
+         best_workflow=best_workflow, success_rate=success_rate)
+
+
+def terminal_summary(command: str, status: str, metrics: dict | None = None,
+                     expandable_log: str = "") -> None:
+    """Emit an abstracted terminal result (replaces raw log flood)."""
+    emit(EventKind.TERMINAL_SUMMARY, command=command, status=status,
+         metrics=metrics or {}, expandable_log=expandable_log)
+
+
+def dag_update(nodes: list) -> None:
+    """Update the DAG visualization with current execution graph state."""
+    emit(EventKind.DAG_UPDATE, nodes=nodes)
+
+
+# ---------------------------------------------------------------------------
 # Re-exports
 # ---------------------------------------------------------------------------
 
@@ -341,4 +411,11 @@ __all__ = [
     "info", "warn", "error", "success", "debug", "muted",
     # plumbing
     "BUS", "Event", "EventKind", "emit", "get_logger",
+    # next-gen UI
+    "mission_start", "mission_progress", "mission_complete", "mission_failed",
+    "agent_update", "timeline_event",
+    "engineering_action", "engineering_section",
+    "layer_change", "approval_batch",
+    "reflection_show", "memory_display",
+    "terminal_summary", "dag_update",
 ]

@@ -95,6 +95,42 @@ class EventKind(str, Enum):
     # Generic log ----------------------------------------------------
     LOG = "log"
 
+    # ── Next-Gen UI Events ─────────────────────────────────────────
+
+    # Mission lifecycle (Executive Layer)
+    MISSION_START = "mission.start"       # data: goal, estimated_duration
+    MISSION_PROGRESS = "mission.progress" # data: percent (0-100), stage
+    MISSION_COMPLETE = "mission.complete" # data: summary dict
+    MISSION_FAILED = "mission.failed"     # data: reason
+
+    # Agent dashboard (multi-agent mode)
+    AGENT_UPDATE = "agent.update"         # data: name, status, task, progress (0-100)
+
+    # Timeline events
+    TIMELINE_EVENT = "timeline.event"     # data: message, kind (info/success/warn/error)
+
+    # Engineering layer actions (abstracted tool names)
+    ENGINEERING_ACTION = "engineering.action"   # data: label, status (running/done/failed), detail
+    ENGINEERING_SECTION = "engineering.section" # data: title
+
+    # UI layer switching
+    LAYER_CHANGE = "layer.change"         # data: layer (executive/engineering/terminal/debug)
+
+    # Batch approval (replaces per-tool prompts)
+    APPROVAL_BATCH = "approval.batch"     # data: items list, risk, estimated_time
+
+    # Reflection at task end
+    REFLECTION = "reflection.show"        # data: worked, failed, learned, store_prompt
+
+    # Memory display
+    MEMORY_DISPLAY = "memory.display"     # data: similar_tasks, best_workflow, success_rate
+
+    # Terminal dashboard (abstracted shell output)
+    TERMINAL_SUMMARY = "terminal.summary" # data: command, status, metrics dict, expandable_log
+
+    # DAG visualization
+    DAG_UPDATE = "dag.update"             # data: nodes list [{id, label, status, active}]
+
 
 @dataclass
 class Event:

@@ -18,7 +18,7 @@ REPL_COMMANDS = {
     "/clear", "/todos", "/tokens", "/plan", "/skills", "/help", "/diag",
     "/log", "/resume", "/memory", "/profile", "/config", "/bridge",
     "/models", "/tools", "/status", "/session",
-    "/graph", "/init",
+    "/graph", "/init", "/layer",
 }
 
 
@@ -1022,6 +1022,36 @@ def _cmd_bridge(args: str = "") -> None:
 _HANDLERS["/bridge"] = _cmd_bridge
 
 
+def _cmd_layer(args: str = "") -> None:
+    """/layer                show current UI layer
+    /layer executive     default — mission/progress/results only
+    /layer engineering   section headers + action labels
+    /layer terminal      structured metric panels
+    /layer debug         raw tool calls, full logs, tokens
+    """
+    layers = ("executive", "engineering", "terminal", "debug")
+    arg = (args or "").strip().lower()
+
+    if not arg:
+        try:
+            from agent.ui.ui_state import ui_state
+            current = ui_state.get_layer().value
+        except Exception:
+            current = "executive"
+        ui.muted(f"current layer: {current}")
+        ui.muted("available: " + "  ·  ".join(layers))
+        return
+
+    if arg not in layers:
+        ui.error(f"unknown layer '{arg}'  —  choose: {', '.join(layers)}")
+        return
+
+    ui.layer_change(arg)
+
+
+_HANDLERS["/layer"] = _cmd_layer
+
+
 def _cmd_graph(args: str = "") -> None:
     """/graph              show graph status
     /graph build         build or rebuild the project graph
@@ -1111,6 +1141,7 @@ def _cmd_init(args: str = "") -> None:
 
 _HANDLERS["/graph"] = _cmd_graph
 _HANDLERS["/init"]  = _cmd_init
+_HANDLERS["/layer"] = _cmd_layer
 
 
 def handle_repl_command(line: str) -> bool:

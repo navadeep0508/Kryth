@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kryth"
-version = "2.1.0"
+version = "2.4.0"
 description = "KRYTH CLI: Autonomous AI Coding Agent — Build, debug, and deploy entire applications with AI. Terminal-based coding assistant with OpenAI-compatible support, sessions, and powerful tools."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
   { name = "Navadeep", email = "hello@kryth.ai" }
@@ -67,6 +67,20 @@ vector = [
 skills = [
   "pyyaml>=6.0",
 ]
+# Retrieval engine — high-performance indexing, caching, and file reading
+retrieval = [
+  "xxhash>=3.0.0",        # fast file fingerprinting (cache invalidation)
+  "diskcache>=5.6.0",     # persistent on-disk cache for search results
+  "orjson>=3.9.0",        # fast JSON serialization (3-10x stdlib)
+  "chardet>=5.0.0",       # encoding detection for non-UTF-8 files
+  "watchfiles>=0.21.0",   # fast file watcher (Rust-backed)
+  "sentence-transformers>=2.0.0",  # semantic search embeddings
+]
+# Terminal engine — persistent shells, process management, PTY support
+terminal = [
+  "psutil>=5.9.0",        # process monitoring (CPU, RAM, ports, PIDs)
+  "ptyprocess>=0.7.0",    # persistent PTY shell sessions (Unix)
+]
 all = [
   "playwright>=1.44.0",
   "graphifyy>=0.1.0",
@@ -76,6 +90,16 @@ all = [
   "fastapi>=0.110.0",
   "uvicorn>=0.29.0",
   "websockets>=12.0",
+  # Retrieval engine
+  "xxhash>=3.0.0",
+  "diskcache>=5.6.0",
+  "orjson>=3.9.0",
+  "chardet>=5.0.0",
+  "watchfiles>=0.21.0",
+  "sentence-transformers>=2.0.0",
+  # Terminal engine
+  "psutil>=5.9.0",
+  "ptyprocess>=0.7.0",
 ]
 
 [project.scripts]

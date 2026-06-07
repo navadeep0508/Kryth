@@ -54,6 +54,15 @@ def _checkpoint(path: str) -> None:
 
 DEFAULT_READ_LIMIT = 2000
 
+# Lazy import for the retrieval file reader — avoids circular imports
+# and keeps the module loadable even if the retrieval package is absent.
+def _get_file_reader():
+    try:
+        from agent.retrieval import file_reader
+        return file_reader
+    except ImportError:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Atomic write
@@ -406,6 +415,30 @@ def read_file(path, offset=0, limit=None):
         )
     else:
         try:
+            # Use mmap-aware reader for large files to avoid loading
+            # everything into memory just to slice a window of lines.
+            fr = _get_file_reader()
+            if fr is not None:
+                try:
+                    file_size = os.path.getsize(path)
+                    if file_size >= fr.cfg.MMAP_THRESHOLD:
+                        # For large files: count total lines via a fast pass,
+                        # then read just the requested window via mmap.
+                        # We still need total for the "N more lines" hint,
+                        # but we don't load all lines into memory.
+                        with open(path, "rb") as _f:
+                            total = _f.read().count(b"\n")
+                        raw_lines = fr.read_lines(path, offset, limit or DEFAULT_READ_LIMIT)
+                        out = []
+                        for i, line in enumerate(raw_lines, start=(offset or 0) + 1):
+                            out.append(f"{i:6d}\t{line.rstrip(chr(10))}")
+                        end = (offset or 0) + len(raw_lines)
+                        if end < total:
+                            out.append(f"...[{total - end} more lines; call with offset={end}]")
+                        return "\n".join(out) if out else "(empty file)"
+                except Exception:
+                    pass  # fall through to standard read below
+
             with open(path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except FileNotFoundError:

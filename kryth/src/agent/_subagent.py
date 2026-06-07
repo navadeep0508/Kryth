@@ -104,6 +104,7 @@ def _build_nested(
     description: str,
     prompt: str,
     parent_depth: int,
+    parent_can_spawn: bool = True,
     agent_type: AgentType = AgentType.GENERAL,
 ):
     """Construct a fresh Session for a subagent at depth = parent+1."""
@@ -120,6 +121,9 @@ def _build_nested(
         "content": f"[Task from parent agent: {description}]\n\n{prompt}",
     })
     nested.depth = parent_depth + 1
+    # All subagents (depth >= 1) are workers and cannot spawn further agents.
+    # Only the root coordinator (depth=0) has can_spawn=True.
+    nested.can_spawn = False
     return nested
 
 
@@ -160,13 +164,18 @@ def spawn_agent(description, prompt, max_turns=8, agent_type=None):
         agent_type = AgentType.GENERAL
 
     parent = get_session()
-    if parent.depth >= 3:
+    if parent.depth >= 2:
         return err(
             "INVALID_STATE",
-            "subagent nesting depth limit (3) reached",
+            "subagent nesting depth limit (2) reached",
+        )
+    if not getattr(parent, 'can_spawn', True):
+        return err(
+            "INVALID_STATE",
+            "worker agents cannot spawn additional agents",
         )
 
-    nested = _build_nested(description, prompt, parent.depth, agent_type)
+    nested = _build_nested(description, prompt, parent.depth, parent.can_spawn, agent_type)
     token = push_session(nested)
     ui.subagent_start(depth=nested.depth, description=description)
 
@@ -209,12 +218,13 @@ MAX_PARALLEL_AGENTS = 4
 
 
 def _run_one(idx: int, description: str, prompt: str, max_turns: int,
-             parent_depth: int, agent_type: AgentType = AgentType.GENERAL) -> tuple[int, str]:
+             parent_depth: int, parent_can_spawn: bool = True,
+             agent_type: AgentType = AgentType.GENERAL) -> tuple[int, str]:
     """Worker body: build session, push into THIS thread's context, run."""
     from agent.session import push_session, pop_session
     from agent.agent_loop import run_inner_loop
 
-    nested = _build_nested(description, prompt, parent_depth, agent_type)
+    nested = _build_nested(description, prompt, parent_depth, parent_can_spawn, agent_type)
     token = push_session(nested)
     ui.subagent_start(depth=nested.depth, description=f"[{idx}] {description}")
     try:
@@ -256,6 +266,7 @@ def spawn_agents_parallel(tasks, max_concurrency: int = 3):
     if parent.depth >= 2:
         return err("INVALID_STATE", "subagent nesting depth limit (2) reached")
     parent_depth = parent.depth
+    parent_can_spawn = getattr(parent, 'can_spawn', True)
 
     plan: list[tuple[int, str, str, int, AgentType]] = []
     for i, t in enumerate(tasks):

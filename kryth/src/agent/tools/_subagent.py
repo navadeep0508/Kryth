@@ -16,7 +16,7 @@ SUBAGENT_SYSTEM_SUFFIX = (
 )
 
 
-def _build_nested(description: str, prompt: str, parent_depth: int):
+def _build_nested(description: str, prompt: str, parent_depth: int, parent_can_spawn: bool = True):
     """Construct a fresh Session for a subagent at depth = parent+1."""
     from agent.session import Session
     from agent.prompts import SYSTEM_PROMPT
@@ -29,6 +29,9 @@ def _build_nested(description: str, prompt: str, parent_depth: int):
         "content": f"[Task from parent agent: {description}]\n\n{prompt}",
     })
     nested.depth = parent_depth + 1
+    # All subagents (depth >= 1) are workers and cannot spawn further agents.
+    # Only the root coordinator (depth=0) has can_spawn=True.
+    nested.can_spawn = False
     return nested
 
 
@@ -56,7 +59,7 @@ def spawn_agent(description, prompt, max_turns=8):
             "subagent nesting depth limit (2) reached",
         )
 
-    nested = _build_nested(description, prompt, parent.depth)
+    nested = _build_nested(description, prompt, parent.depth, getattr(parent, 'can_spawn', True))
     token = push_session(nested)
     ui.subagent_start(depth=nested.depth, description=description)
 
@@ -77,12 +80,12 @@ MAX_PARALLEL_AGENTS = 4
 
 
 def _run_one(idx: int, description: str, prompt: str, max_turns: int,
-             parent_depth: int) -> tuple[int, str]:
+             parent_depth: int, parent_can_spawn: bool = True) -> tuple[int, str]:
     """Worker body: build session, push into THIS thread's context, run."""
     from agent.session import push_session, pop_session
     from agent.agent_loop import run_inner_loop
 
-    nested = _build_nested(description, prompt, parent_depth)
+    nested = _build_nested(description, prompt, parent_depth, parent_can_spawn)
     token = push_session(nested)
     ui.subagent_start(depth=nested.depth, description=f"[{idx}] {description}")
     try:
@@ -122,6 +125,7 @@ def spawn_agents_parallel(tasks, max_concurrency: int = 3):
     if parent.depth >= 2:
         return err("INVALID_STATE", "subagent nesting depth limit (2) reached")
     parent_depth = parent.depth
+    parent_can_spawn = getattr(parent, 'can_spawn', True)
 
     plan: list[tuple[int, str, str, int]] = []
     for i, t in enumerate(tasks):
@@ -149,7 +153,7 @@ def spawn_agents_parallel(tasks, max_concurrency: int = 3):
         # but ContextVar.set inside the worker doesn't leak back out.
         ctx = contextvars.copy_context()
         futures = [
-            ex.submit(ctx.copy().run, _run_one, idx, desc, prompt, mt, parent_depth)
+            ex.submit(ctx.copy().run, _run_one, idx, desc, prompt, mt, parent_depth, parent_can_spawn)
             for (idx, desc, prompt, mt) in plan
         ]
         for fut in as_completed(futures):

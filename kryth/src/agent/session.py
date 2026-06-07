@@ -32,6 +32,7 @@ class Session:
     cumulative_in_tokens: int = 0
     cumulative_out_tokens: int = 0
     mode: str = "default"
+    can_spawn: bool = True  # Only coordinator (depth=0) can spawn agents
     # Permission profile (readonly / safe / default / auto / yolo).
     # Resolved against ``agent.profiles`` to decide how aggressively to
     # auto-allow tool calls. Per-session so /resume restores the
@@ -44,6 +45,10 @@ class Session:
     # loop trying the same blocked call.
     denial_counts: dict = field(default_factory=dict)
     depth: int = 0
+    # Multi-agent orchestration mode. Controls whether parallel/sequential
+    # agent teams are used and how approval is obtained.
+    # Values: "ASK" | "AUTO" | "SESSION_APPROVED" | "ALWAYS_SINGLE"
+    multi_agent_mode: str = "ASK"
 
     def reset(self) -> None:
         self.messages = []

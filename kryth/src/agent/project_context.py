@@ -254,7 +254,7 @@ def git_status_snapshot(start: str = ".") -> str:
             text=True,
             timeout=3,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return ""
     if is_repo.returncode != 0:
         return ""
@@ -268,7 +268,7 @@ def git_status_snapshot(start: str = ".") -> str:
             errors="replace",
             timeout=5,
         )
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError):
         return ""
 
     out = (status.stdout or "").strip()

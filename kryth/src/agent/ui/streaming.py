@@ -1,38 +1,924 @@
-"""Streaming renderer for KRYTH responses."""
+"""Streaming renderer for KRYTH responses.
+
+Architecture
+------------
+
+TagParser   — generic state machine over a configurable set of tag specs.
+              Splits raw chunk bytes into a sequence of (state, text) events.
+              Stateless between calls; all cross-chunk state lives in
+              TagParserState (a plain dataclass the caller owns).
+
+BlockRenderer — maps TagParser events to terminal output.
+                Owns the visual treatment for each tag (think / plan / …).
+                Swappable per tag-spec without touching the parser.
+
+StreamPrinter — the public surface. Orchestrates TagParser + BlockRenderer
+                alongside the existing reasoning-spinner path (for models
+                that expose a native reasoning field rather than <think>).
+
+Adding a new tag
+----------------
+1. Register a TagSpec in _TAG_SPECS (name, open_tag, close_tag,
+   header, glyph, ansi_color).
+2. Done. The parser, state machine, and renderer all handle it
+   automatically.
+"""
 
 from __future__ import annotations
 
+import re
 import sys
 import time
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Callable, Dict, Iterator
 
 from agent.ui.console import console
 from agent.ui.motion import motion_enabled, sleep, DIAMOND_THINKING_FRAMES
 from agent.ui.theme import CORE
 
-# Parallel build mode: when True, the "Evaluating..." spinner is suppressed
-# to avoid garbled output when multiple agents run concurrently.
+
+# ── ANSI palette ─────────────────────────────────────────────────────────────
+
+_ANSI_RESET  = "\033[0m"
+_ANSI_BOLD   = "\033[1m"
+_ANSI_DIM    = "\033[2m"
+_ANSI_GOLD   = "\033[38;2;232;255;58m"   # kryth.core  #E8FF3A
+_ANSI_CYAN   = "\033[38;2;100;200;240m"  # thinking    #64C8F0
+_ANSI_VIOLET = "\033[38;2;180;140;255m"  # plan        #B48CFF
+_ANSI_AMBER  = "\033[38;2;255;180;50m"   # warning     #FFB432
+_ANSI_GREEN  = "\033[38;2;74;222;128m"   # success     #4ADE80
+_ANSI_RED    = "\033[38;2;255;90;90m"    # error       #FF5A5A
+_ANSI_TEAL   = "\033[38;2;64;200;180m"   # exec stream #40C8B4
+_ANSI_MUTED  = "\033[38;2;136;136;136m"
+_ANSI_GHOST  = "\033[38;2;48;48;48m"     # narration dim — nearly invisible on dark bg
+
+# Lines starting with these patterns are first-person LLM narration.
+# We don't suppress them (they may help developers debug) but render
+# them as near-invisible ghost text so they don't distract the user.
+_NARRATION_RE = re.compile(
+    r"^[ \t]*("
+    r"I[' ]?(?:ll|'ll|'m|'ve|'d| will| am| need| should| can| see| know| have| noticed| found| realize)\b|"
+    r"Let(?:'s| me)\b|"
+    r"(?:Now|Next|First|Then|Finally|After that)[,.]?\s+(?:I|let me|let's|we)\b|"
+    r"(?:Now|Next) (?:I'm|I'll|I need|I should|I can)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Left-border glyph rendered before every thinking/plan line
+_BORDER = "│"
+
+_PULSE_STYLES = [
+    "\033[38;2;136;136;136m",
+    "\033[38;2;180;180;180m",
+    "\033[38;2;220;220;220m",
+    "\033[38;2;255;255;255m",
+    "\033[38;2;220;220;220m",
+    "\033[38;2;180;180;180m",
+]
+
+
+# ── Tag specification ─────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class TagSpec:
+    """Everything the parser and renderer need for one tag type."""
+    name: str           # logical name, e.g. "thinking"
+    open_tag: str       # literal open tag, e.g. "<think>"
+    close_tag: str      # literal close tag, e.g. "</think>"
+    header: str         # header line printed when the block opens
+    glyph: str          # icon used in header
+    ansi_color: str     # ANSI escape for block text
+    show_live: bool = True  # False = suppress silently (tool_call, function, parameter)
+
+
+# The canonical set of known tags.  Add rows here to support new block types.
+_TAG_SPECS: tuple[TagSpec, ...] = (
+    TagSpec(
+        name="thinking",
+        open_tag="<think>",
+        close_tag="</think>",
+        header="◈ Thinking",
+        glyph="◈",
+        ansi_color=_ANSI_CYAN,
+        show_live=True,
+    ),
+    TagSpec(
+        name="thinking_alt",
+        open_tag="<thinking>",
+        close_tag="</thinking>",
+        header="◈ Thinking",
+        glyph="◈",
+        ansi_color=_ANSI_CYAN,
+        show_live=True,
+    ),
+    TagSpec(
+        name="plan",
+        open_tag="<plan>",
+        close_tag="</plan>",
+        header="◈ Planning",
+        glyph="◈",
+        ansi_color=_ANSI_VIOLET,
+        show_live=True,
+    ),
+    TagSpec(
+        name="warning",
+        open_tag="<warning>",
+        close_tag="</warning>",
+        header="▲ Warning",
+        glyph="▲",
+        ansi_color=_ANSI_AMBER,
+        show_live=True,
+    ),
+    # Silent tags — suppressed, never shown to the user
+    TagSpec(
+        name="tool_call",
+        open_tag="<tool_call>",
+        close_tag="</tool_call>",
+        header="",
+        glyph="",
+        ansi_color="",
+        show_live=False,
+    ),
+    TagSpec(
+        name="function",
+        open_tag="<function=",
+        close_tag="</function>",
+        header="",
+        glyph="",
+        ansi_color="",
+        show_live=False,
+    ),
+    TagSpec(
+        name="parameter",
+        open_tag="<parameter=",
+        close_tag="</parameter>",
+        header="",
+        glyph="",
+        ansi_color="",
+        show_live=False,
+    ),
+    # ── Universal provider reasoning tags ──────────────────────────────
+    # DeepSeek, GLM, Grok, Llama, Ollama, OpenRouter models
+    TagSpec(
+        name="reasoning",
+        open_tag="<reasoning>",
+        close_tag="</reasoning>",
+        header="◈ Thinking",
+        glyph="◈",
+        ansi_color=_ANSI_CYAN,
+        show_live=True,
+    ),
+    # Generic analysis / reflection tags used by some fine-tunes
+    TagSpec(
+        name="analysis",
+        open_tag="<analysis>",
+        close_tag="</analysis>",
+        header="◈ Thinking",
+        glyph="◈",
+        ansi_color=_ANSI_CYAN,
+        show_live=True,
+    ),
+    TagSpec(
+        name="reflect",
+        open_tag="<reflect>",
+        close_tag="</reflect>",
+        header="◈ Reflecting",
+        glyph="◈",
+        ansi_color=_ANSI_CYAN,
+        show_live=True,
+    ),
+    # ── Silent XML tool payload tags ───────────────────────────────────
+    # Anthropic / XML-format tool calling internals
+    TagSpec(
+        name="tool_name",
+        open_tag="<tool_name>",
+        close_tag="</tool_name>",
+        header="", glyph="", ansi_color="", show_live=False,
+    ),
+    TagSpec(
+        name="tool_use",
+        open_tag="<tool_use>",
+        close_tag="</tool_use>",
+        header="", glyph="", ansi_color="", show_live=False,
+    ),
+    TagSpec(
+        name="invoke",
+        open_tag="<invoke>",
+        close_tag="</invoke>",
+        header="", glyph="", ansi_color="", show_live=False,
+    ),
+    TagSpec(
+        name="parameters_block",
+        open_tag="<parameters>",
+        close_tag="</parameters>",
+        header="", glyph="", ansi_color="", show_live=False,
+    ),
+    TagSpec(
+        name="arguments",
+        open_tag="<arguments>",
+        close_tag="</arguments>",
+        header="", glyph="", ansi_color="", show_live=False,
+    ),
+    TagSpec(
+        name="input_block",
+        open_tag="<input>",
+        close_tag="</input>",
+        header="", glyph="", ansi_color="", show_live=False,
+    ),
+    # ── KRYTH Tag Protocol: live-streaming progress tags ──────────────────
+    TagSpec(name="exec_stream",  open_tag="<exec_stream>",  close_tag="</exec_stream>",  header="◈ Executing", glyph="◈", ansi_color=_ANSI_TEAL,  show_live=True),
+    TagSpec(name="build_stream", open_tag="<build_stream>", close_tag="</build_stream>", header="◈ Building",  glyph="◈", ansi_color=_ANSI_AMBER, show_live=True),
+    TagSpec(name="test_stream",  open_tag="<test_stream>",  close_tag="</test_stream>",  header="◈ Testing",   glyph="◈", ansi_color=_ANSI_CYAN,  show_live=True),
+    # ── KRYTH Tag Protocol: accumulate-and-render tags ────────────────────
+    TagSpec(name="display",           open_tag="<display>",           close_tag="</display>",           header="", glyph="",  ansi_color="",          show_live=True),
+    TagSpec(name="status",            open_tag="<status>",            close_tag="</status>",            header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="mission",           open_tag="<mission>",           close_tag="</mission>",           header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="timeline",          open_tag="<timeline>",          close_tag="</timeline>",          header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="task_start",        open_tag="<task_start>",        close_tag="</task_start>",        header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="task_update",       open_tag="<task_update>",       close_tag="</task_update>",       header="", glyph="·", ansi_color=_ANSI_MUTED, show_live=True),
+    TagSpec(name="task_complete",     open_tag="<task_complete>",     close_tag="</task_complete>",     header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="task_skip",         open_tag="<task_skip>",         close_tag="</task_skip>",         header="", glyph="○", ansi_color=_ANSI_MUTED, show_live=True),
+    TagSpec(name="todo",              open_tag="<todo>",              close_tag="</todo>",              header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="spinner",           open_tag="<spinner>",           close_tag="</spinner>",           header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="tool_read",         open_tag="<tool_read>",         close_tag="</tool_read>",         header="", glyph="📖", ansi_color="",          show_live=True),
+    TagSpec(name="tool_read_result",  open_tag="<tool_read_result>",  close_tag="</tool_read_result>",  header="", glyph="📖", ansi_color="",          show_live=True),
+    TagSpec(name="tool_write",        open_tag="<tool_write>",        close_tag="</tool_write>",        header="", glyph="📝", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="tool_write_result", open_tag="<tool_write_result>", close_tag="</tool_write_result>", header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="tool_edit",         open_tag="<tool_edit>",         close_tag="</tool_edit>",         header="", glyph="✏", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="diff",              open_tag="<diff>",              close_tag="</diff>",              header="", glyph="◈", ansi_color="",          show_live=True),
+    TagSpec(name="tool_edit_result",  open_tag="<tool_edit_result>",  close_tag="</tool_edit_result>",  header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="tool_delete",       open_tag="<tool_delete>",       close_tag="</tool_delete>",       header="", glyph="🗑", ansi_color=_ANSI_RED,   show_live=True),
+    TagSpec(name="tool_delete_result",open_tag="<tool_delete_result>",close_tag="</tool_delete_result>",header="", glyph="◆", ansi_color=_ANSI_RED,   show_live=True),
+    TagSpec(name="tool_search",       open_tag="<tool_search>",       close_tag="</tool_search>",       header="", glyph="🔍", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="tool_search_result",open_tag="<tool_search_result>",close_tag="</tool_search_result>",header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="tool_grep",         open_tag="<tool_grep>",         close_tag="</tool_grep>",         header="", glyph="🔍", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="tool_grep_result",  open_tag="<tool_grep_result>",  close_tag="</tool_grep_result>",  header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="exec",              open_tag="<exec>",              close_tag="</exec>",              header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="exec_result",       open_tag="<exec_result>",       close_tag="</exec_result>",       header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="browser",           open_tag="<browser>",           close_tag="</browser>",           header="", glyph="🌐", ansi_color=_ANSI_CYAN,  show_live=True),
+    TagSpec(name="browser_step",      open_tag="<browser_step>",      close_tag="</browser_step>",      header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="browser_result",    open_tag="<browser_result>",    close_tag="</browser_result>",    header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="git",               open_tag="<git>",               close_tag="</git>",               header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="git_result",        open_tag="<git_result>",        close_tag="</git_result>",        header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="test",              open_tag="<test>",              close_tag="</test>",              header="", glyph="◈", ansi_color=_ANSI_CYAN,  show_live=True),
+    TagSpec(name="test_result",       open_tag="<test_result>",       close_tag="</test_result>",       header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="build",             open_tag="<build>",             close_tag="</build>",             header="", glyph="◈", ansi_color=_ANSI_AMBER, show_live=True),
+    TagSpec(name="build_result",      open_tag="<build_result>",      close_tag="</build_result>",      header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="error",             open_tag="<error>",             close_tag="</error>",             header="", glyph="◆", ansi_color=_ANSI_RED,   show_live=True),
+    TagSpec(name="success",           open_tag="<success>",           close_tag="</success>",           header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="approval",          open_tag="<approval>",          close_tag="</approval>",          header="", glyph="◇", ansi_color=_ANSI_AMBER, show_live=True),
+    TagSpec(name="memory",            open_tag="<memory>",            close_tag="</memory>",            header="", glyph="◈", ansi_color=_ANSI_VIOLET,show_live=True),
+    TagSpec(name="experience",        open_tag="<experience>",        close_tag="</experience>",        header="", glyph="◈", ansi_color=_ANSI_VIOLET,show_live=True),
+    TagSpec(name="health",            open_tag="<health>",            close_tag="</health>",            header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="budget",            open_tag="<budget>",            close_tag="</budget>",            header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="risk",              open_tag="<risk>",              close_tag="</risk>",              header="", glyph="◇", ansi_color=_ANSI_AMBER, show_live=True),
+    TagSpec(name="summary",           open_tag="<summary>",           close_tag="</summary>",           header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="block",             open_tag="<block>",             close_tag="</block>",             header="", glyph="",  ansi_color="",          show_live=True),
+    # ── KRYTH Tag Protocol: additional silent tags ────────────────────────
+    TagSpec(name="kryth_internal",  open_tag="<internal>",      close_tag="</internal>",      header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_debug",     open_tag="<debug>",         close_tag="</debug>",         header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_context",   open_tag="<context>",       close_tag="</context>",       header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_memraw",    open_tag="<memory_raw>",    close_tag="</memory_raw>",    header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_sysprompt", open_tag="<prompt>",        close_tag="</prompt>",        header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_agentmsg",  open_tag="<agent_message>", close_tag="</agent_message>", header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_parallel",  open_tag="<parallel_agent>",close_tag="</parallel_agent>",header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_llmcall",   open_tag="<llm_call>",      close_tag="</llm_call>",      header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_apireq",    open_tag="<api_request>",   close_tag="</api_request>",   header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="kryth_apiresp",   open_tag="<api_response>",  close_tag="</api_response>",  header="", glyph="", ansi_color="", show_live=False),
+)
+
+# Pre-built lookups (lowercase for case-insensitive matching)
+_SPEC_BY_OPEN:  dict[str, TagSpec] = {s.open_tag.lower(): s for s in _TAG_SPECS}
+_SPEC_BY_CLOSE: dict[str, TagSpec] = {s.close_tag.lower(): s for s in _TAG_SPECS}
+
+# Regex that matches any open OR close tag from the registry
+_ALL_TAGS_RE = re.compile(
+    "|".join(
+        re.escape(t)
+        for s in _TAG_SPECS
+        for t in (s.open_tag, s.close_tag)
+    ),
+    re.IGNORECASE,
+)
+
+# ── KRYTH tag renderers ───────────────────────────────────────────────────────
+# Each function receives the stripped accumulated text of one closed tag and
+# writes directly to stdout with ANSI escapes for zero-overhead streaming.
+
+
+def _wi(s: str) -> None:
+    """Write ANSI string directly to stdout."""
+    try:
+        sys.stdout.write(s)
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _tr_display(text: str) -> None:
+    if text:
+        _wi(f"\n{text}\n")
+
+
+def _tr_status(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"{_ANSI_GOLD}◈{_ANSI_RESET}  {t}\n")
+
+
+def _tr_mission(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"\n{_ANSI_BOLD}{_ANSI_GOLD}◈  {t.upper()}{_ANSI_RESET}\n\n")
+
+
+def _tr_timeline(text: str) -> None:
+    t = text.strip()
+    if t:
+        ts = time.strftime("%H:%M:%S")
+        _wi(f"{_ANSI_MUTED}{ts}{_ANSI_RESET}  {_ANSI_GOLD}◈{_ANSI_RESET}  {t}\n")
+
+
+def _tr_task_start(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"{_ANSI_GOLD}◈{_ANSI_RESET}  {_ANSI_BOLD}{t}{_ANSI_RESET}\n")
+
+
+def _tr_task_update(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"  {_ANSI_MUTED}·  {t}{_ANSI_RESET}\n")
+
+
+def _tr_task_complete(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"{_ANSI_GREEN}◈{_ANSI_RESET}  {_ANSI_GREEN}{t}{_ANSI_RESET}\n")
+
+
+def _tr_task_skip(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"{_ANSI_MUTED}○  {t}{_ANSI_RESET}\n")
+
+
+def _tr_todo(text: str) -> None:
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        return
+    _wi(f"\n{_ANSI_BOLD}{_ANSI_GOLD}◈  Tasks{_ANSI_RESET}\n\n")
+    for ln in lines:
+        _wi(f"  {_ANSI_MUTED}○{_ANSI_RESET}  {ln}\n")
+    _wi("\n")
+
+
+def _tr_spinner(text: str) -> None:
+    t = text.strip().split("\n")[0].strip()
+    if t:
+        _wi(f"{_ANSI_GOLD}◈{_ANSI_RESET}  {t}…\n")
+
+
+def _tr_tool_read(text: str) -> None:
+    name = text.strip().split("\n")[0].strip()
+    if name:
+        _wi(f"\n{_ANSI_BOLD}📖  {name}{_ANSI_RESET}\n")
+
+
+def _tr_tool_read_result(text: str) -> None:
+    if not text.strip():
+        return
+    _wi("\n")
+    for raw in text.strip().splitlines():
+        ln = raw.strip()
+        if ":" in ln:
+            k, v = ln.split(":", 1)
+            _wi(f"  {_ANSI_MUTED}{k.strip():<12}{_ANSI_RESET}  {v.strip()}\n")
+        elif ln:
+            _wi(f"  {ln}\n")
+    _wi("\n")
+
+
+def _tr_tool_write(text: str) -> None:
+    name = text.strip().split("\n")[0].strip()
+    if name:
+        _wi(f"\n{_ANSI_BOLD}📝  {name}{_ANSI_RESET}\n")
+
+
+def _tr_tool_write_result(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"{_ANSI_GREEN}◈{_ANSI_RESET}  {_ANSI_GREEN}{t}{_ANSI_RESET}\n")
+
+
+def _tr_tool_edit(text: str) -> None:
+    name = text.strip().split("\n")[0].strip()
+    if name:
+        _wi(f"\n{_ANSI_BOLD}✏  {name}{_ANSI_RESET}\n")
+
+
+def _tr_diff(text: str) -> None:
+    if not text.strip():
+        return
+    _wi("\n")
+    for raw in text.strip().splitlines():
+        s = raw.strip()
+        if s.startswith("+"):
+            _wi(f"  {_ANSI_GREEN}{raw}{_ANSI_RESET}\n")
+        elif s.startswith("-"):
+            _wi(f"  {_ANSI_RED}{raw}{_ANSI_RESET}\n")
+        elif s.startswith("*"):
+            _wi(f"  {_ANSI_MUTED}{raw}{_ANSI_RESET}\n")
+        else:
+            _wi(f"  {raw}\n")
+    _wi("\n")
+
+
+def _tr_tool_edit_result(text: str) -> None:
+    _tr_tool_write_result(text)
+
+
+def _tr_tool_delete(text: str) -> None:
+    name = text.strip().split("\n")[0].strip()
+    if name:
+        _wi(f"\n{_ANSI_RED}🗑  {name}{_ANSI_RESET}\n")
+
+
+def _tr_tool_delete_result(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"{_ANSI_MUTED}◆{_ANSI_RESET}  {t}\n")
+
+
+def _tr_tool_search(text: str) -> None:
+    first = text.strip().split("\n")[0].strip()
+    query = first.split(":", 1)[1].strip() if ":" in first else first
+    _wi(f"\n{_ANSI_BOLD}🔍  {_ANSI_GOLD}Code Search{_ANSI_RESET}\n")
+    if query:
+        _wi(f"   {_ANSI_MUTED}Query{_ANSI_RESET}   {query}\n")
+
+
+def _tr_tool_search_result(text: str) -> None:
+    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    if not lines:
+        return
+    _wi("\n")
+    for ln in lines:
+        _wi(f"  {_ANSI_GREEN}◈{_ANSI_RESET}  {ln}\n")
+    _wi("\n")
+
+
+def _tr_tool_grep(text: str) -> None:
+    first = text.strip().split("\n")[0].strip()
+    pat = first.split(":", 1)[1].strip() if ":" in first else first
+    _wi(f"\n{_ANSI_BOLD}🔍  {_ANSI_GOLD}Pattern Match{_ANSI_RESET}\n")
+    if pat:
+        _wi(f"   {_ANSI_MUTED}Pattern{_ANSI_RESET}  {pat}\n")
+
+
+def _tr_tool_grep_result(text: str) -> None:
+    _tr_tool_search_result(text)
+
+
+def _tr_exec(text: str) -> None:
+    cmd = text.strip().split("\n")[0].strip()
+    if cmd:
+        _wi(f"\n  {_ANSI_MUTED}${_ANSI_RESET}  {_ANSI_BOLD}{cmd}{_ANSI_RESET}\n")
+
+
+def _tr_exec_result(text: str) -> None:
+    t = text.strip()
+    if not t:
+        return
+    lo = t.lower()
+    ok = any(w in lo for w in ("pass", "success", "complete", "ok", "done"))
+    color = _ANSI_GREEN if ok else _ANSI_RED
+    glyph = "◈" if ok else "◆"
+    _wi(f"\n  {color}{glyph}{_ANSI_RESET}  {t}\n\n")
+
+
+def _tr_browser(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"\n{_ANSI_BOLD}🌐  {t}{_ANSI_RESET}\n\n")
+
+
+def _tr_browser_step(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"  {_ANSI_GREEN}◈{_ANSI_RESET}  {t}\n")
+
+
+def _tr_browser_result(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"\n{_ANSI_GREEN}◈{_ANSI_RESET}  {_ANSI_GREEN}{t}{_ANSI_RESET}\n\n")
+
+
+def _tr_git(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"\n{_ANSI_GOLD}◈  Git{_ANSI_RESET}  {t}\n")
+
+
+def _tr_git_result(text: str) -> None:
+    _tr_tool_read_result(text)
+
+
+def _tr_test(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"\n{_ANSI_CYAN}◈  Testing{_ANSI_RESET}  {t}\n\n")
+
+
+def _tr_test_result(text: str) -> None:
+    _tr_exec_result(text)
+
+
+def _tr_build(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"\n{_ANSI_AMBER}◈  Build{_ANSI_RESET}  {t}\n\n")
+
+
+def _tr_build_result(text: str) -> None:
+    _tr_exec_result(text)
+
+
+def _tr_error(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"\n{_ANSI_BOLD}{_ANSI_RED}◆  {t}{_ANSI_RESET}\n\n")
+
+
+def _tr_success(text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"{_ANSI_GREEN}◈{_ANSI_RESET}  {_ANSI_GREEN}{t}{_ANSI_RESET}\n")
+
+
+def _tr_approval(text: str) -> None:
+    t = text.strip()
+    if not t:
+        return
+    _wi(f"\n{_ANSI_BOLD}{_ANSI_AMBER}◇  Approval Required{_ANSI_RESET}\n\n")
+    for ln in t.splitlines():
+        _wi(f"  {ln.strip()}\n")
+    _wi("\n")
+
+
+def _tr_memory(text: str) -> None:
+    t = text.strip()
+    if not t:
+        return
+    _wi(f"\n{_ANSI_VIOLET}◈  Memory{_ANSI_RESET}\n")
+    for ln in t.splitlines():
+        s = ln.strip()
+        if s:
+            _wi(f"  {_ANSI_MUTED}{s}{_ANSI_RESET}\n")
+    _wi("\n")
+
+
+def _tr_experience(text: str) -> None:
+    _tr_memory(text)
+
+
+def _tr_supervisor(label: str, text: str) -> None:
+    t = text.strip()
+    if t:
+        _wi(f"  {_ANSI_MUTED}{label:<8}{_ANSI_RESET}  {t}\n")
+
+
+def _tr_summary(text: str) -> None:
+    if not text.strip():
+        return
+    _wi(f"\n{_ANSI_BOLD}{_ANSI_GREEN}╭─ ◈ Mission Summary ──────────────────────────────────╮{_ANSI_RESET}\n")
+    _wi(f"{_ANSI_MUTED}│{_ANSI_RESET}\n")
+    for raw in text.strip().splitlines():
+        s = raw.strip()
+        if not s:
+            _wi(f"{_ANSI_MUTED}│{_ANSI_RESET}\n")
+        elif s.startswith(("* ", "- ")):
+            item = s[2:]
+            _wi(f"{_ANSI_MUTED}│{_ANSI_RESET}  {_ANSI_GREEN}◈{_ANSI_RESET}  {item}\n")
+        elif ":" in s and not s.endswith(":"):
+            k, v = s.split(":", 1)
+            _wi(f"{_ANSI_MUTED}│{_ANSI_RESET}  {_ANSI_MUTED}{k.strip():<14}{_ANSI_RESET}{v.strip()}\n")
+        else:
+            _wi(f"{_ANSI_MUTED}│{_ANSI_RESET}  {_ANSI_BOLD}{s}{_ANSI_RESET}\n")
+    _wi(f"{_ANSI_MUTED}│{_ANSI_RESET}\n")
+    _wi(f"{_ANSI_MUTED}╰──────────────────────────────────────────────────────╯{_ANSI_RESET}\n\n")
+
+
+def _tr_block(text: str) -> None:
+    if text.strip():
+        _wi(f"\n{text.strip()}\n\n")
+
+
+# Dispatch table: tag name → renderer function
+_TAG_RENDERERS: Dict[str, Callable[[str], None]] = {
+    "display":            _tr_display,
+    "status":             _tr_status,
+    "mission":            _tr_mission,
+    "timeline":           _tr_timeline,
+    "task_start":         _tr_task_start,
+    "task_update":        _tr_task_update,
+    "task_complete":      _tr_task_complete,
+    "task_skip":          _tr_task_skip,
+    "todo":               _tr_todo,
+    "spinner":            _tr_spinner,
+    "tool_read":          _tr_tool_read,
+    "tool_read_result":   _tr_tool_read_result,
+    "tool_write":         _tr_tool_write,
+    "tool_write_result":  _tr_tool_write_result,
+    "tool_edit":          _tr_tool_edit,
+    "diff":               _tr_diff,
+    "tool_edit_result":   _tr_tool_edit_result,
+    "tool_delete":        _tr_tool_delete,
+    "tool_delete_result": _tr_tool_delete_result,
+    "tool_search":        _tr_tool_search,
+    "tool_search_result": _tr_tool_search_result,
+    "tool_grep":          _tr_tool_grep,
+    "tool_grep_result":   _tr_tool_grep_result,
+    "exec":               _tr_exec,
+    "exec_result":        _tr_exec_result,
+    "browser":            _tr_browser,
+    "browser_step":       _tr_browser_step,
+    "browser_result":     _tr_browser_result,
+    "git":                _tr_git,
+    "git_result":         _tr_git_result,
+    "test":               _tr_test,
+    "test_result":        _tr_test_result,
+    "build":              _tr_build,
+    "build_result":       _tr_build_result,
+    "error":              _tr_error,
+    "success":            _tr_success,
+    "approval":           _tr_approval,
+    "memory":             _tr_memory,
+    "experience":         _tr_experience,
+    "health":             lambda t: _tr_supervisor("Health", t),
+    "budget":             lambda t: _tr_supervisor("Budget", t),
+    "risk":               lambda t: _tr_supervisor("Risk", t),
+    "summary":            _tr_summary,
+    "block":              _tr_block,
+}
+
+# Tags whose content is accumulated silently and rendered on close via _TAG_RENDERERS
+_ACC_TAGS: frozenset = frozenset(_TAG_RENDERERS)
+
+
+# ── Parser state ──────────────────────────────────────────────────────────────
+
+class _Mode(Enum):
+    NORMAL   = auto()
+    IN_BLOCK = auto()   # inside a visible block (think / plan / warning)
+    SILENT   = auto()   # inside a silent block (tool_call / function / parameter)
+
+
+@dataclass
+class TagParserState:
+    """Mutable cross-chunk parser state. One instance per StreamPrinter."""
+    mode: _Mode = _Mode.NORMAL
+    active_spec: TagSpec | None = None
+    # Partial tag accumulator: when a chunk ends mid-tag we hold the fragment
+    partial: str = ""
+    # Lines emitted in the current block (for the closing visual)
+    block_line_count: int = 0
+
+
+# ── Parser events ─────────────────────────────────────────────────────────────
+
+class EventKind(Enum):
+    NORMAL_TEXT  = auto()   # plain content text → render as normal output
+    BLOCK_OPEN   = auto()   # a visible block just opened
+    BLOCK_TEXT   = auto()   # text inside a visible block
+    BLOCK_CLOSE  = auto()   # a visible block just closed
+    # Silent events are fully suppressed — no event emitted to caller
+
+
+@dataclass
+class ParseEvent:
+    kind: EventKind
+    text: str = ""
+    spec: TagSpec | None = None
+
+
+# ── TagParser ─────────────────────────────────────────────────────────────────
+
+class TagParser:
+    """Generic streaming tag parser.
+
+    Call feed(chunk, state) for each incoming content chunk.
+    Yields ParseEvent objects that the renderer acts on.
+    The parser itself is stateless — all mutable state lives in
+    TagParserState so callers can manage lifetime independently.
+    """
+
+    def feed(
+        self,
+        chunk: str,
+        state: TagParserState,
+    ) -> Iterator[ParseEvent]:
+        """Parse one chunk and yield zero or more ParseEvents."""
+        # Prepend any partial tag fragment from the previous chunk
+        text = state.partial + chunk
+        state.partial = ""
+
+        pos = 0
+        while pos < len(text):
+            # --- Inside a block -------------------------------------------
+            if state.mode in (_Mode.IN_BLOCK, _Mode.SILENT):
+                close_tag = state.active_spec.close_tag  # type: ignore[union-attr]
+                idx = text.lower().find(close_tag.lower(), pos)
+                if idx == -1:
+                    # Check whether the tail might be a partial close tag
+                    fragment = self._partial_match_suffix(text[pos:], close_tag)
+                    if fragment:
+                        # Yield everything up to the potential partial
+                        payload = text[pos:len(text) - len(fragment)]
+                        if payload and state.mode == _Mode.IN_BLOCK:
+                            yield ParseEvent(EventKind.BLOCK_TEXT, payload, state.active_spec)
+                        state.partial = fragment
+                        return
+                    # No close tag anywhere — yield the rest and stop
+                    payload = text[pos:]
+                    if payload and state.mode == _Mode.IN_BLOCK:
+                        yield ParseEvent(EventKind.BLOCK_TEXT, payload, state.active_spec)
+                    return
+                # Found the close tag
+                payload = text[pos:idx]
+                if payload and state.mode == _Mode.IN_BLOCK:
+                    yield ParseEvent(EventKind.BLOCK_TEXT, payload, state.active_spec)
+                if state.mode == _Mode.IN_BLOCK:
+                    yield ParseEvent(EventKind.BLOCK_CLOSE, "", state.active_spec)
+                state.mode = _Mode.NORMAL
+                state.active_spec = None
+                state.block_line_count = 0
+                pos = idx + len(close_tag)
+                continue
+
+            # --- NORMAL mode ----------------------------------------------
+            m = _ALL_TAGS_RE.search(text, pos)
+            if m is None:
+                # No more tags — check for partial match at end
+                fragment = self._partial_match_suffix(text[pos:], None)
+                if fragment:
+                    payload = text[pos:len(text) - len(fragment)]
+                    if payload:
+                        yield ParseEvent(EventKind.NORMAL_TEXT, payload)
+                    state.partial = fragment
+                    return
+                payload = text[pos:]
+                if payload:
+                    yield ParseEvent(EventKind.NORMAL_TEXT, payload)
+                return
+
+            # Yield text before this tag
+            before = text[pos:m.start()]
+            if before:
+                yield ParseEvent(EventKind.NORMAL_TEXT, before)
+
+            matched = m.group(0)
+            matched_lc = matched.lower()
+
+            # Is it an open tag?
+            spec = _SPEC_BY_OPEN.get(matched_lc)
+            if spec is None:
+                # partial open match (e.g. "<function=write_file>")
+                for open_tag, s in _SPEC_BY_OPEN.items():
+                    if matched_lc.startswith(open_tag.rstrip(">")):
+                        spec = s
+                        break
+
+            if spec:
+                if spec.show_live:
+                    state.mode = _Mode.IN_BLOCK
+                    yield ParseEvent(EventKind.BLOCK_OPEN, "", spec)
+                else:
+                    state.mode = _Mode.SILENT
+                state.active_spec = spec
+                state.block_line_count = 0
+                pos = m.end()
+                continue
+
+            # Is it a close tag with no matching open? (orphan) — swallow it
+            if matched_lc in _SPEC_BY_CLOSE:
+                pos = m.end()
+                continue
+
+            # Unknown match — treat as normal text
+            yield ParseEvent(EventKind.NORMAL_TEXT, matched)
+            pos = m.end()
+
+    @staticmethod
+    def _partial_match_suffix(text: str, close_tag: str | None) -> str:
+        """Return the longest suffix of text that could be the start of
+        any known tag (or specifically close_tag).  Used to hold back
+        partial tags that span chunk boundaries."""
+        candidates = (
+            [close_tag] if close_tag
+            else [s.open_tag for s in _TAG_SPECS] + [s.close_tag for s in _TAG_SPECS]
+        )
+        for length in range(min(len(text), 20), 0, -1):
+            suffix = text[-length:]
+            for tag in candidates:
+                if tag.lower().startswith(suffix.lower()):
+                    return suffix
+        return ""
+
+
+# ── Block renderer ────────────────────────────────────────────────────────────
+
+class BlockRenderer:
+    """Renders tagged blocks to the terminal.
+
+    Two rendering modes:
+    • Streaming (existing tags like <think>, <plan>, <exec_stream>):
+      text is written live with a colored left-border as it arrives.
+    • Accumulate-and-render (KRYTH protocol tags like <status>, <tool_read>…):
+      text is buffered silently; on block close the accumulated content is
+      passed to the matching _TAG_RENDERERS entry for a clean one-shot render.
+    """
+
+    def __init__(self) -> None:
+        self._block_open = False
+        self._line_buf = ""      # partial line buffer for border rendering
+        self._acc = ""           # accumulator for rich-close tags
+
+    def render_block_open(self, spec: TagSpec) -> None:
+        self._block_open = True
+        self._line_buf = ""
+        self._acc = ""
+        if spec.name in _ACC_TAGS:
+            return  # silent open — content accumulates, rendered on close
+        _write_inplace(
+            f"\n{_ANSI_BOLD}{spec.ansi_color}{spec.header}{_ANSI_RESET}\n"
+        )
+
+    def render_block_text(self, text: str, spec: TagSpec) -> None:
+        if not text:
+            return
+        if spec.name in _ACC_TAGS:
+            self._acc += text
+            return
+        color = spec.ansi_color
+        full = self._line_buf + text
+        self._line_buf = ""
+        lines = full.split("\n")
+        for i, line in enumerate(lines):
+            is_last = i == len(lines) - 1
+            if is_last and not full.endswith("\n"):
+                self._line_buf = line
+                break
+            if line.strip():
+                _write_inplace(
+                    f"{_ANSI_DIM}{_ANSI_MUTED}{_BORDER}{_ANSI_RESET} "
+                    f"{color}{line}{_ANSI_RESET}\n"
+                )
+            else:
+                _write_inplace("\n")
+
+    def render_block_close(self, spec: TagSpec) -> None:
+        if spec.name in _ACC_TAGS:
+            renderer = _TAG_RENDERERS.get(spec.name)
+            if renderer:
+                try:
+                    renderer(self._acc.strip())
+                except Exception:
+                    pass
+            self._acc = ""
+            self._block_open = False
+            return
+        if self._line_buf.strip():
+            color = spec.ansi_color
+            _write_inplace(
+                f"{_ANSI_DIM}{_ANSI_MUTED}{_BORDER}{_ANSI_RESET} "
+                f"{color}{self._line_buf}{_ANSI_RESET}\n"
+            )
+        self._line_buf = ""
+        self._block_open = False
+        _write_inplace("\n")
+
+    def close_gracefully(self, spec: TagSpec) -> None:
+        if self._block_open:
+            self.render_block_close(spec)
+
+    def reset(self) -> None:
+        self._block_open = False
+        self._line_buf = ""
+        self._acc = ""
+
+
+# ── StreamPrinter ─────────────────────────────────────────────────────────────
+
 _parallel_mode = False
 
+
 def set_parallel_mode(enabled: bool) -> None:
-    """Enable or disable parallel mode for the streaming output."""
     global _parallel_mode
     _parallel_mode = enabled
-
-# Acid gold in ANSI — matches kryth.core (#E8FF3A)
-_ANSI_GOLD = "\033[38;2;232;255;58m"
-_ANSI_MUTED = "\033[38;2;136;136;136m"
-_ANSI_RESET = "\033[0m"
-_ANSI_BOLD = "\033[1m"
-
-# Sine-wave brightness levels for the label (simulates a pulse)
-_PULSE_STYLES = [
-    "\033[38;2;136;136;136m",  # dim
-    "\033[38;2;180;180;180m",  # mid-dim
-    "\033[38;2;220;220;220m",  # mid
-    "\033[38;2;255;255;255m",  # bright
-    "\033[38;2;220;220;220m",  # mid
-    "\033[38;2;180;180;180m",  # mid-dim
-]
 
 
 def _flush_threshold() -> int:
@@ -51,7 +937,39 @@ def _write_inplace(text: str) -> None:
         pass
 
 
+def _apply_narration_filter(text: str) -> str:
+    """Render first-person narration lines as ghost text.
+
+    The model often emits self-narration ("I'll analyze...", "Let me check...")
+    alongside tagged UI output.  These lines are technically visible but
+    rendered at near-zero contrast so they don't compete with structured output.
+    Lines that don't match the pattern pass through unchanged.
+    """
+    if "\n" not in text:
+        stripped = text.strip()
+        if stripped and _NARRATION_RE.match(stripped):
+            return f"{_ANSI_GHOST}{text}{_ANSI_RESET}"
+        return text
+    parts = text.split("\n")
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        sep = "" if i == len(parts) - 1 else "\n"
+        stripped = part.strip()
+        if stripped and _NARRATION_RE.match(stripped):
+            out.append(f"{_ANSI_GHOST}{part}{_ANSI_RESET}{sep}")
+        else:
+            out.append(part + sep)
+    return "".join(out)
+
+
 class StreamPrinter:
+    """Public streaming surface.
+
+    Coordinates TagParser + BlockRenderer for in-content tagged blocks
+    alongside the native reasoning-spinner path (for models that expose
+    reasoning via a separate API field rather than <think> tags).
+    """
+
     def __init__(self) -> None:
         self._reasoning_started = False
         self._content_started = False
@@ -59,62 +977,18 @@ class StreamPrinter:
         self._buf_len = 0
         self._reasoning_frame = 0
         self._pulse_frame = 0
+        # Tag parser + state
+        self._parser = TagParser()
+        self._parse_state = TagParserState()
+        self._block_renderer = BlockRenderer()
 
-    def _emit(self, text: str, *, style: str | None = None) -> None:
-        if not text:
-            return
-        console.out(text, end="", highlight=False, style=style)
-        if motion_enabled():
-            if text.endswith((".", ":", "?", "!", "\n")):
-                sleep(0.012)
-            elif len(text) < 8:
-                sleep(0.003)
-
-    def _flush(self) -> None:
-        if self._buf_len == 0:
-            return
-        self._emit("".join(self._buf))
-        self._buf = []
-        self._buf_len = 0
-
-    def _ingest(self, piece: str) -> None:
-        if not piece:
-            return
-        threshold = _flush_threshold()
-        if "\n" not in piece and self._buf_len + len(piece) < threshold:
-            self._buf.append(piece)
-            self._buf_len += len(piece)
-            return
-
-        chunks = piece.split("\n")
-        for part in chunks[:-1]:
-            self._buf.append(part + "\n")
-            self._buf_len += len(part) + 1
-            self._flush()
-        tail = chunks[-1]
-        if tail:
-            self._buf.append(tail)
-            self._buf_len += len(tail)
-        if self._buf_len >= threshold:
-            self._soft_flush()
-
-    def _soft_flush(self) -> None:
-        joined = "".join(self._buf)
-        cut = joined.rfind(" ")
-        if cut <= 0:
-            self._flush()
-            return
-        self._emit(joined[:cut + 1])
-        rest = joined[cut + 1:]
-        self._buf = [rest] if rest else []
-        self._buf_len = len(rest)
+    # ── Existing reasoning-spinner path (native reasoning field) ─────────
 
     def begin_reasoning(self) -> None:
         if self._reasoning_started:
             return
         self._reasoning_started = True
         if _parallel_mode:
-            # In parallel mode, skip spinner output to avoid garbling.
             self._reasoning_frame = 0
             self._pulse_frame = 0
             return
@@ -149,36 +1023,114 @@ class StreamPrinter:
                 _write_inplace(f"\r{' ' * 20}\r")
             self._reasoning_started = False
 
+    # ── Content stream path (handles <think> and other tags inline) ───────
+
     def begin_content(self) -> None:
         if self._content_started:
             return
         if self._reasoning_started:
             self.end_reasoning()
         self._content_started = True
-        console.print(
-            f"[role.assistant]{CORE} KRYTH[/role.assistant] ",
-            end="",
-        )
+        console.print("", end="")  # ensure fresh line
 
     def content_chunk(self, piece: str) -> None:
+        """Feed one chunk from the LLM content stream."""
         if not self._content_started:
             self.begin_content()
-        self._ingest(piece)
+
+        for event in self._parser.feed(piece, self._parse_state):
+            if event.kind == EventKind.NORMAL_TEXT:
+                self._ingest(event.text)
+            elif event.kind == EventKind.BLOCK_OPEN:
+                # Flush normal buffer before switching to block rendering
+                self._flush()
+                self._block_renderer.render_block_open(event.spec)  # type: ignore[arg-type]
+            elif event.kind == EventKind.BLOCK_TEXT:
+                self._block_renderer.render_block_text(event.text, event.spec)  # type: ignore[arg-type]
+            elif event.kind == EventKind.BLOCK_CLOSE:
+                self._block_renderer.render_block_close(event.spec)  # type: ignore[arg-type]
+            # SILENT events produce no output — intentionally ignored
 
     def end_content(self, *, render_markdown: bool = True) -> None:
         del render_markdown
         if not self._content_started:
             return
+        # Gracefully close any unclosed block (stream ended before </think>)
+        if self._parse_state.mode == _Mode.IN_BLOCK and self._parse_state.active_spec:
+            self._block_renderer.close_gracefully(self._parse_state.active_spec)
         self._flush()
         console.out("\n", end="", highlight=False)
         self._content_started = False
+        self._reset_parser()
 
     def force_newline(self) -> None:
         if self._reasoning_started:
             self.end_reasoning()
         if self._content_started:
+            if self._parse_state.mode == _Mode.IN_BLOCK and self._parse_state.active_spec:
+                self._block_renderer.close_gracefully(self._parse_state.active_spec)
             self._flush()
             console.out("\n", end="", highlight=False)
             self._content_started = False
+        self._reset_parser()
 
+    # ── Internal helpers ─────────────────────────────────────────────────
 
+    def _ingest(self, piece: str) -> None:
+        if not piece:
+            return
+        threshold = _flush_threshold()
+        if "\n" not in piece and self._buf_len + len(piece) < threshold:
+            self._buf.append(piece)
+            self._buf_len += len(piece)
+            return
+        chunks = piece.split("\n")
+        for part in chunks[:-1]:
+            self._buf.append(part + "\n")
+            self._buf_len += len(part) + 1
+            self._flush()
+        tail = chunks[-1]
+        if tail:
+            self._buf.append(tail)
+            self._buf_len += len(tail)
+        if self._buf_len >= threshold:
+            self._soft_flush()
+
+    def _flush(self) -> None:
+        if self._buf_len == 0:
+            return
+        text = "".join(self._buf)
+        self._buf = []
+        self._buf_len = 0
+        try:
+            filtered = _apply_narration_filter(text)
+            if filtered is not text:
+                # Has ghost-text ANSI — write directly to avoid Rich stripping
+                _write_inplace(filtered)
+            else:
+                console.out(text, end="", highlight=False)
+        except Exception:
+            pass
+        if motion_enabled() and text:
+            if text.endswith((".", ":", "?", "!", "\n")):
+                sleep(0.012)
+            elif len(text) < 8:
+                sleep(0.003)
+
+    def _soft_flush(self) -> None:
+        joined = "".join(self._buf)
+        cut = joined.rfind(" ")
+        if cut <= 0:
+            self._flush()
+            return
+        try:
+            console.out(joined[:cut + 1], end="", highlight=False)
+        except Exception:
+            pass
+        rest = joined[cut + 1:]
+        self._buf = [rest] if rest else []
+        self._buf_len = len(rest)
+
+    def _reset_parser(self) -> None:
+        self._parse_state = TagParserState()
+        self._block_renderer.reset()

@@ -14,13 +14,31 @@ Two modes:
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import time
 from pathlib import Path
 from typing import List, Optional
 
 from agent.env import home_dir
+
+# Use orjson for faster JSON serialization when available
+try:
+    import orjson as _json_lib
+
+    def _json_loads(s):
+        return _json_lib.loads(s)
+
+    def _json_dumps(obj):
+        return _json_lib.dumps(obj).decode()
+
+except ImportError:
+    import json as _json_lib  # type: ignore[no-redef]
+
+    def _json_loads(s):
+        return _json_lib.loads(s)
+
+    def _json_dumps(obj):
+        return _json_lib.dumps(obj)
 
 
 IGNORE_DIRS = {
@@ -103,8 +121,31 @@ def build_project_map(directory: str = ".", limit: int = MAX_PROJECT_MAP_FILES) 
 
     Files are ranked by (depth ascending, mtime descending) so the cap
     favours top-level structural files over deeply nested generated ones.
+    Uses fd for fast discovery when available.
     """
     candidates = []
+
+    # Try fd-based discovery first (2-10x faster for large repos)
+    try:
+        from agent.retrieval.fd_discovery import discover_files, fd_available
+        if fd_available():
+            raw_paths = discover_files(directory, extensions=list(SOURCE_SUFFIXES))
+            for path in raw_paths:
+                depth = path.count(os.sep)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    mtime = 0.0
+                candidates.append((depth, -mtime, path))
+            candidates.sort()
+            paths = [c[2] for c in candidates[:limit]]
+            out = "\n".join(paths)
+            if len(candidates) > limit:
+                out += f"\n...({len(candidates) - limit} more files; use list_files / glob to explore)"
+            return out
+    except Exception:
+        pass  # Fall through to os.walk
+
     for root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
         for file in files:
@@ -221,7 +262,7 @@ class ProjectSnapshot:
             return None
         try:
             with open(self._cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                data = _json_loads(f.read())
             # Expired?
             if time.time() - data.get("saved_at", 0) > _SNAPSHOT_TTL_SEC:
                 return None
@@ -236,13 +277,14 @@ class ProjectSnapshot:
     def _save_cache(self, project_map: str, newest_mtime: float) -> None:
         _SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         try:
+            payload = _json_dumps({
+                "project_map": project_map,
+                "newest_mtime": newest_mtime,
+                "saved_at": time.time(),
+                "directory": self._dir,
+            })
             with open(self._cache_path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "project_map": project_map,
-                    "newest_mtime": newest_mtime,
-                    "saved_at": time.time(),
-                    "directory": self._dir,
-                }, f)
+                f.write(payload)
         except Exception:
             pass
 

@@ -132,6 +132,90 @@ THEME = Theme({
     "kbd": "bold #FFFFFF on #222222",
     "title": "bold #FFFFFF",
     "divider": "#333333",
+
+    # ── Next-Gen UI ──────────────────────────────────────────────────
+
+    # UI Layers
+    "layer.executive": "bold #E8FF3A",
+    "layer.engineering": "bold #FFFFFF",
+    "layer.terminal": "bold #CFCFCF",
+    "layer.debug": "bold #888888",
+    "layer.badge": "bold #0B0B0B on #E8FF3A",
+    "layer.badge.dim": "#888888 on #1A1A1A",
+
+    # Mission
+    "mission.title": "bold #FFFFFF",
+    "mission.goal": "bold #E8FF3A",
+    "mission.progress": "#4ADE80",
+    "mission.stage": "#CFCFCF",
+    "mission.eta": "#888888",
+    "mission.border": "#E8FF3A",
+    "mission.complete": "bold #4ADE80",
+    "mission.failed": "bold #FF5A5A",
+
+    # Engineering actions
+    "eng.running": "bold #E8FF3A",
+    "eng.done": "#4ADE80",
+    "eng.failed": "#FF5A5A",
+    "eng.pending": "#888888",
+    "eng.section": "bold #FFFFFF",
+    "eng.detail": "#888888",
+
+    # Agent dashboard
+    "agent.idle": "#888888",
+    "agent.running": "bold #E8FF3A",
+    "agent.done": "#4ADE80",
+    "agent.failed": "#FF5A5A",
+    "agent.bar": "#E8FF3A",
+    "agent.bar.bg": "#333333",
+    "agent.name": "bold #FFFFFF",
+
+    # Timeline
+    "timeline.time": "#4B4B4B",
+    "timeline.info": "#CFCFCF",
+    "timeline.success": "#4ADE80",
+    "timeline.warn": "#E8FF3A",
+    "timeline.error": "#FF5A5A",
+    "timeline.marker": "#E8FF3A",
+
+    # DAG
+    "dag.active": "bold #E8FF3A on #1A1A00",
+    "dag.done": "#4ADE80",
+    "dag.pending": "#888888",
+    "dag.failed": "#FF5A5A",
+    "dag.arrow": "#4B4B4B",
+
+    # Terminal dashboard
+    "term.success": "#4ADE80",
+    "term.failed": "#FF5A5A",
+    "term.metric.label": "#888888",
+    "term.metric.value": "bold #FFFFFF",
+    "term.expand": "italic #888888",
+
+    # Approval UI
+    "approval.border": "#E8FF3A",
+    "approval.action": "#FFFFFF",
+    "approval.risk.low": "#4ADE80",
+    "approval.risk.medium": "#E8FF3A",
+    "approval.risk.high": "#FF5A5A",
+
+    # Reflection UI
+    "reflect.worked": "#4ADE80",
+    "reflect.failed": "#FF5A5A",
+    "reflect.learned": "#E8FF3A",
+    "reflect.border": "#9B59B6",
+
+    # Memory UI
+    "memory.count": "bold #9B59B6",
+    "memory.rate": "#4ADE80",
+    "memory.workflow": "#E8FF3A",
+    "memory.border": "#9B59B6",
+
+    # Browser automation dashboard
+    "browser.step.done": "#4ADE80",
+    "browser.step.running": "#E8FF3A",
+    "browser.step.failed": "#FF5A5A",
+    "browser.border": "#00BFFF",
 })
 
 

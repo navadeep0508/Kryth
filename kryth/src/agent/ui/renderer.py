@@ -1,13 +1,19 @@
-"""Event-driven terminal renderer.
+"""KRYTH terminal renderer — clean autonomous engineering console.
 
-Subscribes to ``BUS`` and translates ``Event``s into Rich output by
-delegating to components, updates (diff/create panels), streaming.
-This is the single place where event-kind dispatch lives — adding a
-new event means registering a handler here.
+Rules:
+  1. Never show tool names, JSON, XML, raw args, retry loops.
+  2. Silent tools (reads, searches) produce zero output.
+  3. Action tools produce one clean timeline line.
+  4. Commands show a structured metric panel, never raw logs.
+  5. Debug mode (KRYTH_DEBUG_UI=1) shows everything raw.
+  6. The model's assistant reply text is shown as-is (already filtered
+     for <think>/<tool_call> tags by StreamPrinter.content_chunk).
 """
 
 from __future__ import annotations
 
+import os
+import time as _time
 from typing import Callable
 
 from rich.text import Text
@@ -19,62 +25,44 @@ from agent.ui import updates as file_updates
 from agent.ui.activity import ActivityIndicator
 from agent.ui.console import console
 from agent.ui.events import BUS, Event, EventKind
+from agent.ui.mission_console import mission_console, emit_timeline, is_silent, label
 from agent.ui.streaming import StreamPrinter
 from agent.ui.summarizer import summarize_output
-from agent.ui.theme import CORE, ERROR
+from agent.ui.theme import CORE, DOT, ERROR, WAITING
 
+_FORCE_DEBUG = os.environ.get("KRYTH_DEBUG_UI", "").lower() in {"1", "true", "yes"}
 
-# Module-level state for streaming + activity indicator. One agent runs
-# at a time in the REPL, so a singleton is fine; the renderer resets
-# these explicitly on turn boundaries.
 _activity = ActivityIndicator()
 _stream = StreamPrinter()
+_turn_tool_count = 0
+_thinking_idx = 0
+_shell_start: dict[str, float] = {}   # command → monotonic start time
+_last_todos_sig: str = ""              # dedup key for todo panel
+
+_ACTIVITY_MSGS = [
+    "Analyzing project",
+    "Mapping architecture",
+    "Validating dependencies",
+    "Generating execution plan",
+    "Reviewing code",
+    "Preparing changes",
+    "Verifying build",
+    "Running checks",
+    "Synthesizing results",
+    "Finalizing implementation",
+]
+_activity_idx = 0
 
 
-# ---------------------------------------------------------------------------
-# Helpers for tool-call rendering
-# ---------------------------------------------------------------------------
-
-def _summarize_args(name: str, args: dict) -> str:
-    if not args:
-        return ""
-    if "path" in args and isinstance(args["path"], str):
-        return args["path"]
-    if "command" in args and isinstance(args["command"], str):
-        cmd = args["command"]
-        return cmd if len(cmd) <= 100 else cmd[:97] + "…"
-    if "pattern" in args:
-        return f'"{args["pattern"]}"'
-    if "query" in args:
-        return f'"{args["query"]}"'
-    if "name" in args and isinstance(args["name"], str):
-        return args["name"]
-    if "items" in args and isinstance(args["items"], list):
-        return f"{len(args['items'])} items"
-    if "edits" in args and isinstance(args["edits"], list):
-        return f"{len(args['edits'])} edits"
+def _is_debug() -> bool:
     try:
-        first_val = next(iter(args.values()))
-    except StopIteration:
-        return ""
-    s = str(first_val)
-    return s if len(s) <= 100 else s[:97] + "…"
+        from agent.ui.ui_state import ui_state, UILayer
+        return _FORCE_DEBUG or ui_state.get_layer() == UILayer.DEBUG
+    except Exception:
+        return _FORCE_DEBUG
 
 
-def _result_first_line(result: str) -> tuple[str, int]:
-    text = result.strip() if isinstance(result, str) else str(result)
-    if not text:
-        return "(empty)", 0
-    lines = text.splitlines()
-    first = lines[0]
-    if len(first) > 180:
-        first = first[:177] + "…"
-    return first, max(0, len(lines) - 1)
-
-
-# ---------------------------------------------------------------------------
-# Per-event handlers
-# ---------------------------------------------------------------------------
+# ── Lifecycle ────────────────────────────────────────────────────────────────
 
 def _on_banner(e: Event) -> None:
     C.banner(
@@ -82,6 +70,60 @@ def _on_banner(e: Event) -> None:
         base_url=e.data["base_url"],
         skill_count=e.data.get("skill_count", 0),
     )
+
+
+def _on_turn_start(e: Event) -> None:
+    global _turn_tool_count, _thinking_idx, _activity_idx, _last_todos_sig
+    _turn_tool_count = 0
+    _thinking_idx = 0
+    _activity_idx = 0
+    _last_todos_sig = ""
+    status.mark_turn_start()
+    mission_console.reset_turn()
+    mission_console.configure(debug=_is_debug())
+
+
+def _on_turn_end(e: Event) -> None:
+    _activity.idle()
+    elapsed = status.turn_elapsed()
+    elapsed_str = f"{elapsed:.1f}s" if elapsed else "?"
+    C.turn_complete(
+        elapsed=elapsed,
+        tokens_in=e.data.get("tokens_in", 0),
+        tokens_out=e.data.get("tokens_out", 0),
+        tool_calls=_turn_tool_count,
+    )
+    status.turn_reset()
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.turn_reset()
+    except Exception:
+        pass
+
+
+def _on_turn_interrupted(e: Event) -> None:
+    _activity.idle()
+    console.print()
+    console.print(Text.assemble(
+        (ERROR, "log.warn"), ("  Interrupted", "log.warn"),
+        ("  —  back to prompt", "muted"),
+    ))
+    status.turn_reset()
+
+
+def _on_turn_max(e: Event) -> None:
+    console.print()
+    console.print(Text.assemble(
+        (ERROR, "log.warn"), ("  Turn limit reached", "log.warn"),
+        ("  —  reply to continue", "muted"),
+    ))
+    status.turn_reset()
+
+
+def _on_session_reset(e: Event) -> None:
+    console.print(Text.assemble(
+        (CORE, "kryth.core"), ("  Session cleared", "muted"),
+    ))
 
 
 def _on_status(e: Event) -> None:
@@ -95,93 +137,40 @@ def _on_status(e: Event) -> None:
     )
 
 
-def _on_turn_end(e: Event) -> None:
-    _activity.idle()
-    C.turn_complete(
-        elapsed=status.turn_elapsed(),
-        tokens_in=e.data.get("tokens_in", 0),
-        tokens_out=e.data.get("tokens_out", 0),
-        tool_calls=_turn_tool_count,
-    )
-    status.turn_reset()
-
-
-def _on_turn_interrupted(e: Event) -> None:
-    _activity.idle()
-    console.print()
-    console.print(f"[log.warn]{ERROR} Interrupted[/log.warn] [muted]back to prompt[/muted]")
-    status.turn_reset()
-
-
-def _on_turn_max(e: Event) -> None:
-    console.print()
-    console.print(
-        f"[log.error]{ERROR} Max tool turns reached[/log.error]  "
-        "[muted]ending turn[/muted]"
-    )
-    status.turn_reset()
-
-
-def _on_session_reset(e: Event) -> None:
-    console.print(f"[kryth.core]{CORE}[/kryth.core] [muted]session cleared[/muted]")
-
+# ── Planning ─────────────────────────────────────────────────────────────────
 
 def _on_plan(e: Event) -> None:
-    C.section_header("planning", "section.plan")
     C.plan_panel(e.data["plan"])
 
 
 def _on_plan_prose(e: Event) -> None:
-    C.section_header("planning", "section.plan")
     C.plan_prose(e.data["text"])
 
 
 def _on_plan_mode(e: Event) -> None:
     console.print()
-    console.print(
-        f"[kryth.core]{CORE}[/kryth.core] [log.warn]Planning[/log.warn]  "
-        f"[muted]read-only tools only[/muted]"
-    )
+    console.print(Text.assemble(
+        (CORE, "kryth.core"), ("  Plan mode", "log.warn"),
+        ("  —  read-only until finalized", "muted"),
+    ))
 
 
 def _on_auto_skills(e: Event) -> None:
     names = e.data.get("skills") or []
-    if not names:
-        return
-    console.print(f"[kryth.core]{CORE}[/kryth.core] [muted]skills[/muted] [title]{', '.join(names)}[/title]")
+    if names and _is_debug():
+        console.print(Text.assemble(
+            (CORE, "kryth.core"), ("  skills  ", "muted"),
+            (", ".join(names), "title"),
+        ))
 
 
-# -- LLM stream events ------------------------------------------------
-
-_THINKING_MESSAGES = [
-    "◈ Surveying repository...",
-    "◈ Mapping project structure...",
-    "◈ Analyzing dependencies...",
-    "◈ Building execution strategy...",
-    "◈ Simulating modifications...",
-    "◈ Preparing patch...",
-    "◈ Reviewing implementation...",
-    "◈ Running verification...",
-    "◈ Finalizing response...",
-]
-_thinking_idx = 0
-_turn_tool_count = 0
-
-
-def _on_turn_start(e: Event) -> None:
-    global _turn_tool_count, _thinking_idx
-    _turn_tool_count = 0
-    _thinking_idx = 0
-    status.mark_turn_start()
-
+# ── LLM stream ───────────────────────────────────────────────────────────────
 
 def _on_llm_waiting(e: Event) -> None:
-    global _thinking_idx
-    msg = e.data.get("message", "")
-    if not msg or msg in ("Thinking", "waiting for model…", "waiting for model..."):
-        msg = _THINKING_MESSAGES[_thinking_idx % len(_THINKING_MESSAGES)]
-        _thinking_idx += 1
-    _activity.waiting(msg)
+    global _activity_idx
+    msg = _ACTIVITY_MSGS[_activity_idx % len(_ACTIVITY_MSGS)]
+    _activity_idx += 1
+    _activity.waiting(f"◈ {msg}…")
 
 
 def _on_llm_reasoning_start(e: Event) -> None:
@@ -215,235 +204,517 @@ def _on_llm_content_end(e: Event) -> None:
 
 
 def _on_llm_usage(e: Event) -> None:
-    # Token usage is tracked internally and shown in /status and Mission Complete.
-    # Do not print a line on every turn — it floods the terminal.
-    return
+    try:
+        from agent.supervisor.budget import budget_controller
+        budget_controller.record_tokens(
+            e.data.get("turn_in", 0),
+            e.data.get("turn_out", 0),
+        )
+    except Exception:
+        pass
 
 
 def _on_llm_error(e: Event) -> None:
     _activity.idle()
     _stream.force_newline()
-    label = e.data.get("label", "llm")
     msg = e.data.get("message", "unknown error")
     console.print()
-    console.print(f"[log.error]{ERROR} {label}[/log.error]  {msg}")
+    console.print(Text.assemble(
+        (ERROR, "log.error"), ("  Error  —  ", "log.error"), (msg[:120], "muted"),
+    ))
     if hint := e.data.get("hint"):
-        console.print(f"[muted]{hint}[/muted]")
+        console.print(Text.assemble(("  ", ""), (hint[:120], "muted")))
 
 
 def _on_llm_retry(e: Event) -> None:
-    delay = e.data.get("delay")
-    line = (
-        f"[log.warn]{CORE} retry {e.data['attempt']}/{e.data['total']}[/log.warn]  "
-        f"[muted]{e.data['label']}: {e.data['reason']}"
-    )
-    if delay:
-        line += f" · waiting {delay:.1f}s"
-    line += "[/muted]"
-    console.print(line)
+    if _is_debug():
+        console.print(
+            f"[log.warn]{CORE} retry {e.data['attempt']}/{e.data['total']}[/log.warn]  "
+            f"[muted]{e.data['label']}: {e.data['reason']}[/muted]"
+        )
 
 
 def _on_llm_hermes_recovery(e: Event) -> None:
-    # Silently recover tool calls without showing debug messages
     pass
 
 
 def _on_llm_degenerate(e: Event) -> None:
-    console.print()
-    console.print(
-        f"[log.warn]{ERROR} Stream stopped[/log.warn]  "
-        "[muted]model was looping; salvaging partial response[/muted]"
-    )
+    if _is_debug():
+        console.print(Text.assemble(
+            (ERROR, "log.warn"), ("  stream degraded", "muted"),
+        ))
 
 
-# -- tool dispatch ----------------------------------------------------
+# ── Tool dispatch ────────────────────────────────────────────────────────────
 
 def _on_tool_start(e: Event) -> None:
     global _turn_tool_count
     _turn_tool_count += 1
     _stream.force_newline()
-    summary = _summarize_args(e.data["name"], e.data.get("args") or {})
-    C.tool_header(e.data["name"], summary)
+
+    name = e.data["name"]
+    args = e.data.get("args") or {}
+
+    # Update activity spinner with human label
+    lbl = label(name, args)
+    _activity.waiting(f"◈ {lbl}…")
+
+    # Route through mission_console — it decides what's visible
+    mission_console.on_tool_start(name, args)
+
+    # Update engineering state tracker
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.add_eng_action(lbl, "running")
+        ui_state.inc_tool()
+    except Exception:
+        pass
 
 
 def _on_tool_result(e: Event) -> None:
-    first, extra = _result_first_line(e.data["result"])
-    C.tool_result(first, extra, error=e.data.get("error", False))
+    name = getattr(mission_console, "_current_tool", "") or ""
+    error = e.data.get("error", False)
+    result_str = str(e.data.get("result", ""))
+
+    mission_console.on_tool_result(name, result_str, error)
+
+    # In debug only: show first result line
+    if _is_debug():
+        lines = result_str.strip().splitlines()
+        first = lines[0][:120] if lines else "(empty)"
+        extra = max(0, len(lines) - 1)
+        C.tool_result(first, extra, error=error)
 
 
 def _on_tool_error(e: Event) -> None:
-    C.tool_error_line(e.data["message"])
+    msg = e.data.get("message", "")
+    if _is_debug():
+        C.tool_error_line(msg)
+    else:
+        # Surface as a brief timeline warning, not raw error dump
+        short = msg[:80]
+        emit_timeline(f"Issue  —  {short}", "warn")
 
 
 def _on_tool_cancelled(e: Event) -> None:
-    C.tool_status_line("cancelled by user", style="log.warn")
+    emit_timeline("Action cancelled", "warn")
 
 
 def _on_tool_coerced(e: Event) -> None:
-    # Silently coerce arguments without showing debug messages
     pass
 
 
 def _on_tool_denied(e: Event) -> None:
-    C.tool_error_line(f"permission denied · {e.data['tool']}")
+    tool = e.data.get("tool", "")
+    lbl = label(tool)
+    emit_timeline(f"{lbl}  —  access denied", "warn")
 
 
 def _on_tool_hook_blocked(e: Event) -> None:
-    C.tool_error_line(f"hook blocked · {e.data['message']}")
+    if _is_debug():
+        C.tool_error_line(f"hook blocked  ·  {e.data.get('message', '')}")
 
 
-# -- file / shell -----------------------------------------------------
+# ── File / shell ─────────────────────────────────────────────────────────────
 
 def _on_write_preview(e: Event) -> None:
+    import os as _os
+    path = e.data["path"]
+    emit_timeline(f"File created  —  {_os.path.basename(path)}", "success")
     file_updates.on_write_preview(e)
 
 
 def _on_diff(e: Event) -> None:
+    import os as _os
+    path = e.data.get("path") or ""
+    emit_timeline(f"Changes applied  —  {_os.path.basename(path) or 'file'}", "success")
     file_updates.on_diff(e)
 
 
 def _on_shell_run(e: Event) -> None:
-    # The header is now part of the unified command panel that lands on
-    # SHELL_END. We leave SHELL_RUN as a quiet event so subscribers
-    # (telemetry, transcripts) can still observe the lifecycle.
-    return
+    _shell_start[e.data.get("command", "")] = _time.monotonic()
 
 
 def _on_shell_end(e: Event) -> None:
-    summary = summarize_output(e.data["output"])
-    command_panel.render_command_panel(
-        command=e.data["command"],
-        summary=summary,
-        exit_code=e.data["exit_code"],
-        timeout=e.data["timeout"],
-        note=e.data.get("note"),
-    )
+    command = e.data["command"]
+    exit_code = e.data["exit_code"]
+    output = e.data["output"]
+    timeout = e.data["timeout"]
+    note = e.data.get("note")
+
+    start = _shell_start.pop(command, None)
+    duration = _time.monotonic() - start if start is not None else None
+
+    if _is_debug():
+        summary = summarize_output(output)
+        command_panel.render_command_panel(
+            command=command, summary=summary,
+            exit_code=exit_code, timeout=timeout, note=note,
+        )
+        return
+
+    # Clean structured summary panel
+    _render_command_summary(command, output, exit_code, duration=duration)
+
+
+def _render_command_summary(command: str, output: str, exit_code: int, *, duration: float | None = None) -> None:
+    import rich.box
+    from rich.panel import Panel
+    from rich.table import Table
+
+    summary = summarize_output(output)
+    success = exit_code == 0
+
+    body = Table.grid(padding=(0, 3), expand=False)
+    body.add_column(no_wrap=True, style="muted", min_width=12)
+    body.add_column(no_wrap=True)
+
+    status_text = "Success" if success else f"Failed  (exit {exit_code})"
+    status_style = "term.success" if success else "term.failed"
+    body.add_row(Text("Status", style="muted"), Text(status_text, style=status_style))
+
+    if duration is not None:
+        body.add_row(Text("Duration", style="muted"), Text(f"{duration:.2f}s", style="title"))
+
+    if summary.headline:
+        body.add_row(Text("Result", style="muted"), Text(summary.headline, style="title"))
+    if summary.errors:
+        body.add_row(Text("Errors", style="muted"), Text(str(summary.errors), style="term.failed"))
+    if summary.warnings:
+        body.add_row(Text("Warnings", style="muted"), Text(str(summary.warnings), style="log.warn"))
+    body.add_row(Text("Output", style="muted"), Text(f"{summary.total_lines} lines", style="muted"))
+
+    short_cmd = command if len(command) <= 70 else command[:67] + "…"
+    glyph = CORE if success else ERROR
+    glyph_style = "log.success" if success else "log.error"
+    border = "term.success" if success else "term.failed"
+
+    console.print()
+    console.print(Panel(
+        body,
+        title=Text.assemble((glyph, glyph_style), ("  $ ", "muted"), (short_cmd, "title")),
+        title_align="left",
+        border_style=border,
+        padding=(0, 2),
+        expand=False,
+        box=rich.box.ROUNDED,
+    ))
+
+    kind = "success" if success else "error"
+    # Show the first word of the command as the label (e.g. "npm", "pytest")
+    cmd_word = command.strip().split()[0] if command.strip() else "command"
+    emit_timeline(f"✓ {cmd_word}" if success else f"✗ {cmd_word} failed", kind)
+
+
+def _render_turn_summary(s: dict) -> None:
+    """Structured turn summary — always shown when there are side-effects."""
+    import rich.box
+    from rich.panel import Panel
+    from rich.table import Table
+
+    has_files = s.get("files_written") or s.get("files_edited") or s.get("files_deleted")
+    has_cmds  = s.get("shell_ok", 0) or s.get("shell_fail", 0)
+    if not has_files and not has_cmds:
+        return
+
+    def _names(paths: list, cap: int = 4) -> str:
+        names = [os.path.basename(p) for p in paths[:cap]]
+        tail = f"  +{len(paths) - cap} more" if len(paths) > cap else ""
+        return "  ·  ".join(names) + tail
+
+    body = Table.grid(padding=(0, 3), expand=False)
+    body.add_column(no_wrap=True, style="muted", min_width=16)
+    body.add_column(overflow="fold")
+
+    if s.get("files_written"):
+        body.add_row(Text("Files Created", style="muted"), Text(_names(s["files_written"]), style="log.success"))
+    if s.get("files_edited"):
+        body.add_row(Text("Files Edited", style="muted"), Text(_names(s["files_edited"]), style="accent"))
+    if s.get("files_deleted"):
+        body.add_row(Text("Files Deleted", style="muted"), Text(_names(s["files_deleted"]), style="log.error"))
+
+    cmds = s.get("last_commands") or []
+    if cmds:
+        ok   = s.get("shell_ok", 0)
+        fail = s.get("shell_fail", 0)
+        suffix = f"  ({ok} ok, {fail} failed)" if fail else f"  ({ok} passed)"
+        body.add_row(
+            Text("Commands", style="muted"),
+            Text(_names(cmds) + suffix, style="log.success" if not fail else "log.warn"),
+        )
+
+    status_style = "log.error" if s.get("status") in ("api_error", "interrupted", "max_turns") else "log.success"
+    status_glyph = ERROR if status_style == "log.error" else CORE
+
+    console.print()
+    console.print(Panel(
+        body,
+        title=Text.assemble((status_glyph, status_style), ("  Session Summary", status_style)),
+        title_align="left",
+        border_style=status_style,
+        padding=(0, 2),
+        expand=False,
+        box=rich.box.ROUNDED,
+    ))
 
 
 def _on_run_summary(e: Event) -> None:
-    C.run_summary_panel(e.data["summary"])
+    _render_turn_summary(e.data["summary"])
 
 
 def _on_todos(e: Event) -> None:
-    C.todos_panel(e.data["items"])
+    global _last_todos_sig
+    items = e.data["items"]
+    # Only render when the list composition changes meaningfully.
+    # Signature: total count + completed count + first 3 texts.
+    texts = "".join(i.get("text", "")[:20] for i in items[:3])
+    done = sum(1 for i in items if i.get("status") == "completed")
+    sig = f"{len(items)}:{done}:{texts}"
+    if sig == _last_todos_sig:
+        return
+    _last_todos_sig = sig
+    C.todos_panel(items)
 
 
-# -- subagent --------------------------------------------------------
+# ── Subagents ────────────────────────────────────────────────────────────────
 
 def _on_subagent_start(e: Event) -> None:
-    C.subagent_open(depth=e.data["depth"], description=e.data["description"])
+    import re
+    desc = e.data.get("description", "")
+    clean = re.sub(r'^\[\d+\]\s*', '', desc)
+    emit_timeline(f"Team member deployed  —  {clean[:60]}")
+    try:
+        from agent import ui
+        ui.agent_update(clean[:30], "running", clean[:50], 0)
+    except Exception:
+        pass
 
 
 def _on_subagent_end(e: Event) -> None:
-    C.subagent_close(depth=e.data["depth"])
+    emit_timeline("Team member complete", "success")
 
 
-# -- compaction ------------------------------------------------------
+# ── Compaction ───────────────────────────────────────────────────────────────
 
 def _on_compact_start(e: Event) -> None:
-    console.print()
-    console.print(
-        f"[muted]{CORE} compacting {e.data['count']} older messages (~{e.data['tokens']:,} tokens)[/muted]"
-    )
-    _activity.compacting(
-        f"◈ Synchronizing memory... ({e.data['count']} messages)"
-    )
+    _activity.compacting("◈ Synchronizing memory…")
 
 
 def _on_compact_fallback(e: Event) -> None:
-    dropped_msgs = e.data.get("dropped_messages", 0)
-    dropped_chars = e.data.get("dropped_chars", 0)
-    if dropped_chars:
-        console.print(
-            f"[log.warn]{ERROR} summarizer unavailable[/log.warn]  "
-            f"[muted]fallback compactor elided ~{dropped_chars:,} chars "
-            f"across {dropped_msgs} message{'s' if dropped_msgs != 1 else ''}. "
-            f"Earlier context is now lossy; re-ask for it if needed.[/muted]"
-        )
-    else:
-        console.print(
-            f"[log.warn]{ERROR} summarizer unavailable[/log.warn]  "
-            "[muted]fallback compactor ran with no detail loss.[/muted]"
-        )
+    if _is_debug():
+        dropped = e.data.get("dropped_chars", 0)
+        if dropped:
+            console.print(f"[muted]context compacted  ·  ~{dropped:,} chars elided[/muted]")
 
 
-# -- generic log -----------------------------------------------------
+# ── Generic log ──────────────────────────────────────────────────────────────
 
 def _on_log(e: Event) -> None:
     level = e.data.get("level", "info")
     msg = e.data.get("message", "")
+    if level in ("info", "debug") and not _is_debug():
+        return
     console.print(f"[log.{level}]{msg}[/log.{level}]")
 
 
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
+# ── Next-Gen events (optional, used by supervisor/mission tools) ──────────────
+
+def _on_mission_start(e: Event) -> None:
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.mission_start(e.data.get("goal", ""), e.data.get("estimated_duration", ""))
+    except Exception:
+        pass
+    emit_timeline(f"Mission started  —  {e.data.get('goal', '')[:60]}")
+
+
+def _on_mission_progress(e: Event) -> None:
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.mission_progress(e.data.get("percent", 0), e.data.get("stage", ""))
+    except Exception:
+        pass
+    stage = e.data.get("stage", "")
+    if stage:
+        _activity.waiting(f"◈ {stage}…")
+
+
+def _on_mission_complete(e: Event) -> None:
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.mission_complete(e.data.get("summary", {}))
+    except Exception:
+        pass
+    _activity.idle()
+    emit_timeline("Mission complete", "success")
+
+
+def _on_mission_failed(e: Event) -> None:
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.mission_failed(e.data.get("reason", ""))
+    except Exception:
+        pass
+    _activity.idle()
+    emit_timeline(f"Mission failed  —  {e.data.get('reason', '')[:60]}", "error")
+
+
+def _on_agent_update(e: Event) -> None:
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.update_agent(
+            e.data.get("name", ""), e.data.get("status", "idle"),
+            e.data.get("task", ""), e.data.get("progress", 0),
+        )
+    except Exception:
+        pass
+
+
+def _on_timeline_event(e: Event) -> None:
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.add_timeline_event(e.data.get("message", ""), e.data.get("kind", "info"))
+    except Exception:
+        pass
+    from agent.ui.timeline import append_timeline_line
+    append_timeline_line(e.data.get("message", ""), e.data.get("kind", "info"))
+
+
+def _on_engineering_action(e: Event) -> None:
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.add_eng_action(e.data.get("label", ""), e.data.get("status", "running"), e.data.get("detail", ""))
+    except Exception:
+        pass
+
+
+def _on_engineering_section(e: Event) -> None:
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.set_eng_section(e.data.get("title", ""))
+    except Exception:
+        pass
+
+
+def _on_layer_change(e: Event) -> None:
+    layer = e.data.get("layer", "executive")
+    try:
+        from agent.ui.ui_state import ui_state
+        ui_state.set_layer(layer)
+    except Exception:
+        pass
+    mission_console.configure(debug=_is_debug())
+    console.print(Text.assemble((CORE, "kryth.core"), (f"  Layer: {layer}", "muted")))
+
+
+def _on_approval_batch(e: Event) -> None:
+    try:
+        from agent.ui.approval_ui import render_approval_panel
+        render_approval_panel(e.data.get("items", []), e.data.get("risk", "low"), e.data.get("estimated_time", ""))
+    except Exception:
+        pass
+
+
+def _on_reflection(e: Event) -> None:
+    try:
+        from agent.ui.reflection_ui import render_reflection
+        render_reflection(e.data.get("worked", ""), e.data.get("failed", ""), e.data.get("learned", ""))
+    except Exception:
+        pass
+
+
+def _on_memory_display(e: Event) -> None:
+    try:
+        from agent.ui.memory_ui import render_memory
+        render_memory(e.data.get("similar_tasks", 0), e.data.get("best_workflow", ""), e.data.get("success_rate", 0))
+    except Exception:
+        pass
+
+
+def _on_terminal_summary(e: Event) -> None:
+    try:
+        from agent.ui.terminal_dash import render_terminal_summary
+        render_terminal_summary(e.data.get("command", ""), e.data.get("status", "success"), e.data.get("metrics", {}), e.data.get("expandable_log", ""))
+    except Exception:
+        pass
+
+
+def _on_dag_update(e: Event) -> None:
+    pass  # DAG visualization only in engineering/debug layers
+
+
+# ── Handler registry ─────────────────────────────────────────────────────────
 
 _HANDLERS: dict[EventKind, Callable[[Event], None]] = {
-    EventKind.BANNER: _on_banner,
-    EventKind.STATUS: _on_status,
-    EventKind.TURN_START: _on_turn_start,
-    EventKind.TURN_END: _on_turn_end,
+    EventKind.BANNER:           _on_banner,
+    EventKind.STATUS:           _on_status,
+    EventKind.TURN_START:       _on_turn_start,
+    EventKind.TURN_END:         _on_turn_end,
     EventKind.TURN_INTERRUPTED: _on_turn_interrupted,
-    EventKind.TURN_MAX_TURNS: _on_turn_max,
-    EventKind.SESSION_RESET: _on_session_reset,
-
-    EventKind.PLAN: _on_plan,
-    EventKind.PLAN_PROSE: _on_plan_prose,
-    EventKind.PLAN_MODE: _on_plan_mode,
-    EventKind.AUTO_SKILLS: _on_auto_skills,
-
-    EventKind.LLM_WAITING: _on_llm_waiting,
-    EventKind.LLM_REASONING_START: _on_llm_reasoning_start,
-    EventKind.LLM_REASONING_CHUNK: _on_llm_reasoning_chunk,
-    EventKind.LLM_REASONING_END: _on_llm_reasoning_end,
-    EventKind.LLM_CONTENT_START: _on_llm_content_start,
-    EventKind.LLM_CONTENT_CHUNK: _on_llm_content_chunk,
-    EventKind.LLM_CONTENT_END: _on_llm_content_end,
-    EventKind.LLM_USAGE: _on_llm_usage,
-    EventKind.LLM_ERROR: _on_llm_error,
-    EventKind.LLM_RETRY: _on_llm_retry,
-    EventKind.LLM_HERMES_RECOVERY: _on_llm_hermes_recovery,
-    EventKind.LLM_DEGENERATE: _on_llm_degenerate,
-
-    EventKind.TOOL_START: _on_tool_start,
-    EventKind.TOOL_RESULT: _on_tool_result,
-    EventKind.TOOL_ERROR: _on_tool_error,
-    EventKind.TOOL_CANCELLED: _on_tool_cancelled,
-    EventKind.TOOL_COERCED: _on_tool_coerced,
-    EventKind.TOOL_DENIED: _on_tool_denied,
+    EventKind.TURN_MAX_TURNS:   _on_turn_max,
+    EventKind.SESSION_RESET:    _on_session_reset,
+    EventKind.PLAN:             _on_plan,
+    EventKind.PLAN_PROSE:       _on_plan_prose,
+    EventKind.PLAN_MODE:        _on_plan_mode,
+    EventKind.AUTO_SKILLS:      _on_auto_skills,
+    EventKind.LLM_WAITING:           _on_llm_waiting,
+    EventKind.LLM_REASONING_START:   _on_llm_reasoning_start,
+    EventKind.LLM_REASONING_CHUNK:   _on_llm_reasoning_chunk,
+    EventKind.LLM_REASONING_END:     _on_llm_reasoning_end,
+    EventKind.LLM_CONTENT_START:     _on_llm_content_start,
+    EventKind.LLM_CONTENT_CHUNK:     _on_llm_content_chunk,
+    EventKind.LLM_CONTENT_END:       _on_llm_content_end,
+    EventKind.LLM_USAGE:             _on_llm_usage,
+    EventKind.LLM_ERROR:             _on_llm_error,
+    EventKind.LLM_RETRY:             _on_llm_retry,
+    EventKind.LLM_HERMES_RECOVERY:   _on_llm_hermes_recovery,
+    EventKind.LLM_DEGENERATE:        _on_llm_degenerate,
+    EventKind.TOOL_START:       _on_tool_start,
+    EventKind.TOOL_RESULT:      _on_tool_result,
+    EventKind.TOOL_ERROR:       _on_tool_error,
+    EventKind.TOOL_CANCELLED:   _on_tool_cancelled,
+    EventKind.TOOL_COERCED:     _on_tool_coerced,
+    EventKind.TOOL_DENIED:      _on_tool_denied,
     EventKind.TOOL_HOOK_BLOCKED: _on_tool_hook_blocked,
-
-    EventKind.WRITE_PREVIEW: _on_write_preview,
-    EventKind.DIFF: _on_diff,
-    EventKind.SHELL_RUN: _on_shell_run,
-    EventKind.SHELL_END: _on_shell_end,
-    EventKind.TODOS: _on_todos,
-    EventKind.RUN_SUMMARY: _on_run_summary,
-
-    EventKind.SUBAGENT_START: _on_subagent_start,
-    EventKind.SUBAGENT_END: _on_subagent_end,
-
-    EventKind.COMPACT_START: _on_compact_start,
+    EventKind.WRITE_PREVIEW:    _on_write_preview,
+    EventKind.DIFF:             _on_diff,
+    EventKind.SHELL_RUN:        _on_shell_run,
+    EventKind.SHELL_END:        _on_shell_end,
+    EventKind.TODOS:            _on_todos,
+    EventKind.RUN_SUMMARY:      _on_run_summary,
+    EventKind.SUBAGENT_START:   _on_subagent_start,
+    EventKind.SUBAGENT_END:     _on_subagent_end,
+    EventKind.COMPACT_START:    _on_compact_start,
     EventKind.COMPACT_FALLBACK: _on_compact_fallback,
-
-    EventKind.LOG: _on_log,
+    EventKind.LOG:              _on_log,
+    # Next-gen supervisor/mission events
+    EventKind.MISSION_START:         _on_mission_start,
+    EventKind.MISSION_PROGRESS:      _on_mission_progress,
+    EventKind.MISSION_COMPLETE:      _on_mission_complete,
+    EventKind.MISSION_FAILED:        _on_mission_failed,
+    EventKind.AGENT_UPDATE:          _on_agent_update,
+    EventKind.TIMELINE_EVENT:        _on_timeline_event,
+    EventKind.ENGINEERING_ACTION:    _on_engineering_action,
+    EventKind.ENGINEERING_SECTION:   _on_engineering_section,
+    EventKind.LAYER_CHANGE:          _on_layer_change,
+    EventKind.APPROVAL_BATCH:        _on_approval_batch,
+    EventKind.REFLECTION:            _on_reflection,
+    EventKind.MEMORY_DISPLAY:        _on_memory_display,
+    EventKind.TERMINAL_SUMMARY:      _on_terminal_summary,
+    EventKind.DAG_UPDATE:            _on_dag_update,
 }
 
 
 def _dispatch(event: Event) -> None:
     handler = _HANDLERS.get(event.kind)
-    if handler is None:
-        # Unknown event: log it (only at DEBUG) but never crash.
-        return
-    handler(event)
+    if handler:
+        handler(event)
 
 
 _unsubscribe: Callable[[], None] | None = None
 
 
 def install() -> None:
-    """Wire the renderer to the bus. Idempotent."""
     global _unsubscribe
     if _unsubscribe is not None:
         return

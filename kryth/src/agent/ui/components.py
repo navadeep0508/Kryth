@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Iterable
 
+import rich.box
 from rich.console import Group
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -34,41 +35,64 @@ def banner(model: str, base_url: str, skill_count: int, version: str = "1.0") ->
 
 
 def _tool_action(name: str) -> str:
+    """Map raw tool names to human-readable engineering action labels."""
+    try:
+        from agent.ui.engineering import tool_to_eng_label
+        return tool_to_eng_label(name).upper()
+    except Exception:
+        pass
     n = name.lower()
     if n in {"read_file", "list_files"}:
-        return "READ"
-    if n in {"grep", "glob", "search_code", "semantic_search", "lookup_symbol", "lookup_imports", "lookup_dependents"}:
-        return "SEARCH"
+        return "REPOSITORY ANALYSIS"
+    if n in {"grep", "glob", "search_code", "semantic_search",
+             "lookup_symbol", "lookup_imports", "lookup_dependents",
+             "fts_search", "ast_search", "search_smart"}:
+        return "CODE NAVIGATION"
     if n in {"write_file"}:
-        return "WRITE"
+        return "CODE GENERATION"
     if n in {"edit_file", "multi_edit"}:
-        return "PATCH"
-    if n in {"run_command", "run_tests", "run_install"}:
-        return "EXEC"
+        return "CODE MODIFICATION"
+    if n in {"run_command", "run_tests", "run_install",
+             "shell_exec", "shell_run_plan"}:
+        return "BUILD EXECUTION"
     if n in {"delete_file"}:
-        return "DELETE"
+        return "CLEANUP"
     if n in {"todo_write", "todo_read"}:
-        return "PLAN"
-    return name.replace("_", " ").upper()
+        return "TASK PLANNING"
+    if n in {"spawn_agent", "spawn_agents_parallel"}:
+        return "TEAM DEPLOYMENT"
+    if n.startswith("browser_") or n in {"open_url", "browser_use_task"}:
+        return "BROWSER VERIFICATION"
+    if n in {"git_op"}:
+        return "VERSION CONTROL"
+    if n in {"self_critique", "verify_files"}:
+        return "CODE REVIEW"
+    return name.replace("_", " ").title()
 
 
 def tool_header(name: str, summary: str) -> None:
-    """Display tool execution with prominence and visual hierarchy."""
+    """Tool header — only shown in debug mode (KRYTH_DEBUG_UI=1).
+
+    In normal mode all tool visibility is handled by mission_console
+    which routes through emit_timeline. This function is intentionally
+    suppressed in normal mode so the terminal stays clean.
+    """
+    import os
+    if not os.environ.get("KRYTH_DEBUG_UI", "").lower() in {"1", "true", "yes"}:
+        return
     action = _tool_action(name)
     console.print()
-
-    # Create a more prominent tool header
     if summary:
         console.print(Text.assemble(
             (CORE, "tool.bullet"),
             (" " + action, "tool.name"),
             ("  " + DOT + "  ", "muted"),
-            (summary, "tool.arg")
+            (summary, "tool.arg"),
         ))
     else:
         console.print(Text.assemble(
             (CORE, "tool.bullet"),
-            (" " + action, "tool.name")
+            (" " + action, "tool.name"),
         ))
 
 
@@ -93,42 +117,46 @@ def status_line(parts: Iterable[str]) -> None:
 
 
 def turn_complete(elapsed: float | None, tokens_in: int, tokens_out: int, tool_calls: int = 0) -> None:
-    """Premium completion summary with clear metrics."""
+    """Clean mission-complete panel. Tokens only shown in debug mode."""
+    import os
+    _debug = os.environ.get("KRYTH_DEBUG_UI", "").lower() in {"1", "true", "yes"}
+
     elapsed_str = f"{elapsed:.1f}s" if elapsed else "?"
-    total = tokens_in + tokens_out
 
-    from rich.table import Table as _Table
-    body = _Table.grid(padding=(0, 2), expand=False)
-    body.add_column(no_wrap=True, style="muted", min_width=12)
-    body.add_column(no_wrap=True, style="title")
+    body = Table.grid(padding=(0, 2), expand=False)
+    body.add_column(no_wrap=True, style="muted", min_width=14)
+    body.add_column(no_wrap=True)
 
-    # Show metrics in logical order
+    body.add_row(
+        Text.assemble((CORE, "log.success"), (" Outcome", "muted")),
+        Text("Complete", style="log.success"),
+    )
     body.add_row(
         Text.assemble((CORE, "kryth.core"), (" Duration", "muted")),
-        elapsed_str
+        Text(elapsed_str, style="title"),
     )
-    body.add_row(
-        Text.assemble((CORE, "kryth.core"), (" Tokens", "muted")),
-        f"{total:,}  [muted](in {tokens_in:,} / out {tokens_out:,})[/muted]"
-    )
-    if tool_calls:
+
+    if _debug:
+        total = tokens_in + tokens_out
         body.add_row(
-            Text.assemble((CORE, "kryth.core"), (" Tool Calls", "muted")),
-            str(tool_calls)
+            Text.assemble((CORE, "kryth.core"), (" Tokens", "muted")),
+            Text(f"{total:,}  (in {tokens_in:,} / out {tokens_out:,})", style="muted"),
         )
-    body.add_row(
-        Text.assemble((CORE, "log.success"), (" Status", "muted")),
-        Text("Complete", style="log.success")
-    )
+        if tool_calls:
+            body.add_row(
+                Text.assemble((CORE, "kryth.core"), (" Actions", "muted")),
+                Text(str(tool_calls), style="muted"),
+            )
 
     console.print()
     console.print(Panel(
         body,
-        title=Text.assemble((CORE, "log.success"), (" Mission Complete", "log.success")),
+        title=Text.assemble((CORE, "log.success"), ("  Mission Complete", "log.success")),
         title_align="left",
         border_style="log.success",
         padding=(1, 2),
         expand=False,
+        box=rich.box.ROUNDED,
     ))
 
 
@@ -172,13 +200,13 @@ def plan_panel(plan: dict) -> None:
         body.add_row("verify", "\n".join(str(v) for v in validation[:10]))
 
     console.print()
-    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Plan", "section.plan")), title_align="left", border_style="divider", padding=(1, 2), expand=False))
+    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Plan", "section.plan")), title_align="left", border_style="divider", padding=(1, 2), expand=False, box=rich.box.ROUNDED))
 
 
 def plan_prose(text: str) -> None:
     body = Markdown(text) if any(m in text for m in ("#", "*", "`")) else Text(text)
     console.print()
-    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Plan", "section.plan")), title_align="left", border_style="divider", padding=(1, 2), expand=False))
+    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Plan", "section.plan")), title_align="left", border_style="divider", padding=(1, 2), expand=False, box=rich.box.ROUNDED))
 
 
 def shell_header(command: str, timeout: int, note: str | None) -> None:
@@ -223,29 +251,28 @@ def todos_panel(items: list[dict]) -> None:
         cell = f"[strike muted]{text}[/strike muted]" if item["status"] == "completed" else f"[{style}]{text}[/{style}]"
         body.add_row(f"[{style}]{mark}[/{style}]", cell)
     console.print()
-    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Tasks", "section.exec")), title_align="left", border_style="divider", padding=(0, 1), expand=False))
+    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Tasks", "section.exec")), title_align="left", border_style="divider", padding=(0, 1), expand=False, box=rich.box.ROUNDED))
 
 
 def subagent_open(depth: int, description: str) -> None:
-    """Display subagent spawn with clear hierarchy."""
+    """Display subagent spawn as an engineering team deployment."""
     console.print()
+    # Strip internal "[0] prefix" pattern if present
+    import re as _re
+    clean_desc = _re.sub(r'^\[\d+\]\s*', '', description)
     console.print(Text.assemble(
-        (CORE, "section.subagent"),
-        (" WORKER", "section.subagent"),
+        (CORE, "agent.running"),
+        ("  Team Deployment", "agent.running"),
         ("  " + DOT + "  ", "muted"),
-        (f"depth {depth}", "muted"),
-        ("  " + DOT + "  ", "muted"),
-        (description, "title")
+        (clean_desc[:80], "title")
     ))
 
 
 def subagent_close(depth: int) -> None:
-    """Display subagent completion."""
+    """Display subagent completion as team task done."""
     console.print(Text.assemble(
-        (CORE, "log.success"),
-        (" WORKER COMPLETE", "log.success"),
-        ("  " + DOT + "  ", "muted"),
-        (f"depth {depth}", "muted")
+        (CORE, "agent.done"),
+        ("  Team Task Complete", "agent.done"),
     ))
 
 
@@ -312,6 +339,7 @@ def _permission_panel(tool: str, signature: str, selected: int) -> Panel:
         border_style="log.warn",
         padding=(1, 2),
         expand=False,
+        box=rich.box.ROUNDED,
     )
 
 
@@ -414,4 +442,4 @@ def run_summary_panel(s: dict) -> None:
     title_style = "log.success" if status == "done" else "log.warn"
     title = "Complete" if status == "done" else status.replace("_", " ").title()
     console.print()
-    console.print(Panel(body, title=Text.assemble((CORE if status == "done" else ERROR, title_style), (" " + title, title_style)), title_align="left", border_style="divider", padding=(0, 1), expand=False))
+    console.print(Panel(body, title=Text.assemble((CORE if status == "done" else ERROR, title_style), (" " + title, title_style)), title_align="left", border_style="divider", padding=(0, 1), expand=False, box=rich.box.ROUNDED))

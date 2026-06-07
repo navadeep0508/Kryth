@@ -156,3 +156,11 @@ def get_router() -> SkillRouter:
     if _router is None:
         _router = SkillRouter()
     return _router
+
+
+def route(user_input: str, use_llm: bool = True) -> List[str]:
+    """Module-level route function for backward compatibility.
+
+    Delegates to the singleton router instance.
+    """
+    return get_router().route(user_input, use_llm)

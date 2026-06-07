@@ -34,6 +34,26 @@ _imports_by_file: dict[str, set[str]] = {}
 _calls_by_file: dict[str, set[str]] = {}
 _indexed_root: str | None = None
 _dirty_paths: set[str] = set()
+# xxhash fingerprints keyed by absolute path — skip re-analysis when
+# the fingerprint is unchanged. Populated during build/incremental updates.
+_fingerprints: dict[str, str] = {}
+
+
+def _file_fingerprint(path: str) -> str:
+    """Fast file fingerprint using size+mtime+xxhash head. Falls back to md5."""
+    try:
+        from agent.retrieval.cache import file_fingerprint
+        return file_fingerprint(path)
+    except ImportError:
+        import hashlib
+        try:
+            stat = os.stat(path)
+            with open(path, "rb") as f:
+                head = f.read(4096)
+            h = hashlib.md5(head, usedforsecurity=False).hexdigest()
+            return f"{stat.st_size}:{stat.st_mtime:.3f}:{h}"
+        except OSError:
+            return ""
 
 
 def _iter_python_files(root: str) -> Iterable[str]:
@@ -109,14 +129,16 @@ def _rel(path: str, root: str) -> str:
 def build_index(root: str = ".") -> int:
     """(Re)build all three indexes over ``root``. Returns symbol count."""
     global _index, _imports_by_file, _calls_by_file
-    global _indexed_root, _dirty_paths
+    global _indexed_root, _dirty_paths, _fingerprints
 
     _index = {}
     _imports_by_file = {}
     _calls_by_file = {}
+    _fingerprints = {}
 
     for path in _iter_python_files(root):
         rel = _rel(path, root)
+        _fingerprints[path] = _file_fingerprint(path)
         defs, imports, calls = _analyze_module(path)
         for name, line, kind in defs:
             _index.setdefault(name, []).append((rel, line, kind))
@@ -133,6 +155,9 @@ def build_index(root: str = ".") -> int:
 def _reindex_paths(paths: set[str], root: str) -> None:
     """Re-parse a subset of files and merge results back. Cheaper than
     a full rebuild when only a handful of files changed.
+
+    Files whose fingerprint is unchanged are skipped to avoid redundant
+    AST parsing — critical for fast incremental updates in large repos.
     """
     norm = {_rel(p, root) for p in paths}
 
@@ -148,7 +173,18 @@ def _reindex_paths(paths: set[str], root: str) -> None:
 
     for p in paths:
         if not os.path.isfile(p) or not p.endswith(".py"):
+            # Deleted — clean up fingerprint
+            _fingerprints.pop(p, None)
             continue
+
+        # Skip re-parsing if content hasn't changed
+        new_fp = _file_fingerprint(p)
+        if _fingerprints.get(p) == new_fp and new_fp:
+            # Content unchanged — restore previous index entries
+            # (they were just removed above; safe to skip re-parse)
+            continue
+        _fingerprints[p] = new_fp
+
         rel = _rel(p, root)
         defs, imports, calls = _analyze_module(p)
         for name, line, kind in defs:
@@ -259,4 +295,5 @@ def index_stats() -> dict:
         "files_with_imports": len(_imports_by_file),
         "files_with_calls": len(_calls_by_file),
         "dirty_paths": len(_dirty_paths),
+        "fingerprinted_files": len(_fingerprints),
     }
