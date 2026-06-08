@@ -58,11 +58,32 @@ _ANSI_GHOST  = "\033[38;2;48;48;48m"     # narration dim — nearly invisible on
 # them as near-invisible ghost text so they don't distract the user.
 _NARRATION_RE = re.compile(
     r"^[ \t]*("
-    r"I[' ]?(?:ll|'ll|'m|'ve|'d| will| am| need| should| can| see| know| have| noticed| found| realize)\b|"
-    r"Let(?:'s| me)\b|"
-    r"(?:Now|Next|First|Then|Finally|After that)[,.]?\s+(?:I|let me|let's|we)\b|"
-    r"(?:Now|Next) (?:I'm|I'll|I need|I should|I can)\b"
+    r"I[' ]?(?:ll|'ll|'m|'ve|'d| will| am| need| should| can| see| know| have| noticed| found| realize| want| think| believe| understand)\b|"
+    r"(?:Let|Let's|Lets)(?:'s| me)\b|"
+    r"(?:Now|Next|First|Then|Finally|After that|After this|Before that)[,.]?\s+(?:I|let me|let's|we)\b|"
+    r"(?:Now|Next) (?:I'm|I'll|I need|I should|I can)\b|"
+    r"(?:Looking|Checking|Reading|Writing|Running|Building|Testing|Examining|Analyzing|"
+    r"Reviewing|Updating|Creating|Editing|Searching|Scanning|Verifying|Installing|"
+    r"Deploying|Attempting|Starting|Opening|Loading|Executing|Fetching|Comparing|"
+    r"Responding|Proceeding|Providing|Returning|Sending|Using|Calling|Getting|"
+    r"Setting|Handling|Processing|Preparing|Generating|Crafting)\b|"
+    r"(?:Based on|Looking at|Given that|Since the|Now that|To (?:do|complete|handle|respond|answer|help|address|start|begin|proceed))\b|"
+    r"(?:The (?:model|agent|assistant|task|request|project|code|file|result|output|response|answer) (?:is|has|was|should|needs|requires|must))\b"
     r")",
+    re.IGNORECASE,
+)
+
+# Lines that are model-generated fake UI panels (box-drawing characters).
+_BOX_LINE_RE = re.compile(r"^[ \t]*[╭╮╰╯│├┤┬┴┼╔╗╚╝╠╣╦╩╬]")
+
+# Raw tag lines that escaped the streaming parser — ghost-text them so they
+# are invisible rather than shown as `</think>` or `<display>...` raw text.
+_RAW_TAG_RE = re.compile(
+    r"^[ \t]*</?(?:think(?:ing)?|reasoning|analysis|reflect(?:ion)?|"
+    r"display|status|mission|timeline|spinner|todo|summary|memory|"
+    r"experience|health|budget|risk|block|activity|exec_stream|"
+    r"build_stream|test_stream|tool_result|file_read|file_write|"
+    r"file_edit|checkpoint|agent|team|decision|command)[>\s/]",
     re.IGNORECASE,
 )
 
@@ -99,19 +120,19 @@ _TAG_SPECS: tuple[TagSpec, ...] = (
         name="thinking",
         open_tag="<think>",
         close_tag="</think>",
-        header="◈ Thinking",
-        glyph="◈",
-        ansi_color=_ANSI_CYAN,
-        show_live=True,
+        header="",
+        glyph="",
+        ansi_color="",
+        show_live=False,
     ),
     TagSpec(
         name="thinking_alt",
         open_tag="<thinking>",
         close_tag="</thinking>",
-        header="◈ Thinking",
-        glyph="◈",
-        ansi_color=_ANSI_CYAN,
-        show_live=True,
+        header="",
+        glyph="",
+        ansi_color="",
+        show_live=False,
     ),
     TagSpec(
         name="plan",
@@ -160,35 +181,12 @@ _TAG_SPECS: tuple[TagSpec, ...] = (
         show_live=False,
     ),
     # ── Universal provider reasoning tags ──────────────────────────────
-    # DeepSeek, GLM, Grok, Llama, Ollama, OpenRouter models
-    TagSpec(
-        name="reasoning",
-        open_tag="<reasoning>",
-        close_tag="</reasoning>",
-        header="◈ Thinking",
-        glyph="◈",
-        ansi_color=_ANSI_CYAN,
-        show_live=True,
-    ),
+    # DeepSeek, GLM, Grok, Llama, Ollama, OpenRouter models — all silent.
+    # The waiting spinner already communicates "thinking" to the user.
+    TagSpec(name="reasoning", open_tag="<reasoning>", close_tag="</reasoning>", header="", glyph="", ansi_color="", show_live=False),
     # Generic analysis / reflection tags used by some fine-tunes
-    TagSpec(
-        name="analysis",
-        open_tag="<analysis>",
-        close_tag="</analysis>",
-        header="◈ Thinking",
-        glyph="◈",
-        ansi_color=_ANSI_CYAN,
-        show_live=True,
-    ),
-    TagSpec(
-        name="reflect",
-        open_tag="<reflect>",
-        close_tag="</reflect>",
-        header="◈ Reflecting",
-        glyph="◈",
-        ansi_color=_ANSI_CYAN,
-        show_live=True,
-    ),
+    TagSpec(name="analysis",  open_tag="<analysis>",  close_tag="</analysis>",  header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="reflect",   open_tag="<reflect>",   close_tag="</reflect>",   header="", glyph="", ansi_color="", show_live=False),
     # ── Silent XML tool payload tags ───────────────────────────────────
     # Anthropic / XML-format tool calling internals
     TagSpec(
@@ -276,6 +274,19 @@ _TAG_SPECS: tuple[TagSpec, ...] = (
     TagSpec(name="risk",              open_tag="<risk>",              close_tag="</risk>",              header="", glyph="◇", ansi_color=_ANSI_AMBER, show_live=True),
     TagSpec(name="summary",           open_tag="<summary>",           close_tag="</summary>",           header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
     TagSpec(name="block",             open_tag="<block>",             close_tag="</block>",             header="", glyph="",  ansi_color="",          show_live=True),
+    # ── Alias tags for the full KRYTH tag registry ────────────────────
+    # Note: <analysis> and <reflect> already registered above as thinking blocks
+    TagSpec(name="activity",          open_tag="<activity>",          close_tag="</activity>",          header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="tool_result_tag",   open_tag="<tool_result>",       close_tag="</tool_result>",       header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="file_read_tag",     open_tag="<file_read>",         close_tag="</file_read>",         header="", glyph="📖", ansi_color="",          show_live=True),
+    TagSpec(name="file_write_tag",    open_tag="<file_write>",        close_tag="</file_write>",        header="", glyph="📝", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="file_edit_tag",     open_tag="<file_edit>",         close_tag="</file_edit>",         header="", glyph="✏", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="checkpoint_tag",    open_tag="<checkpoint>",        close_tag="</checkpoint>",        header="", glyph="◈", ansi_color=_ANSI_GREEN, show_live=True),
+    TagSpec(name="agent_tag",         open_tag="<agent>",             close_tag="</agent>",             header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="team_tag",          open_tag="<team>",              close_tag="</team>",              header="", glyph="◈", ansi_color=_ANSI_GOLD,  show_live=True),
+    TagSpec(name="reflection_tag",    open_tag="<reflection>",        close_tag="</reflection>",        header="", glyph="◈", ansi_color=_ANSI_VIOLET,show_live=True),
+    TagSpec(name="decision_tag",      open_tag="<decision>",          close_tag="</decision>",          header="", glyph="◈", ansi_color=_ANSI_CYAN,  show_live=True),
+    TagSpec(name="command_tag",       open_tag="<command>",           close_tag="</command>",           header="", glyph="◈", ansi_color=_ANSI_TEAL,  show_live=True),
     # ── KRYTH Tag Protocol: additional silent tags ────────────────────────
     TagSpec(name="kryth_internal",  open_tag="<internal>",      close_tag="</internal>",      header="", glyph="", ansi_color="", show_live=False),
     TagSpec(name="kryth_debug",     open_tag="<debug>",         close_tag="</debug>",         header="", glyph="", ansi_color="", show_live=False),
@@ -318,8 +329,22 @@ def _wi(s: str) -> None:
 
 
 def _tr_display(text: str) -> None:
-    if text:
-        _wi(f"\n{text}\n")
+    if not text:
+        return
+    t = text.strip()
+    if not t:
+        return
+    # Render as markdown when content has markdown markers
+    if any(m in t for m in ("#", "**", "- ", "* ", "`", "\n")):
+        try:
+            from rich.markdown import Markdown
+            from agent.ui.console import console
+            console.print()
+            console.print(Markdown(t))
+            return
+        except Exception:
+            pass
+    _wi(f"\n{t}\n")
 
 
 def _tr_status(text: str) -> None:
@@ -613,8 +638,21 @@ def _tr_summary(text: str) -> None:
 
 
 def _tr_block(text: str) -> None:
-    if text.strip():
-        _wi(f"\n{text.strip()}\n\n")
+    t = text.strip()
+    if not t:
+        return
+    # Render markdown if the text contains markdown markers
+    if any(m in t for m in ("#", "**", "- ", "* ", "`", "---")):
+        try:
+            from rich.markdown import Markdown
+            from agent.ui.console import console
+            console.print()
+            console.print(Markdown(t))
+            console.print()
+            return
+        except Exception:
+            pass
+    _wi(f"\n{t}\n\n")
 
 
 # Dispatch table: tag name → renderer function
@@ -663,6 +701,18 @@ _TAG_RENDERERS: Dict[str, Callable[[str], None]] = {
     "risk":               lambda t: _tr_supervisor("Risk", t),
     "summary":            _tr_summary,
     "block":              _tr_block,
+    # Alias tags — map to existing renderers
+    "activity":           _tr_status,
+    "tool_result_tag":    _tr_display,
+    "file_read_tag":      _tr_tool_read,
+    "file_write_tag":     _tr_tool_write,
+    "file_edit_tag":      _tr_tool_edit,
+    "checkpoint_tag":     _tr_success,
+    "agent_tag":          _tr_mission,
+    "team_tag":           _tr_mission,
+    "reflection_tag":     _tr_memory,
+    "decision_tag":       _tr_display,
+    "command_tag":        _tr_exec,
 }
 
 # Tags whose content is accumulated silently and rendered on close via _TAG_RENDERERS
@@ -929,6 +979,13 @@ def _flush_threshold() -> int:
     return max(40, min(cols, 200))
 
 
+def _is_tty() -> bool:
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
 def _write_inplace(text: str) -> None:
     try:
         sys.stdout.write(text)
@@ -938,24 +995,24 @@ def _write_inplace(text: str) -> None:
 
 
 def _apply_narration_filter(text: str) -> str:
-    """Render first-person narration lines as ghost text.
+    """Render first-person narration, fake panels, and raw tags as ghost text."""
+    def _is_ghost(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped:
+            return False
+        return bool(
+            _NARRATION_RE.match(stripped)
+            or _BOX_LINE_RE.match(line)
+            or _RAW_TAG_RE.match(line)
+        )
 
-    The model often emits self-narration ("I'll analyze...", "Let me check...")
-    alongside tagged UI output.  These lines are technically visible but
-    rendered at near-zero contrast so they don't compete with structured output.
-    Lines that don't match the pattern pass through unchanged.
-    """
     if "\n" not in text:
-        stripped = text.strip()
-        if stripped and _NARRATION_RE.match(stripped):
-            return f"{_ANSI_GHOST}{text}{_ANSI_RESET}"
-        return text
+        return f"{_ANSI_GHOST}{text}{_ANSI_RESET}" if _is_ghost(text) else text
     parts = text.split("\n")
     out: list[str] = []
     for i, part in enumerate(parts):
         sep = "" if i == len(parts) - 1 else "\n"
-        stripped = part.strip()
-        if stripped and _NARRATION_RE.match(stripped):
+        if _is_ghost(part):
             out.append(f"{_ANSI_GHOST}{part}{_ANSI_RESET}{sep}")
         else:
             out.append(part + sep)
@@ -981,6 +1038,9 @@ class StreamPrinter:
         self._parser = TagParser()
         self._parse_state = TagParserState()
         self._block_renderer = BlockRenderer()
+        # Ghost-continuation: if a flush was ghost-texted mid-line, carry the
+        # ghost style into the next flush until the line ends with \n.
+        self._in_ghost_continuation = False
 
     # ── Existing reasoning-spinner path (native reasoning field) ─────────
 
@@ -988,7 +1048,7 @@ class StreamPrinter:
         if self._reasoning_started:
             return
         self._reasoning_started = True
-        if _parallel_mode:
+        if _parallel_mode or not _is_tty():
             self._reasoning_frame = 0
             self._pulse_frame = 0
             return
@@ -1004,7 +1064,7 @@ class StreamPrinter:
     def reasoning_chunk(self, piece: str, elapsed: float = 0.0) -> None:
         if not self._reasoning_started:
             self.begin_reasoning()
-        if not _parallel_mode:
+        if not _parallel_mode and _is_tty():
             self._reasoning_frame = (self._reasoning_frame + 1) % len(DIAMOND_THINKING_FRAMES)
             self._pulse_frame = (self._pulse_frame + 1) % len(_PULSE_STYLES)
             glyph = DIAMOND_THINKING_FRAMES[self._reasoning_frame]
@@ -1019,7 +1079,7 @@ class StreamPrinter:
 
     def end_reasoning(self) -> None:
         if self._reasoning_started:
-            if not _parallel_mode:
+            if not _parallel_mode and _is_tty():
                 _write_inplace(f"\r{' ' * 20}\r")
             self._reasoning_started = False
 
@@ -1080,6 +1140,15 @@ class StreamPrinter:
         if not piece:
             return
         threshold = _flush_threshold()
+
+        # Pre-flush: if the buffer holds non-ghost content and the incoming
+        # piece opens a new narration/ghost line, flush the buffer first so
+        # the narration doesn't get buried in a mixed chunk and slip through.
+        if self._buf_len > 0 and not self._in_ghost_continuation:
+            first_part = piece.split("\n")[0] if "\n" in piece else piece
+            if first_part and _apply_narration_filter(first_part) is not first_part:
+                self._flush()
+
         if "\n" not in piece and self._buf_len + len(piece) < threshold:
             self._buf.append(piece)
             self._buf_len += len(piece)
@@ -1103,12 +1172,18 @@ class StreamPrinter:
         self._buf = []
         self._buf_len = 0
         try:
-            filtered = _apply_narration_filter(text)
-            if filtered is not text:
-                # Has ghost-text ANSI — write directly to avoid Rich stripping
-                _write_inplace(filtered)
+            if self._in_ghost_continuation:
+                _write_inplace(f"{_ANSI_GHOST}{text}{_ANSI_RESET}")
+                if "\n" in text:
+                    self._in_ghost_continuation = False
             else:
-                console.out(text, end="", highlight=False)
+                filtered = _apply_narration_filter(text)
+                if filtered is not text:
+                    # Ghost-texted — track continuation if line not yet complete
+                    self._in_ghost_continuation = "\n" not in text
+                    _write_inplace(filtered)
+                else:
+                    console.out(text, end="", highlight=False)
         except Exception:
             pass
         if motion_enabled() and text:
@@ -1123,8 +1198,17 @@ class StreamPrinter:
         if cut <= 0:
             self._flush()
             return
+        chunk = joined[:cut + 1]
         try:
-            console.out(joined[:cut + 1], end="", highlight=False)
+            if self._in_ghost_continuation:
+                _write_inplace(f"{_ANSI_GHOST}{chunk}{_ANSI_RESET}")
+            else:
+                filtered = _apply_narration_filter(chunk)
+                if filtered is not chunk:
+                    self._in_ghost_continuation = True
+                    _write_inplace(filtered)
+                else:
+                    console.out(chunk, end="", highlight=False)
         except Exception:
             pass
         rest = joined[cut + 1:]
@@ -1134,3 +1218,4 @@ class StreamPrinter:
     def _reset_parser(self) -> None:
         self._parse_state = TagParserState()
         self._block_renderer.reset()
+        self._in_ghost_continuation = False

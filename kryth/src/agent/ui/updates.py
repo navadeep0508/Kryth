@@ -20,6 +20,7 @@ from agent.ui.console import LOCK, console
 from agent.ui.diff_renderer import parse_unified_diff
 from agent.ui.events import Event
 from agent.ui.panels import (
+    _print_panel,
     create_panel,
     delete_panel,
     multi_update_panel,
@@ -32,8 +33,7 @@ def on_write_preview(e: Event) -> None:
     content = e.data["content"]
     panel = create_panel(path, content)
     with LOCK:
-        console.print()
-        console.print(panel)
+        _print_panel(panel)
 
 
 def on_diff(e: Event) -> None:
@@ -43,9 +43,6 @@ def on_diff(e: Event) -> None:
 
     parsed = parse_unified_diff(diff_text)
     if parsed.is_empty:
-        # Nothing structural to show; an empty diff is usually a no-op
-        # multi_edit that hit no matching ranges. Skip silently — the
-        # tool result already reports "nothing changed".
         return
 
     file_label = path or "(unknown)"
@@ -56,18 +53,13 @@ def on_diff(e: Event) -> None:
         panel = update_panel(file_label, parsed)
 
     with LOCK:
-        console.print()
-        console.print(panel)
+        _print_panel(panel)
 
 
 def on_delete(e: Event) -> None:
-    """Future-proof handler for a hypothetical FILE_DELETE event. Not
-    wired up yet — kept here so the rendering surface is complete and
-    the wiring is a one-line change when the agent gains that event."""
     panel = delete_panel(e.data["path"])
     with LOCK:
-        console.print()
-        console.print(panel)
+        _print_panel(panel)
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ from agent.ui.activity import ActivityIndicator
 from agent.ui.console import console
 from agent.ui.events import BUS, Event, EventKind
 from agent.ui.mission_console import mission_console, emit_timeline, is_silent, label
+from agent.ui.panels import _print_panel
 from agent.ui.streaming import StreamPrinter
 from agent.ui.summarizer import summarize_output
 from agent.ui.theme import CORE, DOT, ERROR, WAITING
@@ -38,6 +39,7 @@ _turn_tool_count = 0
 _thinking_idx = 0
 _shell_start: dict[str, float] = {}   # command → monotonic start time
 _last_todos_sig: str = ""              # dedup key for todo panel
+_turn_stats_cache: dict = {}           # elapsed, tokens_in, tokens_out from turn end
 
 _ACTIVITY_MSGS = [
     "Analyzing project",
@@ -86,13 +88,19 @@ def _on_turn_start(e: Event) -> None:
 def _on_turn_end(e: Event) -> None:
     _activity.idle()
     elapsed = status.turn_elapsed()
-    elapsed_str = f"{elapsed:.1f}s" if elapsed else "?"
     C.turn_complete(
         elapsed=elapsed,
         tokens_in=e.data.get("tokens_in", 0),
         tokens_out=e.data.get("tokens_out", 0),
         tool_calls=_turn_tool_count,
     )
+    # Stash stats so _on_run_summary can include them
+    _turn_stats_cache.clear()
+    _turn_stats_cache.update({
+        "elapsed": elapsed,
+        "tokens_in": e.data.get("tokens_in", 0),
+        "tokens_out": e.data.get("tokens_out", 0),
+    })
     status.turn_reset()
     try:
         from agent.ui.ui_state import ui_state
@@ -140,11 +148,13 @@ def _on_status(e: Event) -> None:
 # ── Planning ─────────────────────────────────────────────────────────────────
 
 def _on_plan(e: Event) -> None:
-    C.plan_panel(e.data["plan"])
+    if _is_debug():
+        C.plan_panel(e.data["plan"])
 
 
 def _on_plan_prose(e: Event) -> None:
-    C.plan_prose(e.data["text"])
+    if _is_debug():
+        C.plan_prose(e.data["text"])
 
 
 def _on_plan_mode(e: Event) -> None:
@@ -389,8 +399,7 @@ def _render_command_summary(command: str, output: str, exit_code: int, *, durati
     glyph_style = "log.success" if success else "log.error"
     border = "term.success" if success else "term.failed"
 
-    console.print()
-    console.print(Panel(
+    _print_panel(Panel(
         body,
         title=Text.assemble((glyph, glyph_style), ("  $ ", "muted"), (short_cmd, "title")),
         title_align="left",
@@ -407,59 +416,116 @@ def _render_command_summary(command: str, output: str, exit_code: int, *, durati
 
 
 def _render_turn_summary(s: dict) -> None:
-    """Structured turn summary — always shown when there are side-effects."""
+    """Grouped section summary — shown at turn end when side-effects occurred."""
     import rich.box
+    from rich.console import Group as RGroup
+    from rich.padding import Padding
     from rich.panel import Panel
     from rich.table import Table
+    from rich.text import Text as RText
+    from agent.ui.mission_console import _SECTION_GROUPS
+    from agent.ui.theme import LEFT_MARGIN, PANEL_MARGIN
 
     has_files = s.get("files_written") or s.get("files_edited") or s.get("files_deleted")
     has_cmds  = s.get("shell_ok", 0) or s.get("shell_fail", 0)
     if not has_files and not has_cmds:
         return
 
-    def _names(paths: list, cap: int = 4) -> str:
+    tool_counts: dict = s.get("tool_counts") or {}
+    elapsed    = s.get("elapsed")
+    total_tools = s.get("tools_called", 0)
+
+    # Group tool counts by section
+    section_tools: dict[str, dict[str, int]] = {}
+    for tool, count in tool_counts.items():
+        section = _SECTION_GROUPS.get(tool, "")
+        if section:
+            section_tools.setdefault(section, {})[tool] = count
+
+    def _names(paths: list, cap: int = 5) -> str:
         names = [os.path.basename(p) for p in paths[:cap]]
-        tail = f"  +{len(paths) - cap} more" if len(paths) > cap else ""
+        tail  = f"  +{len(paths) - cap} more" if len(paths) > cap else ""
         return "  ·  ".join(names) + tail
 
-    body = Table.grid(padding=(0, 3), expand=False)
-    body.add_column(no_wrap=True, style="muted", min_width=16)
-    body.add_column(overflow="fold")
+    rows: list[tuple] = []  # (label_text, value_text)
+
+    # Section-based tool rows
+    _SECTION_ORDER = [
+        "Repository Analysis", "Code Search",
+        "File Generation", "Code Changes", "File Changes",
+        "Dependencies", "Build & Test",
+        "Browser Verification", "Version Control", "Agent Deployment",
+    ]
+    for sec in _SECTION_ORDER:
+        tools = section_tools.get(sec)
+        if not tools:
+            continue
+        parts = [f"{t.replace('_', ' ')}  ×{c}" for t, c in sorted(tools.items(), key=lambda x: -x[1])[:6]]
+        rows.append((
+            RText(sec, style="muted"),
+            RText("  ·  ".join(parts), style="kryth.core"),
+        ))
 
     if s.get("files_written"):
-        body.add_row(Text("Files Created", style="muted"), Text(_names(s["files_written"]), style="log.success"))
+        rows.append((RText("Files Created", style="muted"), RText(_names(s["files_written"]), style="log.success")))
     if s.get("files_edited"):
-        body.add_row(Text("Files Edited", style="muted"), Text(_names(s["files_edited"]), style="accent"))
+        rows.append((RText("Files Edited",  style="muted"), RText(_names(s["files_edited"]),  style="accent")))
     if s.get("files_deleted"):
-        body.add_row(Text("Files Deleted", style="muted"), Text(_names(s["files_deleted"]), style="log.error"))
+        rows.append((RText("Files Deleted", style="muted"), RText(_names(s["files_deleted"]), style="log.error")))
 
     cmds = s.get("last_commands") or []
     if cmds:
         ok   = s.get("shell_ok", 0)
         fail = s.get("shell_fail", 0)
-        suffix = f"  ({ok} ok, {fail} failed)" if fail else f"  ({ok} passed)"
-        body.add_row(
-            Text("Commands", style="muted"),
-            Text(_names(cmds) + suffix, style="log.success" if not fail else "log.warn"),
-        )
+        sfx  = f"  ({ok} ok, {fail} failed)" if fail else f"  ({ok} passed)"
+        rows.append((RText("Commands", style="muted"), RText(_names(cmds) + sfx, style="log.success" if not fail else "log.warn")))
 
-    status_style = "log.error" if s.get("status") in ("api_error", "interrupted", "max_turns") else "log.success"
-    status_glyph = ERROR if status_style == "log.error" else CORE
+    # Compact metrics footer
+    metrics: list[str] = []
+    if elapsed:
+        metrics.append(f"Duration  {elapsed:.1f}s")
+    if total_tools:
+        metrics.append(f"Tools  {total_tools}")
+    if s.get("retries"):
+        metrics.append(f"Retries  {s['retries']}")
+    if metrics:
+        rows.append((RText("", style=""), RText("  ·  ".join(metrics), style="muted")))
 
-    console.print()
-    console.print(Panel(
+    tokens_in  = s.get("tokens_in", 0)
+    tokens_out = s.get("tokens_out", 0)
+    if tokens_in or tokens_out:
+        rows.append((
+            RText("Tokens", style="muted"),
+            RText(f"{tokens_in + tokens_out:,}  ({tokens_in:,} in · {tokens_out:,} out)", style="muted"),
+        ))
+
+    body = Table.grid(padding=(0, 3), expand=False)
+    body.add_column(no_wrap=True, style="muted", min_width=16)
+    body.add_column(overflow="fold")
+    for lbl, val in rows:
+        body.add_row(lbl, val)
+
+    is_err    = s.get("status") in ("api_error", "interrupted", "max_turns")
+    glyph     = ERROR if is_err else CORE
+    glyph_sty = "log.error" if is_err else "log.success"
+
+    panel = Panel(
         body,
-        title=Text.assemble((status_glyph, status_style), ("  Session Summary", status_style)),
+        title=RText.assemble((glyph, glyph_sty), ("  Session Summary", glyph_sty)),
         title_align="left",
-        border_style=status_style,
-        padding=(0, 2),
+        border_style=glyph_sty,
+        padding=(0, PANEL_MARGIN),
         expand=False,
         box=rich.box.ROUNDED,
-    ))
+    )
+    console.print()
+    console.print(Padding(panel, (0, 0, 0, LEFT_MARGIN)))
 
 
 def _on_run_summary(e: Event) -> None:
-    _render_turn_summary(e.data["summary"])
+    data = dict(e.data["summary"])
+    data.update(_turn_stats_cache)
+    _render_turn_summary(data)
 
 
 def _on_todos(e: Event) -> None:

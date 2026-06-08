@@ -62,6 +62,43 @@ _MILESTONE = frozenset({
     "run_supervised_mission",
 })
 
+# Maps tool names to high-level section names.
+# When the section changes between consecutive tool calls, a visual
+# section divider is emitted so the user understands which phase of
+# work they're watching.
+_SECTION_GROUPS: dict[str, str] = {
+    # Repository exploration
+    "read_file":       "Repository Analysis",
+    "list_files":      "Repository Analysis",
+    "glob":            "Repository Analysis",
+    "grep":            "Code Search",
+    "search_code":     "Code Search",
+    "semantic_search": "Code Search",
+    "fts_search":      "Code Search",
+    "ast_search":      "Code Search",
+    "search_smart":    "Code Search",
+    # File changes
+    "write_file":      "File Generation",
+    "edit_file":       "Code Changes",
+    "multi_edit":      "Code Changes",
+    "delete_file":     "File Changes",
+    # Execution
+    "run_command":     "Build & Test",
+    "shell_exec":      "Build & Test",
+    "shell_run_plan":  "Build & Test",
+    "run_install":     "Dependencies",
+    "run_tests":       "Build & Test",
+    # Browser
+    "browser_use_task": "Browser Verification",
+    "browser_login":    "Browser Verification",
+    "open_url":         "Browser Verification",
+    # Git
+    "git_op":          "Version Control",
+    # Agents
+    "spawn_agent":     "Agent Deployment",
+    "spawn_agents_parallel": "Agent Deployment",
+}
+
 # Tool name → human engineering label (used in timeline)
 _LABELS: dict[str, str] = {
     # File operations
@@ -196,7 +233,9 @@ def emit_timeline(message: str, kind: str = "info") -> None:
     }
     glyph, style = glyph_map.get(kind, (CORE, "kryth.core"))
     from rich.text import Text
+    from agent.ui.theme import LEFT_MARGIN
     console.print(Text.assemble(
+        (" " * LEFT_MARGIN, ""),
         (_time_str(), "timeline.time"),
         ("  ", ""),
         (glyph, style),
@@ -207,14 +246,19 @@ def emit_timeline(message: str, kind: str = "info") -> None:
 
 def emit_section(title: str) -> None:
     """Print a clean section separator."""
-    from rich.rule import Rule
     from rich.text import Text
+    from agent.ui.theme import LEFT_MARGIN
+    try:
+        w = console.width - LEFT_MARGIN - len(title) - 8
+    except Exception:
+        w = 50
+    trailer = "─" * max(10, min(w, 60))
     console.print()
-    console.print(Rule(
-        title=Text.assemble((CORE, "kryth.core"), (f"  {title}", "eng.section")),
-        characters="─",
-        style="divider",
-        align="left",
+    console.print(Text.assemble(
+        (" " * LEFT_MARGIN + "─ ", "divider"),
+        (CORE, "kryth.core"),
+        (f"  {title}  ", "eng.section"),
+        (trailer, "divider"),
     ))
 
 
@@ -229,9 +273,24 @@ class MissionConsole:
         self._current_args: dict = {}
         self._tool_count = 0
         self._milestone_count = 0
+        self._last_section: str = ""   # tracks active section for divider emission
 
     def configure(self, debug: bool = False) -> None:
         self._debug = debug
+
+    def _maybe_emit_section(self, tool_name: str) -> None:
+        """Emit a section divider when the engineering phase changes."""
+        new_section = _SECTION_GROUPS.get(tool_name, "")
+        if not new_section or new_section == self._last_section:
+            return
+        # Flush any pending read batch before the section break
+        try:
+            from agent.ui.tool_results import _read_batcher
+            _read_batcher.flush()
+        except Exception:
+            pass
+        self._last_section = new_section
+        emit_section(new_section)
 
     def on_tool_start(self, tool_name: str, args: dict) -> None:
         self._current_tool = tool_name
@@ -250,6 +309,9 @@ class MissionConsole:
         if self._debug:
             self._debug_tool_header(tool_name, args)
             return
+
+        # Emit section header on phase change (before any other output)
+        self._maybe_emit_section(tool_name)
 
         # Rich-result tools: silent at start; panel shown on result
         if tool_name in _RICH_RESULT:
@@ -319,7 +381,14 @@ class MissionConsole:
         self._milestone_count = 0
         self._current_tool = None
         self._current_args = {}
+        self._last_section = ""
         reset_activity()
+        # Flush any pending reads from previous turn
+        try:
+            from agent.ui.tool_results import _read_batcher
+            _read_batcher.flush()
+        except Exception:
+            pass
 
 
 def _extract_detail(tool_name: str, args: dict | None) -> str:

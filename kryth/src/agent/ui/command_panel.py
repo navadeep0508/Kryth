@@ -8,6 +8,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from agent.ui.console import console
+from agent.ui.panels import _print_panel
 from agent.ui.summarizer import OutputSummary
 from agent.ui.theme import CORE, DOT, ERROR
 
@@ -64,8 +65,7 @@ def render_command_panel(
     if note:
         parts.extend([Rule(style="divider"), Text(note, style="muted")])
     footer = f"timeout {timeout}s · {summary.total_lines} lines"
-    console.print()
-    console.print(Panel(
+    _print_panel(Panel(
         Group(*parts),
         title=_title_for(command, exit_code),
         title_align="left",

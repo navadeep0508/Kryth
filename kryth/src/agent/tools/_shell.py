@@ -179,7 +179,7 @@ def _run_with_live_box(
         reader_thread.start()
 
         with Live(_render(), console=_console, refresh_per_second=8,
-                  auto_refresh=True, transient=False) as live:
+                  auto_refresh=True, transient=True) as live:
             try:
                 deadline = time.monotonic() + timeout
                 while proc.poll() is None:

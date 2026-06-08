@@ -16,6 +16,7 @@ from rich.text import Text
 from agent.ui.console import console
 from agent.ui.hud import startup_reveal
 from agent.ui.motion import gradient_text, status_chip
+from agent.ui.panels import _print_panel
 from agent.ui.theme import CORE, DIVIDER, DOT, ERROR, SEP, TEE, WAITING
 
 
@@ -148,8 +149,8 @@ def turn_complete(elapsed: float | None, tokens_in: int, tokens_out: int, tool_c
                 Text(str(tool_calls), style="muted"),
             )
 
-    console.print()
-    console.print(Panel(
+    console.print()  # keep one blank line above the turn-complete panel
+    _print_panel(Panel(
         body,
         title=Text.assemble((CORE, "log.success"), ("  Mission Complete", "log.success")),
         title_align="left",
@@ -200,13 +201,12 @@ def plan_panel(plan: dict) -> None:
         body.add_row("verify", "\n".join(str(v) for v in validation[:10]))
 
     console.print()
-    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Plan", "section.plan")), title_align="left", border_style="divider", padding=(1, 2), expand=False, box=rich.box.ROUNDED))
+    _print_panel(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Plan", "section.plan")), title_align="left", border_style="divider", padding=(1, 2), expand=False, box=rich.box.ROUNDED))
 
 
 def plan_prose(text: str) -> None:
     body = Markdown(text) if any(m in text for m in ("#", "*", "`")) else Text(text)
-    console.print()
-    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Plan", "section.plan")), title_align="left", border_style="divider", padding=(1, 2), expand=False, box=rich.box.ROUNDED))
+    _print_panel(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Plan", "section.plan")), title_align="left", border_style="divider", padding=(1, 2), expand=False, box=rich.box.ROUNDED))
 
 
 def shell_header(command: str, timeout: int, note: str | None) -> None:
@@ -250,8 +250,7 @@ def todos_panel(items: list[dict]) -> None:
         text = item["text"]
         cell = f"[strike muted]{text}[/strike muted]" if item["status"] == "completed" else f"[{style}]{text}[/{style}]"
         body.add_row(f"[{style}]{mark}[/{style}]", cell)
-    console.print()
-    console.print(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Tasks", "section.exec")), title_align="left", border_style="divider", padding=(0, 1), expand=False, box=rich.box.ROUNDED))
+    _print_panel(Panel(body, title=Text.assemble((CORE, "kryth.core"), (" Tasks", "section.exec")), title_align="left", border_style="divider", padding=(0, 1), expand=False, box=rich.box.ROUNDED))
 
 
 def subagent_open(depth: int, description: str) -> None:
@@ -441,5 +440,4 @@ def run_summary_panel(s: dict) -> None:
 
     title_style = "log.success" if status == "done" else "log.warn"
     title = "Complete" if status == "done" else status.replace("_", " ").title()
-    console.print()
-    console.print(Panel(body, title=Text.assemble((CORE if status == "done" else ERROR, title_style), (" " + title, title_style)), title_align="left", border_style="divider", padding=(0, 1), expand=False, box=rich.box.ROUNDED))
+    _print_panel(Panel(body, title=Text.assemble((CORE if status == "done" else ERROR, title_style), (" " + title, title_style)), title_align="left", border_style="divider", padding=(0, 1), expand=False, box=rich.box.ROUNDED))

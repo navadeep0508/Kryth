@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 
 import rich.box
 from rich.panel import Panel
@@ -16,6 +17,7 @@ from rich.table import Table
 from rich.text import Text
 
 from agent.ui.console import LOCK, console
+from agent.ui.panels import _print_panel
 from agent.ui.theme import CORE, DOT, ERROR, WAITING
 
 
@@ -73,28 +75,83 @@ def _short_path(path: str) -> str:
     return "/".join(parts[-2:])
 
 
-# ── Read File ─────────────────────────────────────────────────────────────────
+# ── Read batcher ──────────────────────────────────────────────────────────────
+# Accumulates sequential read_file / glob / list_files results and renders
+# them as a single grouped panel instead of N individual panels.
 
-def render_read_file(path: str, content: str) -> None:
-    """Show a clean file analysis panel for a read_file result."""
-    if not path:
-        return
+_READ_BATCH_TOOLS = frozenset({"read_file", "glob", "list_files"})
+
+class _ReadBatcher:
+    """Thread-safe read panel batcher.
+
+    add() is called for each read result.  flush() renders the accumulated
+    list as either a single-file detail panel or a multi-file group panel.
+    A 300ms idle timer flushes automatically so end-of-turn reads don't
+    stay pending forever.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: list[tuple[str, int, str, str]] = []  # (path, lines, lang, size)
+        self._timer: threading.Timer | None = None
+
+    def add(self, path: str, content: str) -> None:
+        lines = content.count("\n") + 1 if content.strip() else 0
+        lang  = _lang_for_path(path)
+        size  = _size_str(content)
+        with self._lock:
+            self._items.append((path, lines, lang, size))
+            self._reset_timer()
+
+    def flush(self) -> None:
+        with self._lock:
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+            items = self._items[:]
+            self._items.clear()
+        if not items:
+            return
+        if len(items) == 1:
+            _render_single_read(*items[0])
+        else:
+            _render_read_group(items)
+
+    def _reset_timer(self) -> None:
+        """Called while holding lock."""
+        if self._timer:
+            self._timer.cancel()
+        t = threading.Timer(0.3, self._timer_flush)
+        t.daemon = True
+        self._timer = t
+        t.start()
+
+    def _timer_flush(self) -> None:
+        with self._lock:
+            self._timer = None
+            items = self._items[:]
+            self._items.clear()
+        if not items:
+            return
+        if len(items) == 1:
+            _render_single_read(*items[0])
+        else:
+            _render_read_group(items)
+
+
+_read_batcher = _ReadBatcher()
+
+
+def _render_single_read(path: str, lines: int, lang: str, size: str) -> None:
     name = os.path.basename(path) or path
-    line_count = content.count("\n") + 1 if content.strip() else 0
-    lang = _lang_for_path(path)
-    size = _size_str(content)
-
     body = Table.grid(padding=(0, 3), expand=False)
     body.add_column(no_wrap=True, style="muted", min_width=10)
     body.add_column()
-
     body.add_row(Text("Language", style="muted"), Text(lang, style="title"))
-    body.add_row(Text("Lines", style="muted"), Text(f"{line_count:,}", style="title"))
+    body.add_row(Text("Lines", style="muted"), Text(f"{lines:,}", style="title"))
     body.add_row(Text("Size", style="muted"), Text(size, style="muted"))
-
     with LOCK:
-        console.print()
-        console.print(Panel(
+        _print_panel(Panel(
             body,
             title=Text.assemble(("📖 ", ""), (name, "title")),
             title_align="left",
@@ -103,6 +160,48 @@ def render_read_file(path: str, content: str) -> None:
             expand=False,
             box=rich.box.ROUNDED,
         ))
+
+
+def _render_read_group(items: list[tuple[str, int, str, str]]) -> None:
+    body = Table.grid(padding=(0, 2), expand=False)
+    body.add_column(no_wrap=True, min_width=2)
+    body.add_column(overflow="fold", min_width=20)
+    body.add_column(no_wrap=True, style="muted", min_width=12)
+    body.add_column(no_wrap=True, style="muted")
+
+    for path, lines, lang, size in items[:24]:
+        name = _short_path(path)
+        body.add_row(
+            Text("📖", style=""),
+            Text(name, style="title"),
+            Text(lang, style="muted"),
+            Text(f"{lines:,} lines", style="muted"),
+        )
+    if len(items) > 24:
+        body.add_row(Text(""), Text(f"… and {len(items) - 24} more", style="muted"), Text(""), Text(""))
+
+    body.add_row(Text(""), Text(""), Text(""), Text(""))
+    body.add_row(Text(""), Text(f"{len(items)} files analyzed", style="muted"), Text(""), Text(""))
+
+    with LOCK:
+        _print_panel(Panel(
+            body,
+            title=Text.assemble((CORE, "kryth.core"), ("  Repository Analysis", "title")),
+            title_align="left",
+            border_style="divider",
+            padding=(0, 2),
+            expand=False,
+            box=rich.box.ROUNDED,
+        ))
+
+
+# ── Read File ─────────────────────────────────────────────────────────────────
+
+def render_read_file(path: str, content: str) -> None:
+    """Queue a read_file result in the batcher for grouped display."""
+    if not path:
+        return
+    _read_batcher.add(path, content)
 
 
 # ── List Files ────────────────────────────────────────────────────────────────
@@ -132,8 +231,7 @@ def render_list_files(directory: str, result: str) -> None:
     dir_label = os.path.basename(directory.rstrip("/\\")) or directory or "."
 
     with LOCK:
-        console.print()
-        console.print(Panel(
+        _print_panel(Panel(
             body,
             title=Text.assemble((CORE, "kryth.core"), ("  Repository Analysis", "title"), ("  ·  ", "muted"), (dir_label, "muted")),
             title_align="left",
@@ -189,8 +287,7 @@ def render_grep_result(pattern: str, result: str) -> None:
     body.add_row(Text(""), Text(f"{len(files)} match{'es' if len(files) != 1 else ''}", style="muted"))
 
     with LOCK:
-        console.print()
-        console.print(Panel(
+        _print_panel(Panel(
             body,
             title=Text.assemble((CORE, "kryth.core"), ("  Pattern Match", "title")),
             title_align="left",
@@ -237,8 +334,7 @@ def render_search_result(query: str, result: str) -> None:
         body.add_row(Text(""), Text(""))
 
     with LOCK:
-        console.print()
-        console.print(Panel(
+        _print_panel(Panel(
             body,
             title=Text.assemble((CORE, "kryth.core"), ("  Code Search", "title")),
             title_align="left",
@@ -263,8 +359,7 @@ def render_delete_confirm(path: str) -> None:
     body.add_row(Text("Status", style="muted"), Text("Deleted", style="log.error"))
 
     with LOCK:
-        console.print()
-        console.print(Panel(
+        _print_panel(Panel(
             body,
             title=Text.assemble(("🗑  ", ""), (name, "log.error")),
             title_align="left",
@@ -293,8 +388,7 @@ def render_browser_session(steps: list[str]) -> None:
         )
 
     with LOCK:
-        console.print()
-        console.print(Panel(
+        _print_panel(Panel(
             body,
             title=Text.assemble(("🌐 ", ""), ("Browser Session", "title")),
             title_align="left",
@@ -367,8 +461,7 @@ def render_git_result(result: str) -> None:
         )
 
     with LOCK:
-        console.print()
-        console.print(Panel(
+        _print_panel(Panel(
             body,
             title=Text.assemble((CORE, "kryth.core"), ("  Git", "title")),
             title_align="left",
@@ -430,8 +523,7 @@ def _render_file_list_panel(section: str, label_value: str, paths: list[str], la
     body.add_row(Text(""), Text(f"{len(paths)} result{'s' if len(paths) != 1 else ''}", style="muted"))
 
     with LOCK:
-        console.print()
-        console.print(Panel(
+        _print_panel(Panel(
             body,
             title=Text.assemble((CORE, "kryth.core"), (f"  {section}", "title")),
             title_align="left",
@@ -451,6 +543,10 @@ def dispatch(tool_name: str, args: dict, result: str) -> None:
     Result is the raw string from the tool. No rendering if result looks like
     an error or is empty.
     """
+    # Flush any batched reads when a non-read tool result arrives
+    if tool_name not in _READ_BATCH_TOOLS:
+        _read_batcher.flush()
+
     if not result:
         return
     # Skip tool error strings (format: "ERROR[CODE]: message")

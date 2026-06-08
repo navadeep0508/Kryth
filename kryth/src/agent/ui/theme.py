@@ -216,11 +216,26 @@ THEME = Theme({
     "browser.step.running": "#E8FF3A",
     "browser.step.failed": "#FF5A5A",
     "browser.border": "#00BFFF",
+
+    # Section hierarchy
+    "section.header": "bold #E8FF3A",
+    "section.icon":   "#E8FF3A",
+    "tool.indent":    "#4B4B4B",
 })
 
 
 INDENT_1 = "  "
 INDENT_2 = "    "
+
+# ── Global layout constants ───────────────────────────────────────────────────
+# All panels and indented lines should respect these values so the terminal
+# has consistent breathing room instead of hugging the left edge.
+
+LEFT_MARGIN    = 2   # spaces of left padding applied via rich.padding.Padding
+SECTION_MARGIN = 1   # vertical spacing between sections
+PANEL_MARGIN   = 2   # horizontal padding inside panels
+CONTENT_MARGIN = 4   # indent for sub-items under a section header
+MAX_PANEL_WIDTH = 100 # panels never stretch wider than this on wide terminals
 
 
 __all__ = [
@@ -228,6 +243,7 @@ __all__ = [
     "BULLET",
     "BULLET_DIM",
     "CHECK",
+    "CONTENT_MARGIN",
     "CORE",
     "CROSS",
     "DIVIDER",
@@ -236,8 +252,11 @@ __all__ = [
     "HUD_DIVIDER",
     "INDENT_1",
     "INDENT_2",
+    "LEFT_MARGIN",
+    "MAX_PANEL_WIDTH",
     "MEMORY",
     "NEURAL",
+    "PANEL_MARGIN",
     "ROUTE",
     "SEP",
     "SNAPSHOT",

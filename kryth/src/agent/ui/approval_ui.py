@@ -31,6 +31,7 @@ from rich.table import Table
 from rich.text import Text
 
 from agent.ui.console import console
+from agent.ui.panels import _print_panel
 from agent.ui.theme import CORE, DOT, ERROR, WAITING
 
 
@@ -75,8 +76,7 @@ def render_approval_panel(
     )
     body.add_row(Text(""), options)
 
-    console.print()
-    console.print(Panel(
+    _print_panel(Panel(
         body,
         title=Text.assemble((WAITING, "log.warn"), ("  Execution Plan", "title")),
         title_align="left",

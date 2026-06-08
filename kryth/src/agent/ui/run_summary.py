@@ -37,6 +37,7 @@ class _Counts:
     coercions: int = 0
     subagent_spawns: int = 0
     plan_made: bool = False
+    tool_counts: dict = field(default_factory=dict)  # tool_name → call count
 
 
 _state = _Counts()
@@ -62,6 +63,9 @@ def _on_event(e: Event) -> None:
         return
     if e.kind == EventKind.TOOL_START:
         _state.tools_called += 1
+        name = e.data.get("name", "")
+        if name:
+            _state.tool_counts[name] = _state.tool_counts.get(name, 0) + 1
         return
     if e.kind == EventKind.TOOL_ERROR:
         _state.errors += 1
@@ -116,6 +120,7 @@ def snapshot() -> dict:
         "coercions": _state.coercions,
         "subagent_spawns": _state.subagent_spawns,
         "plan_made": _state.plan_made,
+        "tool_counts": dict(_state.tool_counts),
     }
 
 

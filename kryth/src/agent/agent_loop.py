@@ -355,7 +355,7 @@ def dispatch_tool_call(session, call):
         if session.tool_call_count % COMPRESS_EVERY_N == 0:
             session.messages, dropped = compress_messages(session.messages)
             if dropped > 0:
-                ui.muted(f"(context: compressed {dropped:,} chars of old browser results)")
+                ui.debug(f"(context: compressed {dropped:,} chars of old browser results)")
     except Exception:
         pass
 
@@ -745,7 +745,7 @@ def build_initial_system(session, user_input: str = ""):
             files = memory.graph.search(user_input, top_k=12)
             if files:
                 graph_context = memory.graph.context_for(files)
-                ui.muted(f"(graph context: {len(files)} relevant files)")
+                ui.debug(f"(graph context: {len(files)} relevant files)")
     except Exception:
         pass
 
@@ -754,7 +754,7 @@ def build_initial_system(session, user_input: str = ""):
         snapshot = ProjectSnapshot()
         project_map, from_cache = snapshot.get_or_build()
         if from_cache:
-            ui.muted("(using cached project snapshot)")
+            ui.debug("(using cached project snapshot)")
         if user_input and session.messages:
             project_map = build_focused_map(user_input)
     else:
@@ -848,7 +848,7 @@ def run_agent(user_input, extra_system: str | None = None):
     _task_profile = None
     try:
         _task_profile = classify_task(user_input)
-        ui.muted(f"  Task: {_task_profile.complexity} / {_task_profile.category} — {_task_profile.reason}")
+        ui.debug(f"Task: {_task_profile.complexity} / {_task_profile.category} — {_task_profile.reason}")
     except Exception:
         pass  # classifier unavailable — fall through to safe defaults
 
@@ -871,7 +871,7 @@ def run_agent(user_input, extra_system: str | None = None):
                 if _complexity == "complex":
                     _exp.report(user_input, render=True)
                 else:
-                    ui.muted(
+                    ui.debug(
                         f"  (experience: {len(_similar.matches)} similar tasks, "
                         f"predicted success {_experience_pred.success_probability:.0%})"
                     )
@@ -921,11 +921,11 @@ def run_agent(user_input, extra_system: str | None = None):
                     return _result
 
                 if not orch_result.approved:
-                    ui.muted(f"  (multi-agent declined — {orch_result.explanation})")
+                    ui.debug(f"  (multi-agent declined — {orch_result.explanation})")
                     # Fall through to single-agent path
 
             except Exception as _oe:
-                ui.muted(f"  (orchestration skipped: {_oe})")
+                ui.debug(f"  (orchestration skipped: {_oe})")
 
         # Fallback: planner + single-agent inner loop
         if _should_plan(user_input):

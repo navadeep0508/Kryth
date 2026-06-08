@@ -165,7 +165,7 @@ def ask_user(tool: str, args: dict) -> str:
         return "allow"
 
     if not sys.stdin.isatty():
-        ui.muted(f"(non-interactive stdin; denying {tool})")
+        ui.debug(f"(non-interactive stdin; denying {tool})")
         return "deny"
 
     try:

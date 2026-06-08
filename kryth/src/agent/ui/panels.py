@@ -6,13 +6,18 @@ from typing import Sequence
 
 import rich.box
 from rich.console import Group, RenderableType
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
+from agent.ui.console import console
 from agent.ui.diff_renderer import ParsedDiff, render_diff
+from agent.ui.layout import get_layout
 from agent.ui.syntax import highlight_block, lexer_for_path
 from agent.ui.theme import CORE, DIVIDER, DOT, ERROR
+
+_layout = get_layout()
 
 
 def _file_title(kind: str, path: str, *, kind_style: str = "accent") -> Text:
@@ -40,10 +45,17 @@ def _wrap(title: Text, body: RenderableType, *, border: str = "divider") -> Pane
         title=title,
         title_align="left",
         border_style=border,
-        padding=(1, 2),
+        padding=(1, _layout.panel_padding()),
         expand=False,
+        width=_layout.panel_width(),
         box=rich.box.ROUNDED,
     )
+
+
+def _print_panel(panel: RenderableType) -> None:
+    """Print a panel with consistent left margin."""
+    console.print()
+    console.print(Padding(panel, (0, 0, 0, _layout.left_padding())))
 
 
 def update_panel(path: str, diff: ParsedDiff, *, body: RenderableType | None = None, extra_header: Text | None = None) -> Panel:
@@ -97,10 +109,14 @@ def grouped_updates_panel(title_text: str, children: Sequence[Panel]) -> Panel:
         title=Text.assemble((CORE, "kryth.core"), ("  " + title_text, "section.exec")),
         title_align="left",
         border_style="divider",
-        padding=(1, 1),
+        padding=(1, _layout.panel_padding()),
         expand=False,
+        width=_layout.panel_width(),
         box=rich.box.ROUNDED,
     )
 
 
-__all__ = ["update_panel", "create_panel", "delete_panel", "multi_update_panel", "grouped_updates_panel"]
+__all__ = [
+    "update_panel", "create_panel", "delete_panel",
+    "multi_update_panel", "grouped_updates_panel", "_print_panel",
+]

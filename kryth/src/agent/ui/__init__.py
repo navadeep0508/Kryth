@@ -302,8 +302,7 @@ def debug(message: str) -> None:
 
 
 def muted(message: str) -> None:
-    """Subtle one-liner — used for ephemeral notices that don't warrant
-    a severity level (auto-skill annotations, mode toggles)."""
+    """Subtle one-liner for user-facing notices (commands, status)."""
     from agent.ui.console import console
     console.print(f"[muted]{message}[/muted]")
 
