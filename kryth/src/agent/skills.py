@@ -249,7 +249,7 @@ def auto_select_skills(user_input: str, project_context: str = "") -> list[str]:
                 {"role": "user", "content": user_input + ctx_section},
             ],
             temperature=0,
-            max_tokens=200,
+            max_tokens=2048,
         )
         text = (response.choices[0].message.content or "").strip()
         start = text.find("[")

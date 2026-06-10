@@ -6,7 +6,9 @@ from typing import Optional
 
 
 def estimate_tokens(text: str) -> int:
-    return max(1, len(text) // 4)
+    # Use //3 rather than //4: code and JSON tokenize denser than prose,
+    # so //4 underestimates badly and triggers compaction too late.
+    return max(1, len(text) // 3)
 
 
 def message_tokens(msg: dict) -> int:

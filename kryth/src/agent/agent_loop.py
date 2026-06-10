@@ -50,8 +50,8 @@ except Exception:
 
 # Effectively unlimited - set to 100000 by default (can be overridden via env var)
 MAX_TOOL_TURNS = int(getenv("KRYTH_MAX_TOOL_TURNS", "100000"))
-COMPACT_AT_TOKENS = 40000   # compress aggressively Ã¢-- prevents token overflow
-KEEP_RECENT_AFTER_COMPACT = 12
+COMPACT_AT_TOKENS = 30000   # ~90k real tokens — compact less often, fewer LLM round-trips
+KEEP_RECENT_AFTER_COMPACT = 6
 
 
 LoopStatus = Literal["done", "max_turns", "interrupted", "api_error"]
@@ -331,9 +331,76 @@ def dispatch_tool_call(session, call):
         compress_result = None
 
     ui.tool_start(tool_name, args)
+
+    # Update Mission Control dashboard with current agent task
+    try:
+        from agent.ui.mission_control import get_active_mc
+        _mc = get_active_mc()
+        if _mc is not None:
+            _agent_role = getattr(session, "_agent_role", "")
+            _agent_id = getattr(session, "_agent_id", _agent_role)
+            _path = args.get("path") or args.get("command", "")[:40]
+            _task_label = f"{tool_name} {_path}".strip()
+            _mc.set_agent(_agent_id or _agent_role, _agent_role, "running", _task_label)
+    except Exception:
+        pass
+
     result = execute_tool(tool_name, args)
     session.tool_call_count += 1
     _clear_denials(session, tool_name)
+
+    # Push rich events to floating Textual dashboard
+    try:
+        import sys as _sys
+        _dash = _sys.modules.get("agent.ui.dashboard")
+        if _dash is not None and _dash.get_active():
+            _agent_role = getattr(session, "_agent_role", "")
+            _agent_id = getattr(session, "_agent_id", _agent_role)
+            _path = (args.get("path") or args.get("command", ""))[:35]
+
+            # Base tool event
+            _dash.push_event("tool_used", tool=tool_name, agent=_agent_role,
+                             action=f"{tool_name} {_path}".strip())
+
+            # Rich tool stream with icons
+            _icons = {
+                "read_file": "📖", "write_file": "✎", "edit_file": "✎",
+                "multi_edit": "✎", "run_command": "⚡", "grep": "◈",
+                "search_code": "◈", "semantic_search": "◈",
+                "browser_click": "🌐", "browser_type": "🌐",
+                "run_tests": "🧪", "spawn_agent": "◈",
+            }
+            _icon = _icons.get(tool_name, "·")
+            _dash.push_event("tool_stream", agent=_agent_role, icon=_icon,
+                             action=f"{tool_name} {_path}".strip(),
+                             detail="")
+
+            # Patch viewer for file writes/edits
+            if tool_name == "write_file":
+                content = args.get("content", "")
+                lines = content.count("\n") + 1 if content else 0
+                _dash.push_event("patch", filename=_path,
+                                 lines_written=0, lines_total=lines, is_new=True)
+            elif tool_name in ("edit_file", "multi_edit"):
+                old = args.get("old_string", "")
+                new = args.get("new_string", "")
+                diff = []
+                for ln in (old or "").splitlines()[:4]:
+                    diff.append(("-", ln[:38]))
+                for ln in (new or "").splitlines()[:4]:
+                    diff.append(("+", ln[:38]))
+                _dash.push_event("patch", filename=_path, diff=diff, is_new=False)
+
+            # File ownership
+            if tool_name in ("write_file", "edit_file", "multi_edit") and _path and _agent_role:
+                _dash.push_event("file_locked", path=_path, agent=_agent_role)
+
+            # Agent status update
+            if _agent_id:
+                _dash.push_event("agent_update", id=_agent_id, role=_agent_role,
+                                 status="running", task=f"{tool_name} {_path}".strip())
+    except Exception:
+        pass
 
     post = run_hooks("PostToolUse", tool_name, args, result)
     if post:
@@ -527,7 +594,12 @@ def maybe_compact(session):
 
     ui.compact_start(count=len(to_compress), tokens=total)
 
-    summary = summarize(to_compress)
+    # Subagents (depth > 0) skip the LLM summarizer — they have a short focused
+    # task and the round-trip latency (~5-15s) costs more than it saves.
+    # Root agent uses LLM summarizer for better quality context retention.
+    is_subagent = getattr(session, "depth", 0) > 0
+    summary = "" if is_subagent else summarize(to_compress)
+
     if summary.strip():
         session.messages = sys_msgs + [{
             "role": "system",
@@ -546,29 +618,35 @@ def maybe_compact(session):
     session.messages = sys_msgs + compacted + keep
 
 
-def _detect_tool_loop(tool_calls, recent_history, max_repeats=4):
-    """Detect repeated identical tool calls to prevent infinite loops.
+def _detect_tool_loop(tool_calls, recent_history, max_repeats=12):
+    """Detect pathological tool loops (same tool, same args, going nowhere).
 
-    Returns True if a loop is detected (same tool called repeatedly).
+    Write/edit tools are explicitly excluded — calling write_file 20 times is
+    normal when building a project. Only read-only or search tools looping with
+    no progress signal a real loop.
     """
     if not tool_calls or not recent_history:
         return False
 
-    # Get current tool names
+    # These tools are safe to repeat many times — never flag them as loops.
+    _REPEAT_OK = frozenset({
+        "write_file", "edit_file", "multi_edit", "run_command",
+        "read_file", "grep", "glob", "search_code",
+        "browser_click", "browser_type", "browser_scroll",
+        "todo_write", "checkpoint",
+    })
+
     current_tools = [call.get("function", {}).get("name", "") for call in tool_calls]
 
-    # Track consecutive identical tool calls
     for tool_name in current_tools:
-        if not tool_name:
+        if not tool_name or tool_name in _REPEAT_OK:
             continue
 
-        # Count how many times this tool appears in recent history
         consecutive_count = 0
-        for msg in reversed(recent_history[-10:]):  # Check last 10 messages
+        for msg in reversed(recent_history[-10:]):
             if msg.get("role") == "tool" and msg.get("name") == tool_name:
                 consecutive_count += 1
             elif msg.get("role") == "assistant":
-                # Reset count if assistant message in between
                 break
 
         if consecutive_count >= max_repeats:
@@ -578,23 +656,41 @@ def _detect_tool_loop(tool_calls, recent_history, max_repeats=4):
 
 
 def _process_tool_calls(session, tool_calls):
-    """Dispatch tool calls; absorb Ctrl+C per call so the loop survives."""
-    # Cap tool calls to prevent runaway loops
-    if len(tool_calls) > 25:
-        ui.warn(f"Tool call limit exceeded ({len(tool_calls)} calls), capping at 25")
-        tool_calls = tool_calls[:25]
+    """Dispatch tool calls with parallel execution where safe.
 
-    for call in tool_calls:
+    Independent read-only calls and non-conflicting writes run
+    concurrently. Conflicting writes and exclusive commands serialize
+    automatically via the tool scheduler's ownership lock system.
+    """
+    if len(tool_calls) > 500:
+        ui.warn(f"Unexpectedly large tool call batch ({len(tool_calls)}), capping at 500")
+        tool_calls = tool_calls[:500]
+
+    # Wrap dispatch_tool_call to absorb Ctrl+C per individual call.
+    def _safe_dispatch(sess, call):
         try:
-            dispatch_tool_call(session, call)
+            dispatch_tool_call(sess, call)
         except KeyboardInterrupt:
             ui.tool_cancelled()
-            session.append({
+            sess.append({
                 "role": "tool",
                 "tool_call_id": call.get("id") or "",
                 "name": call.get("function", {}).get("name", ""),
                 "content": err("EXEC_FAILED", "tool cancelled by user (Ctrl+C)"),
             })
+
+    if len(tool_calls) == 1:
+        _safe_dispatch(session, tool_calls[0])
+        return
+
+    try:
+        from agent.tool_scheduler import parallel_dispatch
+        parallel_dispatch(session, tool_calls, _safe_dispatch)
+    except Exception as _sched_err:
+        # Scheduler failure falls back to sequential — never breaks the loop.
+        ui.muted(f"  (parallel scheduler unavailable: {_sched_err}; sequential fallback)")
+        for call in tool_calls:
+            _safe_dispatch(session, call)
 
 
 def _build_assistant_msg(response):
@@ -613,11 +709,68 @@ def _build_assistant_msg(response):
     return msg
 
 
+def _enforce_message_order(session) -> None:
+    """Fix invalid role sequences before sending to the LLM.
+
+    Some providers (mistral-nemotron, etc.) reject requests where:
+      - 'user' follows 'tool' directly (must be tool → assistant → user)
+      - 'user' follows 'user' (consecutive same-role)
+
+    Strategy: scan non-system messages and insert bridging messages where
+    the sequence would be rejected.
+    """
+    msgs = session.messages
+    out = []
+    for msg in msgs:
+        role = msg.get("role")
+        prev_role = out[-1].get("role") if out else None
+
+        if role == "user" and prev_role == "tool":
+            # Insert a minimal assistant acknowledgement to bridge the gap.
+            out.append({"role": "assistant", "content": ""})
+        elif role == "user" and prev_role == "user":
+            # Merge consecutive user messages so the sequence stays valid.
+            out[-1] = {
+                "role": "user",
+                "content": (out[-1].get("content") or "") + "\n" + (msg.get("content") or ""),
+            }
+            continue
+
+        out.append(msg)
+
+    session.messages = out
+
+
 def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> LoopResult:
     turn_count = 0
+    _consecutive_no_tool_turns = 0
+    _total_tool_calls = 0
+    # Subagents (depth > 0) are workers with a clear task — allow fewer
+    # idle turns before declaring done, cutting wasted LLM round-trips.
+    _is_subagent = getattr(session, "depth", 0) > 0
+    _start_ts = getenv("_KRYTH_LOOP_TS", "")  # for elapsed-time display
+
+    # Context supervisor replaces maybe_compact — tiered budget-aware compression
+    try:
+        from agent.context_supervisor import ContextSupervisor
+        _supervisor: ContextSupervisor | None = ContextSupervisor(session)
+    except Exception:
+        _supervisor = None
+
     for _ in range(max_turns):
         turn_count += 1
-        maybe_compact(session)
+        # Run tiered context supervision instead of threshold-only maybe_compact
+        if _supervisor is not None:
+            _supervisor.check()
+        else:
+            maybe_compact(session)
+        _enforce_message_order(session)
+
+        # Emit live progress for subagents so the UI shows current state.
+        if _is_subagent and turn_count > 1:
+            role = getattr(session, "_agent_role", "")
+            label = f"◈ {role} · turn {turn_count}/{max_turns}" if role else f"◈ turn {turn_count}/{max_turns}"
+            ui.llm_waiting(label)
 
         response = ask_llm_stream(session.messages, tools=TOOL_SPECS)
 
@@ -635,23 +788,71 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
 
         if response.get("interrupted"):
             reason = response.get("finish_reason")
+            if reason == "context_overflow":
+                # Input too large — force compaction and retry this turn.
+                ui.muted("(context overflow — compacting and retrying…)")
+                maybe_compact(session)
+                turn_count -= 1  # don't count this as a used turn
+                continue
             if reason in ("api_error", "stream_error", "timeout"):
                 return LoopResult(status="api_error", turns_used=turn_count)
             return LoopResult(status="interrupted", turns_used=turn_count)
 
         session.append(_build_assistant_msg(response))
 
+        # finish_reason == "length" means the model hit the OUTPUT token cap
+        # mid-generation (not a context overflow). Tell the llm layer to cache
+        # a higher limit for this model so the next call uses more output tokens,
+        # then silently pop the truncated message and retry — no compaction needed.
+        if response.get("finish_reason") == "length":
+            # Output token cap hit — bump the cached limit and retry silently.
+            # Compaction is NOT the fix here (this is an output limit, not input overflow).
+            try:
+                from agent.llm import _model_max_tokens_cache, MAIN_MODEL
+                current = _model_max_tokens_cache.get(MAIN_MODEL, 16384)
+                _model_max_tokens_cache[MAIN_MODEL] = min(current * 2, 65536)
+            except Exception:
+                pass
+            if session.messages and session.messages[-1].get("role") == "assistant":
+                session.messages.pop()
+            turn_count -= 1
+            continue
+
         tool_calls = response["tool_calls"] or []
         if not tool_calls:
+            _consecutive_no_tool_turns += 1
+            content = response["content"] or ""
+
+            # Subagents: 4 idle turns max (they write summary + may briefly pause).
+            # 2 was too aggressive — an agent writing files often outputs a text
+            # completion summary then needs 1-2 more turns before actually stopping.
+            # Root agent: 6 idle turns (it orchestrates and may write multi-part replies).
+            _max_no_tool = 4 if _is_subagent else (6 if _total_tool_calls > 0 else 2)
+
+            if _consecutive_no_tool_turns < _max_no_tool:
+                session.append({
+                    "role": "user",
+                    "content": (
+                        "[system] Keep going. You have not finished yet. "
+                        "Call tools to complete all remaining tasks. "
+                        "Do not stop until every task in the todo list is done."
+                    ),
+                })
+                continue
+
             return LoopResult(
                 status="done",
-                content=response["content"] or "",
+                content=content,
                 turns_used=turn_count,
             )
 
+        # Tools were called — reset the no-tool counter.
+        _consecutive_no_tool_turns = 0
+        _total_tool_calls += len(tool_calls)
+
         # Detect infinite tool loops
         if _detect_tool_loop(tool_calls, session.messages):
-            ui.warn("Tool loop detected Ã¢-- same tool called repeatedly. Breaking loop.")
+            ui.warn("Tool loop detected — same tool called repeatedly. Breaking loop.")
             return LoopResult(
                 status="interrupted",
                 content="",
@@ -671,10 +872,9 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         # knows to proceed with the next step instead of stopping.
         if hermes_recovered:
             session.append({
-                "role": "user",
+                "role": "assistant",
                 "content": (
-                    "[system] Tool call completed. Continue with the next step "
-                    "of the task. Keep calling tools until the task is fully done."
+                    "Tool call completed. Continuing with the next step."
                 ),
             })
 
@@ -792,6 +992,7 @@ def run_agent(user_input, extra_system: str | None = None):
     ui.turn_start()
 
     if not session.messages:
+        ui.llm_waiting("◈ Scanning project…")
         build_initial_system(session)
         session.ensure_system()
 
@@ -823,9 +1024,11 @@ def run_agent(user_input, extra_system: str | None = None):
         ecosystem_context: str | None = None
         try:
             from agent.ecosystem.executor import run_skill_workflow
+            ui.llm_waiting("◈ Selecting skills…")
             skill_ids = route(user_input, use_llm=True)
             if skill_ids:
                 ui.auto_skills(skill_ids)
+                ui.llm_waiting(f"◈ Loading {len(skill_ids)} skill(s)…")
                 ecosystem_context = run_skill_workflow(
                     skill_ids, user_input, show_progress=True
                 )
@@ -847,8 +1050,9 @@ def run_agent(user_input, extra_system: str | None = None):
     # --- Task classification → route to single / pipeline / parallel ---
     _task_profile = None
     try:
+        ui.llm_waiting("◈ Classifying task…")
         _task_profile = classify_task(user_input)
-        ui.debug(f"Task: {_task_profile.complexity} / {_task_profile.category} — {_task_profile.reason}")
+        ui.muted(f"  Task: {_task_profile.complexity} / {_task_profile.category} — {_task_profile.reason}")
     except Exception:
         pass  # classifier unavailable — fall through to safe defaults
 
@@ -883,13 +1087,14 @@ def run_agent(user_input, extra_system: str | None = None):
         # Intent → Capabilities → Task DAG → Team → Cost → Approval → Scheduler
         if session.mode != "plan" and orchestrate is not None:
             try:
+                ui.muted("  Analyzing task for multi-agent orchestration…")
                 orch_result = orchestrate(
                     user_input=user_input,
                     project_root=".",
                     project_context=getattr(session, "project_map", ""),
                     multi_agent_mode=getattr(session, "multi_agent_mode", "ASK"),
-                    max_turns_per_agent=80,
-                    max_workers=4,
+                    max_turns_per_agent=500,
+                    max_workers=8,
                 )
                 # Persist updated approval mode (e.g. SESSION_APPROVED / ALWAYS_SINGLE)
                 if orch_result.mode_updated is not None and ApprovalMode is not None:
@@ -921,11 +1126,13 @@ def run_agent(user_input, extra_system: str | None = None):
                     return _result
 
                 if not orch_result.approved:
-                    ui.debug(f"  (multi-agent declined — {orch_result.explanation})")
+                    ui.muted(f"  Multi-agent declined — {orch_result.explanation}")
                     # Fall through to single-agent path
 
             except Exception as _oe:
-                ui.debug(f"  (orchestration skipped: {_oe})")
+                import traceback
+                ui.warn(f"  Orchestration error (falling back to single-agent): {type(_oe).__name__}: {_oe}")
+                ui.muted(traceback.format_exc()[-800:])
 
         # Fallback: planner + single-agent inner loop
         if _should_plan(user_input):

@@ -39,16 +39,35 @@ class ActivityIndicator:
 
     # -- entry points -------------------------------------------------
 
+    def _mc_active(self) -> bool:
+        """True when Mission Control's Live display owns the terminal.
+        Lazy import avoids circular dependency (mission_control → activity → mission_control).
+        """
+        try:
+            import sys
+            mc_mod = sys.modules.get("agent.ui.mission_control")
+            if mc_mod is None:
+                return False
+            return mc_mod.get_active_mc() is not None
+        except Exception:
+            return False
+
     def idle(self) -> None:
+        if self._mc_active():
+            return
         self._stop_cycler()
         self._transition("idle")
 
     def waiting(self, message: str = "◈ Surveying repository...") -> None:
+        if self._mc_active():
+            return
         self._base_message = message
         self._transition("waiting", message)
         self._start_cycler()
 
     def streaming(self) -> None:
+        if self._mc_active():
+            return
         self._stop_cycler()
         self._transition("streaming")
 

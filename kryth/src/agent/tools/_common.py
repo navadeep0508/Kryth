@@ -16,7 +16,7 @@ RUN_COMMAND_ERROR_MARKER = TOOL_ERROR_PREFIX
 # so both setup context and error tails (stack traces, last-test-failure
 # line) survive trimming. read_file is exempt — it has its own
 # offset/limit pagination.
-TOOL_OUTPUT_BUDGET = 3000
+TOOL_OUTPUT_BUDGET = 100000
 
 
 def trim_head_tail(text: str, budget: int = TOOL_OUTPUT_BUDGET) -> str:

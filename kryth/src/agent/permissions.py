@@ -169,6 +169,11 @@ def ask_user(tool: str, args: dict) -> str:
         return "deny"
 
     try:
+        ui.stop_spinner()
+    except Exception:
+        pass
+
+    try:
         choice = ui.permission_request(tool, sig)
     except (EOFError, KeyboardInterrupt):
         ui.muted("(cancelled)")

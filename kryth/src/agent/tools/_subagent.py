@@ -53,10 +53,10 @@ def spawn_agent(description, prompt, max_turns=8):
     from agent.agent_loop import run_inner_loop
 
     parent = get_session()
-    if parent.depth >= 2:
+    if parent.depth >= 5:
         return err(
             "INVALID_STATE",
-            "subagent nesting depth limit (2) reached",
+            "subagent nesting depth limit (5) reached",
         )
 
     nested = _build_nested(description, prompt, parent.depth, getattr(parent, 'can_spawn', True))
@@ -76,7 +76,7 @@ def spawn_agent(description, prompt, max_turns=8):
 # Parallel fan-out
 # ---------------------------------------------------------------------------
 
-MAX_PARALLEL_AGENTS = 4
+MAX_PARALLEL_AGENTS = 16
 
 
 def _run_one(idx: int, description: str, prompt: str, max_turns: int,
@@ -122,8 +122,8 @@ def spawn_agents_parallel(tasks, max_concurrency: int = 3):
         return err("BAD_ARGS", "spawn_agents_parallel: tasks must be a non-empty list")
 
     parent = get_session()
-    if parent.depth >= 2:
-        return err("INVALID_STATE", "subagent nesting depth limit (2) reached")
+    if parent.depth >= 5:
+        return err("INVALID_STATE", "subagent nesting depth limit (5) reached")
     parent_depth = parent.depth
     parent_can_spawn = getattr(parent, 'can_spawn', True)
 
@@ -139,7 +139,7 @@ def spawn_agents_parallel(tasks, max_concurrency: int = 3):
             return err("BAD_ARGS", f"task {i} needs a non-empty 'prompt'")
         raw_mt = t.get("max_turns", 6)
         try:
-            mt = max(1, min(int(raw_mt), 30))
+            mt = max(1, min(int(raw_mt), 1000))
         except (TypeError, ValueError):
             return err("BAD_ARGS", f"task {i} max_turns must be an integer")
         plan.append((i, desc.strip(), prompt.strip(), mt))

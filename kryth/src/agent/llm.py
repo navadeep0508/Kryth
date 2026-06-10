@@ -41,7 +41,7 @@ RETRYABLE = (
     RateLimitError,
     InternalServerError,
 )
-RETRY_DELAYS = (0.5, 1.5, 4.0)
+RETRY_DELAYS = (0.5, 1.5, 4.0, 8.0, 16.0, 30.0)
 
 
 def _make_client() -> OpenAI:
@@ -52,7 +52,7 @@ def _make_client() -> OpenAI:
     return OpenAI(
         base_url=getenv("KRYTH_BASE_URL", BASE_URL),
         api_key=key,
-        timeout=httpx.Timeout(connect=15.0, read=180.0, write=60.0, pool=15.0),
+        timeout=httpx.Timeout(connect=15.0, read=360.0, write=60.0, pool=15.0),
     )
 
 
@@ -246,6 +246,86 @@ def _merge_tool_call_delta(accum: dict, delta_call) -> None:
             slot["function"]["arguments"] += fn.arguments
 
 
+def _classify_400(e: APIStatusError) -> str:
+    """Return 'max_tokens' | 'context_overflow' | 'tools_unsupported' | 'content_tool_calls' | 'other'."""
+    body = (str(getattr(e, "body", "") or "") + " " + str(e)).lower()
+    if ("max_tokens" in body or "max_completion_tokens" in body) and (
+        "too large" in body or "is larger than" in body or "exceeds" in body
+    ):
+        return "max_tokens"
+    if any(p in body for p in (
+        "context_length_exceeded", "context length", "too long",
+        "resulted in", "reduce the length", "input is too long",
+        "prompt is too long", "tokens in the messages",
+    )):
+        return "context_overflow"
+    if any(p in body for p in (
+        "invalid tools", "tools structure", "none is not", "tool_choice",
+        "tools not supported", "does not support tool", "does not support function",
+        "function calling", "function call is not supported",
+    )):
+        return "tools_unsupported"
+    if "content" in body and "tool_calls" in body and (
+        "both" in body or "either" in body or "not both" in body
+    ):
+        return "content_tool_calls"
+    return "other"
+
+
+def _extract_token_limit(e: APIStatusError) -> int | None:
+    """Parse the model's ACTUAL token ceiling from a 400 error body.
+
+    The error text often reads:
+      'max_tokens is too large: 32768. This model's maximum context length is 8192.'
+    We must return 8192 (the model limit), NOT 32768 (our request).
+    Use only specific anchor phrases so we never misread the requested value.
+    """
+    body = str(getattr(e, "body", "") or "") + " " + str(e)
+    # Ordered from most to least specific — stop at first confident match.
+    for pat in (
+        r"maximum context length is (\d+)",
+        r"model(?:'s)? maximum.*?(\d+)",
+        r"maximum.*?allowed.*?(\d+)",
+        r"supports up to (\d+)",
+        r"model supports (\d+)",
+    ):
+        m = re.search(pat, body, re.IGNORECASE)
+        if m:
+            v = int(m.group(1))
+            if 256 <= v <= 1_000_000:
+                return v
+    return None  # fall back to halving
+
+
+# Per-model discovered output-token ceiling: avoids retrying every turn.
+_model_max_tokens_cache: dict[str, int] = {}
+
+# Models that rejected structured tool schemas — always use text-mode for these.
+_model_text_tool_cache: set[str] = set()
+
+# Known output-token ceilings for models that don't report their limit
+# clearly in 400 error bodies (e.g. NVIDIA NIM nemotron). Substring-matched
+# against the model name (lowercased) — most specific match wins.
+_KNOWN_OUTPUT_LIMITS: list[tuple[str, int]] = [
+    ("mistral-nemotron", 4096),
+    ("nemotron", 4096),
+    ("llama-3.1-nemotron", 4096),
+    ("llama-3.3-nemotron", 4096),
+    ("mistral-7b", 4096),
+    ("mistral-small", 4096),
+    ("mixtral-8x7b", 4096),
+]
+
+
+def _known_output_limit(model: str) -> int | None:
+    """Return a hardcoded output-token ceiling for known constrained models."""
+    low = model.lower()
+    for substr, limit in _KNOWN_OUTPUT_LIMITS:
+        if substr in low:
+            return limit
+    return None
+
+
 def _api_error_response(label: str, err: APIStatusError) -> dict:
     """Build a 'graceful exit' response when the gateway rejects us.
 
@@ -310,6 +390,12 @@ def _should_retry_chat_compat(err: APIStatusError) -> bool:
     """
     code = getattr(err, "status_code", None)
     if code == 400:
+        # Don't compat-retry errors we handle explicitly in the outer loop
+        body = (str(getattr(err, "body", "") or "") + " " + str(err)).lower()
+        if "content" in body and "tool_calls" in body and (
+            "both" in body or "either" in body or "not both" in body
+        ):
+            return False
         return True
     if code == 404 and _is_nvidia_endpoint():
         detail = _status_detail(err).lower()
@@ -321,9 +407,17 @@ def _tool_text_fallback(tools) -> str:
     if not tools:
         return ""
     lines = [
-        "Provider compatibility mode: structured tool schemas were not accepted.",
-        "When you need a tool, output exactly one tool call block and no prose:",
+        "TOOL CALL FORMAT — MANDATORY:",
+        "This model does not support structured function-calling.",
+        "You MUST use the following XML format for EVERY tool call.",
+        "DO NOT use markdown code fences (``` or ```bash). DO NOT use [TOOL_CALLS] format.",
+        "DO NOT describe what you are doing. Just output the tool call block directly:",
+        "",
         '<tool_call>{"name":"tool_name","arguments":{"arg":"value"}}</tool_call>',
+        "",
+        "One tool call per response. After the tool result arrives, call the next tool.",
+        "NEVER output ```bash, ```python, or any code block — use run_command tool instead.",
+        "",
         "Available tools:",
     ]
     for spec in tools:
@@ -356,6 +450,57 @@ def _messages_with_tool_text_fallback(messages, tools) -> list:
     return out
 
 
+def _sanitize_assistant_messages(messages: list) -> list:
+    """Enforce: assistant messages must have content XOR tool_calls, never both.
+
+    Some providers (mistral-nemotron) reject any assistant message that carries
+    both fields, even when content is an empty string.
+    """
+    out = []
+    for m in messages:
+        if m.get("role") == "assistant":
+            has_tools = bool(m.get("tool_calls"))
+            has_content = "content" in m
+            if has_tools and has_content:
+                m = {k: v for k, v in m.items() if k != "content"}
+            elif not has_tools and not has_content:
+                m = dict(m)
+                m["content"] = ""
+        out.append(m)
+    return out
+
+
+def _sanitize_tool_call_ids(messages: list) -> list:
+    """Ensure every tool_call id is 9 alphanumeric chars."""
+    out = []
+    for m in messages:
+        m2 = dict(m)
+        if m2.get("tool_calls"):
+            fixed_calls = []
+            for i, tc in enumerate(m2["tool_calls"]):
+                tc2 = dict(tc)
+                raw_id = tc2.get("id") or ""
+                if len(raw_id) != 9 or not raw_id.isalnum():
+                    prefix = raw_id[:3].replace("_", "x").replace("-", "x") or "fix"
+                    tc2["id"] = _make_tool_call_id(prefix, i)
+                fixed_calls.append(tc2)
+            m2["tool_calls"] = fixed_calls
+        if m2.get("role") == "tool":
+            raw_id = m2.get("tool_call_id") or ""
+            if len(raw_id) != 9 or not raw_id.isalnum():
+                prefix = raw_id[:3].replace("_", "x").replace("-", "x") or "fix"
+                m2["tool_call_id"] = _make_tool_call_id(prefix, 0)
+        out.append(m2)
+    return out
+
+
+def _sanitize_messages_for_provider(messages: list) -> list:
+    """Apply all provider-compatibility message fixes in one pass."""
+    msgs = _sanitize_tool_call_ids(messages)
+    msgs = _sanitize_assistant_messages(msgs)
+    return msgs
+
+
 def _chat_completion_with_compat(call_label: str, *, compat_fallback: bool = True, **kwargs):
     """Create a chat completion, retrying once with provider-safe args.
 
@@ -363,6 +508,10 @@ def _chat_completion_with_compat(call_label: str, *, compat_fallback: bool = Tru
     individual models/gateways can reject optional extras such as stop
     sequences, stream_options, or tool schemas with a misleading 404.
     """
+    # Always sanitize tool call IDs before sending.
+    if "messages" in kwargs:
+        kwargs = dict(kwargs)
+        kwargs["messages"] = _sanitize_messages_for_provider(kwargs["messages"])
     try:
         return _retry(call_label, client.chat.completions.create, **kwargs)
     except APIStatusError as e:
@@ -375,12 +524,30 @@ def _chat_completion_with_compat(call_label: str, *, compat_fallback: bool = Tru
 
         # If a provider rejects structured tool schemas, fall back to the
         # prompt-level tool-call format that this module already recovers
-        # from Hermes/Qwen-style content.
+        # from Hermes/Qwen-style content. Also strip tool_calls from
+        # assistant messages in history — they reference ids the model
+        # will reject in text mode.
         if safe.get("tools") is not None:
             safe["messages"] = _messages_with_tool_text_fallback(
                 safe.get("messages") or [], safe.get("tools")
             )
             safe.pop("tools", None)
+        # Strip tool_calls from assistant history and orphaned tool results
+        # when in text-mode fallback — they reference ids the model will reject.
+        cleaned = []
+        for m in (safe.get("messages") or []):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                m = dict(m)
+                m.pop("tool_calls", None)
+            elif m.get("role") == "tool":
+                # Replace tool result with a user message so the model sees
+                # the output without needing a valid tool_call_id.
+                m = {
+                    "role": "user",
+                    "content": f"[tool result: {m.get('name', '')}]\n{m.get('content', '')}",
+                }
+            cleaned.append(m)
+        safe["messages"] = _sanitize_messages_for_provider(cleaned)
 
         ui.muted("(provider compatibility retry: minimal chat/completions payload)")
         return _retry(f"{call_label} compat", client.chat.completions.create, **safe)
@@ -410,8 +577,18 @@ def _chat_completion_with_compat(call_label: str, *, compat_fallback: bool = Tru
 # losing the intended action. ``_recover_hermes_tool_calls`` translates
 # such content back into OpenAI ``tool_calls`` so the dispatcher can act.
 
+import string as _string
+_TC_ID_CHARS = _string.ascii_letters + _string.digits
+def _make_tool_call_id(prefix: str, index: int) -> str:
+    """Return a 9-char alphanumeric tool call ID as required by strict providers."""
+    raw = f"{prefix}{index:04d}"
+    # Pad or truncate to exactly 9 chars using only [a-zA-Z0-9]
+    safe = "".join(c for c in raw if c in _TC_ID_CHARS)
+    safe = (safe + "aaaaaaaaa")[:9]
+    return safe
+
 _HERMES_BLOCK_RE = re.compile(
-    r"<tool_call>\s*(.*?)\s*</tool_call>",
+    r"<(?:tool_call|seed:tool_call)>\s*(.*?)\s*</(?:tool_call|seed:tool_call)>",
     re.DOTALL,
 )
 _HERMES_FN_RE = re.compile(r"<function=([\w\-]+)>")
@@ -462,6 +639,25 @@ def _is_degenerate_tail(content: str) -> bool:
     return region.count(needle) >= _DEGEN_REPETITIONS
 
 
+# Boundary tag detector: <CONTENT> is the canonical marker that separates
+# reasoning from visible output — the model is instructed to emit it as the
+# very first tag before any user-facing text.  All legacy display tags are
+# kept as fallbacks so old-style responses still work.
+# Everything BEFORE the first match is treated as reasoning (shown in cyan).
+# Plain-text models that never emit any tag get a 200-char grace window before
+# the buffer is flushed as content so the response is never lost.
+_PROTOCOL_BOUNDARY_RE = re.compile(
+    r"<(?:CONTENT"
+    r"|display|block|status|mission|timeline|spinner|todo|plan"
+    r"|task_start|task_update|task_complete|task_skip|task_error"
+    r"|summary|warning|exec_stream|build_stream|test_stream"
+    r"|tool_read|tool_write|tool_edit|tool_run|tool_result"
+    r"|checkpoint|agent|decision|activity|health|budget|risk"
+    r"|experience|memory)\b",
+    re.IGNORECASE,
+)
+_PRE_TAG_FLUSH = 200   # chars: give up waiting for <CONTENT> (tighter now)
+
 # Stop sequences sent to the gateway. NVIDIA's OpenAI-compatible
 # endpoint honours these for most models, terminating the response
 # before the model can spam its way to max_tokens. They are sequences
@@ -469,7 +665,9 @@ def _is_degenerate_tail(content: str) -> bool:
 _STOP_SEQUENCES = [
     "</function></function></function>",
     "</tool_call></tool_call></tool_call>",
+    "</seed:tool_call></seed:tool_call>",
     "</parameter></parameter></parameter></parameter>",
+    "<|python_tag|><|python_tag|>",  # Llama code-interpreter token loop
 ]
 
 
@@ -484,7 +682,7 @@ def _recover_hermes_tool_calls(content: str) -> list[dict]:
     load (tools doesn't import llm directly, but the agent_loop -> tools
     -> llm chain would close otherwise).
     """
-    if "<tool_call>" not in content:
+    if "<tool_call>" not in content and "<seed:tool_call>" not in content:
         return []
 
     try:
@@ -512,7 +710,7 @@ def _recover_hermes_tool_calls(content: str) -> list[dict]:
                         else str(args)
                     )
                     calls.append({
-                        "id": f"hermes_{i}",
+                        "id": _make_tool_call_id("hrm", i),
                         "type": "function",
                         "function": {"name": name, "arguments": arguments},
                     })
@@ -543,7 +741,7 @@ def _recover_hermes_tool_calls(content: str) -> list[dict]:
         params = {k.strip(): v.strip() for k, v in _HERMES_PARAM_RE.findall(block)}
         if name and name in known_names:
             calls.append({
-                "id": f"hermes_{i}",
+                "id": _make_tool_call_id("hrm", i),
                 "type": "function",
                 "function": {
                     "name": name,
@@ -554,14 +752,141 @@ def _recover_hermes_tool_calls(content: str) -> list[dict]:
     return calls
 
 
+# Self-closing XML tool call format emitted by Llama/Meta models:
+#   <tool name="edit_file" arguments={"path": "...", "old_text": "...", "new_text": ""} />
+_XML_TOOL_RE = re.compile(
+    r'<tool\s+name="([^"]+)"\s+arguments=(\{.*?\})\s*/?>',
+    re.DOTALL,
+)
+
+
+def _recover_xml_tool_calls(content: str) -> list[dict]:
+    """Parse <tool name="..." arguments={...} /> self-closing XML tool calls.
+
+    Used for Llama/Meta models that emit this format instead of the OpenAI
+    structured tool_calls stream.  Returns OpenAI-style tool_call dicts.
+    """
+    if '<tool ' not in content:
+        return []
+    try:
+        from agent.tools import TOOLS
+    except Exception:
+        return []
+    known_names = set(TOOLS.keys())
+
+    calls: list[dict] = []
+    for i, m in enumerate(_XML_TOOL_RE.finditer(content)):
+        name = m.group(1).strip()
+        args_raw = m.group(2).strip()
+        if name not in known_names:
+            continue
+        try:
+            args_obj = json.loads(args_raw)
+            arguments = json.dumps(args_obj)
+        except json.JSONDecodeError:
+            arguments = args_raw
+        calls.append({
+            "id": _make_tool_call_id("xml", i),
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        })
+    return calls
+
+
+# [TOOL_CALLS] bracket format: some models emit tool calls as
+#   [TOOL_CALLS]tool_name{"arg": "value"}
+_BRACKET_TOOL_RE = re.compile(
+    r"\[TOOL_CALLS\]\s*([\w_-]+)\s*(\{.*?\})",
+    re.DOTALL,
+)
+
+
+def _recover_bracket_tool_calls(content: str) -> list[dict]:
+    """Parse [TOOL_CALLS]name{args} format emitted by some mistral-family models."""
+    if "[TOOL_CALLS]" not in content:
+        return []
+    try:
+        from agent.tools import TOOLS
+    except Exception:
+        return []
+    known_names = set(TOOLS.keys())
+
+    calls = []
+    for i, m in enumerate(_BRACKET_TOOL_RE.finditer(content)):
+        name = m.group(1).strip()
+        args_raw = m.group(2).strip()
+        if name not in known_names:
+            continue
+        try:
+            arguments = json.dumps(json.loads(args_raw))
+        except json.JSONDecodeError:
+            arguments = args_raw
+        calls.append({
+            "id": _make_tool_call_id("bkt", i),
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        })
+    return calls
+
+
+# Markdown fence recovery: models in text-mode sometimes output ```bash / ```python
+# blocks instead of <tool_call>. Extract the commands and map them to run_command.
+_FENCE_RE = re.compile(
+    r"```(?:bash|sh|shell|cmd|python|py|js|javascript|typescript|ts)?\s*\n(.*?)```",
+    re.DOTALL,
+)
+
+
+def _recover_fence_tool_calls(content: str) -> list[dict]:
+    """Convert ```bash ... ``` blocks into run_command tool calls.
+
+    Only fires when there are NO proper tool_call blocks already — it's a
+    last-resort recovery for models that ignore the text-mode format instruction.
+    """
+    if "<tool_call>" in content or "<seed:tool_call>" in content:
+        return []
+    try:
+        from agent.tools import TOOLS
+        if "run_command" not in TOOLS:
+            return []
+    except Exception:
+        return []
+
+    calls = []
+    for i, m in enumerate(_FENCE_RE.finditer(content)):
+        body = m.group(1).strip()
+        if not body:
+            continue
+        lines = [
+            ln for ln in body.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        if not lines:
+            continue
+        command = " && ".join(ln.strip() for ln in lines)
+        calls.append({
+            "id": _make_tool_call_id("fnc", i),
+            "type": "function",
+            "function": {
+                "name": "run_command",
+                "arguments": json.dumps({"command": command}),
+            },
+        })
+    return calls
+
+
 # ---------------------------------------------------------------------------
 # Reasoning leak filter
 # ---------------------------------------------------------------------------
 
 _LEAK_PATTERNS = [
+    # <CONTENT> boundary marker — must be stripped from stored text
+    re.compile(r"</?CONTENT\s*>", re.IGNORECASE),
     re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE),
     re.compile(r"<thinking>.*?</thinking>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<seed:think>.*?</seed:think>", re.DOTALL | re.IGNORECASE),
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<seed:tool_call>.*?</seed:tool_call>", re.DOTALL | re.IGNORECASE),
     re.compile(r"<function=[^>]+>.*?</function>", re.DOTALL | re.IGNORECASE),
     re.compile(r"<parameter=[^>]+>.*?</parameter>", re.DOTALL | re.IGNORECASE),
     re.compile(r"</?tool_call\s*/?>", re.IGNORECASE),
@@ -569,14 +894,26 @@ _LEAK_PATTERNS = [
     re.compile(r"</?parameter[^>]*>", re.IGNORECASE),
     re.compile(r"</?think\s*>", re.IGNORECASE),
     re.compile(r"</?thinking\s*>", re.IGNORECASE),
+    # [TOOL_CALLS] bracket format used by mistral-family models
+    re.compile(r"\[TOOL_CALLS\]\s*[\w_-]+\s*\{.*?\}", re.DOTALL),
+    # Llama/Meta code-interpreter special tokens — never user-visible
+    re.compile(r"<\|python_tag\|>", re.IGNORECASE),
+    re.compile(r"<\|[a-z_]+\|>", re.IGNORECASE),  # any <|token|> sentinel
+    # Self-closing XML tool call format: <tool name="..." arguments={...} />
+    re.compile(r'<tool\s+name="[^"]*"\s+arguments=\{[^}]*\}\s*/?>',
+               re.DOTALL | re.IGNORECASE),
 ]
 
-_THINK_CLOSE_RE = re.compile(r"</think\s*>|</thinking\s*>", re.IGNORECASE)
-_THINK_OPEN_RE = re.compile(r"<think\s*>|<thinking\s*>", re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(
+    r"</think\s*>|</thinking\s*>|</seed:think\s*>", re.IGNORECASE
+)
+_THINK_OPEN_RE = re.compile(
+    r"<think\s*>|<thinking\s*>|<seed:think\s*>", re.IGNORECASE
+)
 
 # Open/close tag pairs for hold-back logic
-_LEAK_OPEN_TAGS = ["<think>", "<thinking>", "<tool_call>", "<function="]
-_LEAK_CLOSE_TAGS = ["</think>", "</thinking>", "</tool_call>", "</function>"]
+_LEAK_OPEN_TAGS = ["<think>", "<thinking>", "<seed:think>", "<tool_call>", "<seed:tool_call>", "<function="]
+_LEAK_CLOSE_TAGS = ["</think>", "</thinking>", "</seed:think>", "</tool_call>", "</seed:tool_call>", "</function>"]
 
 
 def _filter_leaks(text: str) -> str:
@@ -598,7 +935,9 @@ def _strip_surrogates(text: str) -> str:
 
 
 def _sanitize_messages(messages: list) -> list:
-    """Return a copy of the message list with all surrogate characters removed."""
+    """Return a copy of the message list with surrogates removed and
+    provider-incompatible structures fixed (content+tool_calls on same
+    assistant message, etc.)."""
     out = []
     for m in messages:
         m2 = dict(m)
@@ -614,6 +953,10 @@ def _sanitize_messages(messages: list) -> list:
                 tc2["function"] = fn
                 cleaned_calls.append(tc2)
             m2["tool_calls"] = cleaned_calls
+            # Remove content when tool_calls are present — some providers
+            # (mistral-nemotron etc.) reject messages that carry both fields,
+            # even when content is an empty string.
+            m2.pop("content", None)
         out.append(m2)
     return out
 
@@ -655,52 +998,130 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
         pass
 
     request_messages = _sanitize_messages(messages)
+    request_messages = _sanitize_messages_for_provider(request_messages)
     request_tools = tools
-    if tools and _tool_mode() == "text":
+    if tools and (_tool_mode() == "text" or selected_model in _model_text_tool_cache):
         request_messages = _messages_with_tool_text_fallback(request_messages, tools)
         request_tools = None
 
     _max_tokens = int(getenv("KRYTH_MAX_TOKENS", "16384"))
+    # Apply any previously discovered limit for this model immediately.
+    if selected_model in _model_max_tokens_cache:
+        _max_tokens = min(_max_tokens, _model_max_tokens_cache[selected_model])
+    # Pre-cap for known constrained models so we never need to halve at all.
+    _known_limit = _known_output_limit(selected_model)
+    if _known_limit and _max_tokens > _known_limit:
+        _max_tokens = _known_limit
+        _model_max_tokens_cache[selected_model] = _known_limit
 
-    try:
-        stream = _chat_completion_with_compat(
-            "ask_llm_stream",
-            model=selected_model,
-            messages=request_messages,
-            tools=request_tools,
-            temperature=0,
-            max_tokens=_max_tokens,
-            stream=True,
-            stream_options={"include_usage": True},
-            stop=_STOP_SEQUENCES,
-        )
-    except KeyboardInterrupt:
-        raise
-    except APIStatusError as e:
-        return _api_error_response("ask_llm_stream", e)
-    except APITimeoutError:
+    # Open the stream, automatically shrinking max_tokens if the model
+    # rejects our value, and signalling context_overflow when input is too long.
+    stream = None
+    for _tok_attempt in range(8):
+        try:
+            stream = _chat_completion_with_compat(
+                "ask_llm_stream",
+                model=selected_model,
+                messages=request_messages,
+                tools=request_tools,
+                temperature=0,
+                max_tokens=_max_tokens,
+                stream=True,
+                stream_options={"include_usage": True},
+                stop=_STOP_SEQUENCES,
+            )
+            break  # success
+        except KeyboardInterrupt:
+            raise
+        except APIStatusError as e:
+            kind = _classify_400(e)
+            if kind == "max_tokens":
+                # Model's output window is smaller than we requested.
+                # Extract the real limit; fall back to halving if not parseable.
+                real = _extract_token_limit(e)
+                if real and real < _max_tokens:
+                    new_max = real
+                else:
+                    new_max = _max_tokens // 2
+                new_max = max(new_max, 256)
+                _model_max_tokens_cache[selected_model] = new_max
+                ui.muted(f"(max_tokens {_max_tokens} → {new_max} for {selected_model})")
+                _max_tokens = new_max
+                continue
+            if kind == "tools_unsupported":
+                # Model doesn't support structured tool schemas.
+                # Switch to text-mode for this model permanently and retry.
+                _model_text_tool_cache.add(selected_model)
+                ui.muted(f"(tools schema rejected by {selected_model} — switching to text-mode)")
+                if request_tools is not None:
+                    request_messages = _messages_with_tool_text_fallback(
+                        request_messages, request_tools
+                    )
+                    request_tools = None
+                continue
+            if kind == "content_tool_calls":
+                # Provider rejects assistant messages that have both content
+                # and tool_calls. Strip content (or tool_calls) from every
+                # assistant message aggressively and retry once.
+                fixed = []
+                for _m in request_messages:
+                    if _m.get("role") == "assistant":
+                        _m2 = {k: v for k, v in _m.items() if k != "content"}
+                        if not _m2.get("tool_calls"):
+                            _m2["content"] = ""
+                        fixed.append(_m2)
+                    else:
+                        fixed.append(_m)
+                request_messages = fixed
+                # Only retry once — if still failing after this, surface error.
+                if _tok_attempt == 0:
+                    continue
+                return _api_error_response("ask_llm_stream", e)
+            if kind == "context_overflow":
+                # Input is too large — caller must compact and retry.
+                ui.muted("(context full — compacting…)")
+                return {
+                    "content": None,
+                    "tool_calls": None,
+                    "finish_reason": "context_overflow",
+                    "usage": None,
+                    "interrupted": True,
+                }
+            return _api_error_response("ask_llm_stream", e)
+        except APITimeoutError:
+            ui.llm_error(
+                label="ask_llm_stream timed out",
+                message="gateway didn't respond after retries",
+                hint=(
+                    "model may be overloaded, prompt too large, or network flaky. "
+                    "Try a smaller prompt, run /diag, or retry."
+                ),
+            )
+            return {
+                "content": None,
+                "tool_calls": None,
+                "finish_reason": "timeout",
+                "usage": None,
+                "interrupted": True,
+            }
+        except (APIConnectionError, RateLimitError, InternalServerError) as e:
+            ui.llm_error(
+                label=f"ask_llm_stream {type(e).__name__}",
+                message=str(e)[:200] or "transient error after retries",
+                hint="Network or provider hiccup; try again, or run /diag.",
+            )
+            return {
+                "content": None,
+                "tool_calls": None,
+                "finish_reason": "api_error",
+                "usage": None,
+                "interrupted": True,
+            }
+    if stream is None:
         ui.llm_error(
-            label="ask_llm_stream timed out",
-            message="gateway didn't respond after retries",
-            hint=(
-                "model may be overloaded, prompt too large, or network flaky. "
-                "Try a smaller prompt, run /diag, or retry."
-            ),
-        )
-        return {
-            "content": None,
-            "tool_calls": None,
-            "finish_reason": "timeout",
-            "usage": None,
-            "interrupted": True,
-        }
-    except (APIConnectionError, RateLimitError, InternalServerError) as e:
-        # Retries exhausted on a transient class. Surface cleanly
-        # instead of dumping a traceback.
-        ui.llm_error(
-            label=f"ask_llm_stream {type(e).__name__}",
-            message=str(e)[:200] or "transient error after retries",
-            hint="Network or provider hiccup; try again, or run /diag.",
+            label="ask_llm_stream",
+            message=f"could not open stream for {selected_model} after reducing max_tokens to {_max_tokens}",
+            hint="The model may have a very small context window. Set KRYTH_MAX_TOKENS to a lower value.",
         )
         return {
             "content": None,
@@ -720,9 +1141,14 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
     saw_content = False
     saw_reasoning = False
     _reasoning_start: float | None = None
-    # Track open <think> tags in the content stream for models that
-    # don't use a separate reasoning_content field (e.g. Qwen3, DeepSeek-R1).
     _think_depth = 0
+    _content_started = False
+    _pre_tag_buf = ""
+    # Counts tool-call chunks — drives the live "Generating…" spinner so
+    # large file writes don't look frozen.  Fires every 10 chunks (not 30)
+    # and surfaces the tool name once we can parse it.
+    _tool_gen_chunks = 0
+    _gen_label = "Generating…"
 
     try:
         for chunk in stream:
@@ -753,13 +1179,20 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             if delta.content:
                 raw_piece = delta.content
 
+                # Strip Llama/Meta special tokens before any other processing
+                # so they never reach the renderer or accumulator.
+                if "<|" in raw_piece:
+                    raw_piece = re.sub(r"<\|[a-z_]+\|>", "", raw_piece)
+                    if not raw_piece:
+                        continue
+
                 # Detect in-content <think> / </think> tags (Qwen3, local models).
                 # Count opens BEFORE closes so a chunk like "text</think>" that exits
                 # the block is handled correctly within the same chunk.
                 low_piece = raw_piece.lower()
-                for tag in ("<think>", "<thinking>"):
+                for tag in ("<think>", "<thinking>", "<seed:think>"):
                     _think_depth += low_piece.count(tag)
-                for tag in ("</think>", "</thinking>"):
+                for tag in ("</think>", "</thinking>", "</seed:think>"):
                     _think_depth = max(0, _think_depth - low_piece.count(tag))
 
                 if _think_depth > 0:
@@ -774,7 +1207,36 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
                     # internal reasoning, not the final answer.
                     continue
 
-                # Real content (outside any think block)
+                # --- Boundary detection ---
+                # Before the first protocol tag, route free-form text as reasoning.
+                # Models are prompted to start their answer with a tag like <display>;
+                # anything they write beforehand is their implicit reasoning chain.
+                if not _content_started:
+                    _pre_tag_buf += raw_piece
+                    m = _PROTOCOL_BOUNDARY_RE.search(_pre_tag_buf)
+                    if m:
+                        # Found the boundary — everything before it is reasoning.
+                        pre = _pre_tag_buf[:m.start()]
+                        rest = _pre_tag_buf[m.start():]
+                        _pre_tag_buf = ""
+                        _content_started = True
+                        if pre.strip():
+                            if _reasoning_start is None:
+                                _reasoning_start = time.monotonic()
+                            elapsed = time.monotonic() - _reasoning_start
+                            ui.llm_reasoning_chunk(pre, elapsed=elapsed)
+                            reasoning_chunks.append(pre)
+                            saw_reasoning = True
+                        raw_piece = rest  # fall through as normal content
+                    elif len(_pre_tag_buf) >= _PRE_TAG_FLUSH:
+                        # No tag seen after grace window — plain-text model; flush as content.
+                        raw_piece = _pre_tag_buf
+                        _pre_tag_buf = ""
+                        _content_started = True
+                    else:
+                        continue  # still accumulating, nothing to emit yet
+
+                # Real content (outside think blocks, past the boundary tag)
                 if saw_reasoning and not saw_content:
                     ui.llm_reasoning_end()
 
@@ -808,6 +1270,27 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             if getattr(delta, "tool_calls", None):
                 for dc in delta.tool_calls:
                     _merge_tool_call_delta(tool_calls_accum, dc)
+                # Show a live spinner while tool arguments stream in
+                # (large file writes produce many silent chunks with no content).
+                if not saw_content and not saw_reasoning:
+                    _tool_gen_chunks += 1
+                    if _tool_gen_chunks % 10 == 1:
+                        # Try to read the tool name + key arg from the partial accum
+                        try:
+                            slot = tool_calls_accum.get(0, {})
+                            fn_name = slot.get("function", {}).get("name", "")
+                            partial_args = slot.get("function", {}).get("arguments", "")
+                            if fn_name in ("write_file", "edit_file", "multi_edit"):
+                                # Extract path from partial JSON (best-effort)
+                                import re as _re
+                                m = _re.search(r'"path"\s*:\s*"([^"]{1,60})"', partial_args)
+                                p = m.group(1) if m else ""
+                                _gen_label = f"Generating {p}…" if p else f"Generating {fn_name}…"
+                            elif fn_name:
+                                _gen_label = f"◈ {fn_name}…"
+                        except Exception:
+                            pass
+                        ui.llm_waiting(f"◈ {_gen_label}")
 
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
@@ -816,6 +1299,9 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             stream.close()
         except Exception:
             pass
+        if _pre_tag_buf:
+            content_chunks.append(_pre_tag_buf)
+            _pre_tag_buf = ""
         # Always close the streaming phase so the activity indicator
         # (spinner Live) is released — pure-tool-call responses never
         # see a chunk and would otherwise leave the spinner running.
@@ -853,6 +1339,9 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             stream.close()
         except Exception:
             pass
+        if _pre_tag_buf:
+            content_chunks.append(_pre_tag_buf)
+            _pre_tag_buf = ""
         if saw_content:
             ui.llm_content_end(render_markdown=False)
         elif saw_reasoning:
@@ -864,19 +1353,26 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
         ]
         raw_partial = "".join(content_chunks)
 
-        # Recover Hermes/Qwen tool calls from raw content BEFORE filtering
-        # strips the <tool_call> blocks.
-        if "<tool_call>" in raw_partial:
-            recovered = _recover_hermes_tool_calls(raw_partial)
-            if recovered:
-                ui.llm_hermes_recovery(len(recovered))
-                return {
-                    "content": None,
-                    "tool_calls": recovered,
-                    "finish_reason": "recovered_after_stream_error",
-                    "usage": usage,
-                    "interrupted": False,
-                }
+        # Recover text-format tool calls (Hermes/Qwen or XML) BEFORE filtering
+        # strips the blocks — otherwise recovery never fires.
+        _recovered = []
+        if "<tool_call>" in raw_partial or "<seed:tool_call>" in raw_partial:
+            _recovered = _recover_hermes_tool_calls(raw_partial)
+        if not _recovered and "<tool " in raw_partial:
+            _recovered = _recover_xml_tool_calls(raw_partial)
+        if not _recovered and "[TOOL_CALLS]" in raw_partial:
+            _recovered = _recover_bracket_tool_calls(raw_partial)
+        if not _recovered and "```" in raw_partial:
+            _recovered = _recover_fence_tool_calls(raw_partial)
+        if _recovered:
+            ui.llm_hermes_recovery(len(_recovered))
+            return {
+                "content": None,
+                "tool_calls": _recovered,
+                "finish_reason": "recovered_after_stream_error",
+                "usage": usage,
+                "interrupted": False,
+            }
 
         partial_text = _filter_leaks(raw_partial) or "".join(reasoning_chunks) or None
         ui.llm_error(
@@ -894,6 +1390,18 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             "usage": None,
             "interrupted": True,
         }
+
+    # Flush any pre-tag buffer that was still accumulating when the stream ended
+    # (model never emitted a protocol tag — treat as plain content).
+    if _pre_tag_buf:
+        if saw_reasoning and not saw_content:
+            ui.llm_reasoning_end()
+            saw_reasoning = False
+        if _pre_tag_buf.strip():
+            ui.llm_content_chunk(_pre_tag_buf)
+            saw_content = True
+        content_chunks.append(_pre_tag_buf)
+        _pre_tag_buf = ""
 
     # Close the streaming phase cleanly so the renderer finalises the
     # activity indicator. Pure tool_call responses (no content, no
@@ -924,13 +1432,21 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
     # isn't staring at a silent "done".
     raw_content = "".join(content_chunks)
 
-    # Recover Hermes/Qwen tool calls from raw content BEFORE _filter_leaks
-    # strips the <tool_call> blocks — otherwise recovery never fires.
-    if not tool_calls and "<tool_call>" in raw_content:
-        recovered = _recover_hermes_tool_calls(raw_content)
-        if recovered:
-            ui.llm_hermes_recovery(len(recovered))
-            tool_calls = recovered
+    # Recover text-format tool calls (Hermes/Qwen or XML) BEFORE _filter_leaks
+    # strips the blocks — otherwise recovery never fires.
+    if not tool_calls:
+        _recovered = []
+        if "<tool_call>" in raw_content or "<seed:tool_call>" in raw_content:
+            _recovered = _recover_hermes_tool_calls(raw_content)
+        if not _recovered and "<tool " in raw_content:
+            _recovered = _recover_xml_tool_calls(raw_content)
+        if not _recovered and "[TOOL_CALLS]" in raw_content:
+            _recovered = _recover_bracket_tool_calls(raw_content)
+        if not _recovered and "```" in raw_content:
+            _recovered = _recover_fence_tool_calls(raw_content)
+        if _recovered:
+            ui.llm_hermes_recovery(len(_recovered))
+            tool_calls = _recovered
             content_text = ""
         else:
             content_text = _filter_leaks(raw_content)
@@ -1066,7 +1582,7 @@ def ask_planner(user_input):
                 {"role": "user", "content": user_input},
             ],
             temperature=0,
-            max_tokens=900,
+            max_tokens=8192,
         )
     except KeyboardInterrupt:
         raise
@@ -1118,7 +1634,7 @@ def critique(diff_text: str, intent: str = "") -> str:
     if not diff_text or not diff_text.strip():
         return ""
 
-    blob = diff_text[:14000]
+    blob = diff_text[:80000]
     user = (
         (f"Intent: {intent.strip()}\n\n" if intent else "")
         + "Diff:\n" + blob
@@ -1134,7 +1650,7 @@ def critique(diff_text: str, intent: str = "") -> str:
                 {"role": "user", "content": user},
             ],
             temperature=0,
-            max_tokens=600,
+            max_tokens=4096,
         )
     except KeyboardInterrupt:
         raise
@@ -1181,8 +1697,8 @@ def diagnose_error(
     block as plain text. Empty string on any API failure — diagnosis is
     opportunistic and must never block the agent.
     """
-    stdout = (stdout or "")[-2000:]
-    stderr = (stderr or "")[-3000:]
+    stdout = (stdout or "")[-20000:]
+    stderr = (stderr or "")[-20000:]
     payload = (
         f"Command: {command}\n"
         f"Exit code: {exit_code}\n"
@@ -1201,7 +1717,7 @@ def diagnose_error(
                 {"role": "user", "content": payload},
             ],
             temperature=0,
-            max_tokens=400,
+            max_tokens=4096,
         )
     except KeyboardInterrupt:
         raise
@@ -1217,7 +1733,9 @@ def diagnose_error(
 
 
 def summarize(messages_to_compress: list) -> str:  # noqa: C901
-    # Use model_config router for summary role if available
+    # Use model_config router for summary role if available, else fall back
+    # to the main model so summarization always works even when a dedicated
+    # summarizer model (e.g. gpt-4o-mini) isn't available on the endpoint.
     _sum_client = client
     _sum_model = SUMMARIZER_MODEL
     try:
@@ -1225,6 +1743,9 @@ def summarize(messages_to_compress: list) -> str:  # noqa: C901
         _sum_client, _sum_model = _mc_get_llm("summary")
     except Exception:
         pass
+    # If the configured summarizer model differs from the main model and the
+    # call fails, _summarize_with will retry on the main model automatically.
+    _fallback_model = MAIN_MODEL
 
     rendered = []
     for m in messages_to_compress:
@@ -1238,40 +1759,42 @@ def summarize(messages_to_compress: list) -> str:  # noqa: C901
                 f"[assistant->tool] {fn.get('name')}({fn.get('arguments')})"
             )
 
-    blob = "\n".join(rendered)[:12000]
+    blob = "\n".join(rendered)[:30000]
     # Sanitize: replace any characters that cannot be encoded to UTF-8 (e.g., surrogates)
     blob = blob.encode("utf-8", errors="replace").decode("utf-8")
 
-    try:
-        response = _retry(
-            "summarize",
-            _sum_client.chat.completions.create,
-            model=_sum_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Summarize the following agent conversation. "
-                        "Preserve: user intent, decisions made, files touched, "
-                        "errors hit, and the current state of the task. "
-                        "Be terse. No markdown."
-                    ),
-                },
-                {"role": "user", "content": blob},
-            ],
-            temperature=0,
-            max_tokens=400,
-        )
-    except KeyboardInterrupt:
-        raise
-    except APIStatusError as e:
-        ui.muted(f"(summarizer skipped: {_format_api_error(e)})")
-        return ""
-    except Exception as e:
-        ui.muted(f"(summarizer unavailable: {type(e).__name__})")
-        return ""
-    msg = response.choices[0].message
-    text = getattr(msg, "content", None)
-    if not text:
-        text = getattr(msg, "reasoning_content", None)
-    return text or ""
+    _sum_messages = [
+        {
+            "role": "system",
+            "content": (
+                "Summarize the following agent conversation. "
+                "Preserve: user intent, decisions made, files touched, "
+                "errors hit, and the current state of the task. "
+                "Be terse. No markdown."
+            ),
+        },
+        {"role": "user", "content": blob},
+    ]
+
+    for attempt_model, attempt_client in [(_sum_model, _sum_client), (_fallback_model, client)]:
+        try:
+            response = _retry(
+                "summarize",
+                attempt_client.chat.completions.create,
+                model=attempt_model,
+                messages=_sum_messages,
+                temperature=0,
+                max_tokens=4096,
+            )
+            text = (response.choices[0].message.content or "").strip()
+            if text:
+                return text
+        except KeyboardInterrupt:
+            raise
+        except APIStatusError as e:
+            ui.muted(f"(summarizer/{attempt_model} skipped: {_format_api_error(e)})")
+        except Exception as e:
+            ui.muted(f"(summarizer/{attempt_model} unavailable: {type(e).__name__})")
+        if attempt_model == _fallback_model:
+            break  # both attempts done
+    return ""

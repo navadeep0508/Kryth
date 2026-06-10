@@ -52,7 +52,7 @@ def _checkpoint(path: str) -> None:
         pass
 
 
-DEFAULT_READ_LIMIT = 2000
+DEFAULT_READ_LIMIT = 0  # 0 = no limit; use offset/limit args to paginate large files
 
 # Lazy import for the retrieval file reader — avoids circular imports
 # and keeps the module loadable even if the retrieval package is absent.
@@ -428,7 +428,7 @@ def read_file(path, offset=0, limit=None):
                         # but we don't load all lines into memory.
                         with open(path, "rb") as _f:
                             total = _f.read().count(b"\n")
-                        raw_lines = fr.read_lines(path, offset, limit or DEFAULT_READ_LIMIT)
+                        raw_lines = fr.read_lines(path, offset, limit if (limit and limit > 0) else None)
                         out = []
                         for i, line in enumerate(raw_lines, start=(offset or 0) + 1):
                             out.append(f"{i:6d}\t{line.rstrip(chr(10))}")
@@ -458,7 +458,10 @@ def read_file(path, offset=0, limit=None):
     if limit is None:
         limit = DEFAULT_READ_LIMIT
 
-    selected = lines[offset:offset + limit]
+    if limit and limit > 0:
+        selected = lines[offset:offset + limit]
+    else:
+        selected = lines[offset:]
 
     out = []
     for i, line in enumerate(selected, start=offset + 1):

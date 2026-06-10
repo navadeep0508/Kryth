@@ -332,6 +332,49 @@ def agent_update(name: str, status: str, task: str = "", progress: int = 0) -> N
     emit(EventKind.AGENT_UPDATE, name=name, status=status, task=task, progress=progress)
 
 
+def agent_created(agent_id: str, role: str, task_count: int = 0) -> None:
+    emit(EventKind.AGENT_CREATED, agent_id=agent_id, role=role, task_count=task_count)
+    agent_update(name=role, status="created", task=f"{task_count} task(s)")
+
+
+def agent_task_start(agent_id: str, task_id: str, description: str = "") -> None:
+    emit(EventKind.AGENT_TASK_START, agent_id=agent_id, task_id=task_id, description=description)
+    agent_update(name=agent_id, status="running", task=description[:60])
+
+
+def agent_task_done(agent_id: str, task_id: str, turns_used: int = 0) -> None:
+    emit(EventKind.AGENT_TASK_DONE, agent_id=agent_id, task_id=task_id, turns_used=turns_used)
+    agent_update(name=agent_id, status="done", progress=100)
+
+
+def agent_failed(agent_id: str, role: str, reason: str = "") -> None:
+    emit(EventKind.AGENT_FAILED, agent_id=agent_id, role=role, reason=reason)
+    agent_update(name=role, status="failed", task=reason[:60])
+
+
+def work_stolen(agent_id: str, task_id: str) -> None:
+    emit(EventKind.WORK_STOLEN, agent_id=agent_id, task_id=task_id)
+    muted(f"  ◈ {agent_id} stole task {task_id}")
+
+
+def queue_status(pending: int, running: int, done: int, failed: int) -> None:
+    emit(EventKind.QUEUE_STATUS, pending=pending, running=running, done=done, failed=failed)
+
+
+def stop_spinner() -> None:
+    """Stop the Rich Live spinner immediately.
+
+    MUST be called before any interactive input() call (approval prompts,
+    permission gates, etc.) — otherwise Rich owns the terminal cursor and
+    keystrokes are swallowed by the Live renderer instead of reaching input().
+    """
+    try:
+        from agent.ui.renderer import _activity
+        _activity.idle()
+    except Exception:
+        pass
+
+
 def timeline_event(message: str, kind: str = "info") -> None:
     """Append an event to the live activity timeline."""
     emit(EventKind.TIMELINE_EVENT, message=message, kind=kind)

@@ -30,7 +30,7 @@ from agent.terminal.memory import shell_memory
 from agent.terminal.coordinator import terminal_coordinator
 
 
-_MAX_OUTPUT = 8000   # chars sent to LLM (rest compressed)
+_MAX_OUTPUT = 100000  # chars sent to LLM
 
 
 def shell_exec(

@@ -306,7 +306,7 @@ def spawn_agents_parallel(tasks, max_concurrency: int = 3):
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kryth-sub") as ex:
         ctx = contextvars.copy_context()
         futures = [
-            ex.submit(ctx.copy().run, _run_one, idx, desc, prompt, mt, parent_depth, at)
+            ex.submit(ctx.copy().run, _run_one, idx, desc, prompt, mt, parent_depth, parent_can_spawn, at)
             for (idx, desc, prompt, mt, at) in plan
         ]
         for fut in as_completed(futures):

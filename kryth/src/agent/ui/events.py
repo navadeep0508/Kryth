@@ -106,6 +106,14 @@ class EventKind(str, Enum):
     # Agent dashboard (multi-agent mode)
     AGENT_UPDATE = "agent.update"         # data: name, status, task, progress (0-100)
 
+    # Agent lifecycle (dynamic OS)
+    AGENT_CREATED    = "agent.created"      # data: agent_id, role, task_count
+    AGENT_TASK_START = "agent.task.start"   # data: agent_id, task_id, description
+    AGENT_TASK_DONE  = "agent.task.done"    # data: agent_id, task_id, turns_used
+    AGENT_FAILED     = "agent.failed"       # data: agent_id, role, reason
+    WORK_STOLEN      = "work.stolen"        # data: agent_id, task_id
+    QUEUE_STATUS     = "queue.status"       # data: pending, running, done, failed
+
     # Timeline events
     TIMELINE_EVENT = "timeline.event"     # data: message, kind (info/success/warn/error)
 

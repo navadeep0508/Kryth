@@ -411,6 +411,15 @@ TOOL_SPECS = [
                         "type": "integer",
                         "description": "Tool turns before the subagent gives up. Default 8.",
                     },
+                    "agent_type": {
+                        "type": "string",
+                        "enum": ["general", "manager", "browser", "tool", "recovery", "qa"],
+                        "description": (
+                            "Specialized role for the subagent. 'manager' plans/coordinates, "
+                            "'browser' handles web automation, 'tool' handles file/shell/API ops, "
+                            "'recovery' diagnoses failures, 'qa' validates results. Default 'general'."
+                        ),
+                    },
                 },
                 "required": ["description", "prompt"],
             },
@@ -440,6 +449,10 @@ TOOL_SPECS = [
                                 "description": {"type": "string"},
                                 "prompt": {"type": "string"},
                                 "max_turns": {"type": "integer"},
+                                "agent_type": {
+                                    "type": "string",
+                                    "enum": ["general", "manager", "browser", "tool", "recovery", "qa"],
+                                },
                             },
                             "required": ["description", "prompt"],
                         },

@@ -79,13 +79,21 @@ _BOX_LINE_RE = re.compile(r"^[ \t]*[╭╮╰╯│├┤┬┴┼╔╗╚╝�
 # Raw tag lines that escaped the streaming parser — ghost-text them so they
 # are invisible rather than shown as `</think>` or `<display>...` raw text.
 _RAW_TAG_RE = re.compile(
-    r"^[ \t]*</?(?:think(?:ing)?|reasoning|analysis|reflect(?:ion)?|"
+    r"^[ \t]*(?:"
+    r"<\|[a-z_]+\|>"                              # <|python_tag|> and similar
+    r"|<tool\s+name="                             # <tool name="..." /> XML format
+    r"|</?seed:[a-z_]+"                           # <seed:think>, <seed:tool_call>, etc.
+    r"|</?(?:think(?:ing)?|reasoning|analysis|reflect(?:ion)?|"
     r"display|status|mission|timeline|spinner|todo|summary|memory|"
     r"experience|health|budget|risk|block|activity|exec_stream|"
     r"build_stream|test_stream|tool_result|file_read|file_write|"
-    r"file_edit|checkpoint|agent|team|decision|command)[>\s/]",
+    r"file_edit|checkpoint|agent|team|decision|command)[>\s/]"
+    r")",
     re.IGNORECASE,
 )
+
+# Inline occurrences of special tokens anywhere in a line — strip before render.
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[a-z_]+\|>", re.IGNORECASE)
 
 # Left-border glyph rendered before every thinking/plan line
 _BORDER = "│"
@@ -122,13 +130,33 @@ _TAG_SPECS: tuple[TagSpec, ...] = (
         close_tag="</think>",
         header="",
         glyph="",
-        ansi_color="",
-        show_live=False,
+        ansi_color=_ANSI_CYAN,
+        show_live=True,
     ),
     TagSpec(
         name="thinking_alt",
         open_tag="<thinking>",
         close_tag="</thinking>",
+        header="",
+        glyph="",
+        ansi_color=_ANSI_CYAN,
+        show_live=True,
+    ),
+    # seed:think — stockmark/step-series models use this namespace
+    TagSpec(
+        name="seed_think",
+        open_tag="<seed:think>",
+        close_tag="</seed:think>",
+        header="",
+        glyph="",
+        ansi_color=_ANSI_CYAN,
+        show_live=True,
+    ),
+    # seed:tool_call — silent, same as tool_call
+    TagSpec(
+        name="seed_tool_call",
+        open_tag="<seed:tool_call>",
+        close_tag="</seed:tool_call>",
         header="",
         glyph="",
         ansi_color="",
@@ -153,6 +181,16 @@ _TAG_SPECS: tuple[TagSpec, ...] = (
         show_live=True,
     ),
     # Silent tags — suppressed, never shown to the user
+    # <CONTENT> is the mandatory reasoning/content boundary marker — consumed silently.
+    TagSpec(
+        name="content_boundary",
+        open_tag="<CONTENT>",
+        close_tag="</CONTENT>",
+        header="",
+        glyph="",
+        ansi_color="",
+        show_live=False,
+    ),
     TagSpec(
         name="tool_call",
         open_tag="<tool_call>",
@@ -183,10 +221,10 @@ _TAG_SPECS: tuple[TagSpec, ...] = (
     # ── Universal provider reasoning tags ──────────────────────────────
     # DeepSeek, GLM, Grok, Llama, Ollama, OpenRouter models — all silent.
     # The waiting spinner already communicates "thinking" to the user.
-    TagSpec(name="reasoning", open_tag="<reasoning>", close_tag="</reasoning>", header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="reasoning", open_tag="<reasoning>", close_tag="</reasoning>", header="", glyph="", ansi_color=_ANSI_CYAN, show_live=True),
     # Generic analysis / reflection tags used by some fine-tunes
-    TagSpec(name="analysis",  open_tag="<analysis>",  close_tag="</analysis>",  header="", glyph="", ansi_color="", show_live=False),
-    TagSpec(name="reflect",   open_tag="<reflect>",   close_tag="</reflect>",   header="", glyph="", ansi_color="", show_live=False),
+    TagSpec(name="analysis",  open_tag="<analysis>",  close_tag="</analysis>",  header="", glyph="", ansi_color=_ANSI_CYAN, show_live=True),
+    TagSpec(name="reflect",   open_tag="<reflect>",   close_tag="</reflect>",   header="", glyph="", ansi_color=_ANSI_CYAN, show_live=True),
     # ── Silent XML tool payload tags ───────────────────────────────────
     # Anthropic / XML-format tool calling internals
     TagSpec(
@@ -1139,6 +1177,11 @@ class StreamPrinter:
     def _ingest(self, piece: str) -> None:
         if not piece:
             return
+        # Strip Llama/Meta special tokens inline so they never reach the terminal.
+        if "<|" in piece:
+            piece = _SPECIAL_TOKEN_RE.sub("", piece)
+            if not piece:
+                return
         threshold = _flush_threshold()
 
         # Pre-flush: if the buffer holds non-ghost content and the incoming

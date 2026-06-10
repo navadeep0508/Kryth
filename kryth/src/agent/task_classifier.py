@@ -51,10 +51,13 @@ _BUILD_VERBS = re.compile(
 
 # Multi-component indicators → complex, has_independent_subtasks=True
 _MULTI_COMPONENT = re.compile(
-    r"\b(frontend|backend|database|auth|authentication|payment|stripe|"
-    r"fullstack|full.?stack|saas|platform|microservice|api\s+and|"
-    r"ci[/ ]?cd|devops|docker|kubernetes|k8s|monitoring|dashboard\s+and|"
-    r"and\s+(?:a\s+)?(?:frontend|backend|database|api|cli|ui|auth|payment|deploy))\b",
+    r"\b(frontend|backend|database|db|schema|auth|authentication|authorization|"
+    r"payment|stripe|billing|checkout|fullstack|full.?stack|saas|platform|"
+    r"microservice|api\s+and|rest\s+api|graphql|ci[/ ]?cd|devops|docker|"
+    r"kubernetes|k8s|monitoring|dashboard|landing.?page|admin.?panel|"
+    r"management\s+(?:system|platform|app)|event\s+(?:hub|platform|app|system)|"
+    r"and\s+(?:a\s+)?(?:frontend|backend|database|api|cli|ui|auth|payment|deploy|"
+    r"dashboard|admin|landing|checkout|billing))\b",
     re.I,
 )
 
@@ -272,8 +275,19 @@ def classify_task(user_input: str) -> TaskProfile:
 
     category, pipeline_type = _detect_category(text)
 
-    # Web automation is ALWAYS sequential — never parallelize
-    if category == "web_automation":
+    words = text.split()
+    score = _score(text)
+
+    # A build prompt that mentions "login", "auth", "sign in" etc. scores high
+    # because of multi-component keywords — don't let web_automation short-circuit
+    # before the score check. Only treat as pure web_automation when there is NO
+    # multi-component build signal (score < 6 and no build verb).
+    is_web_automation = category == "web_automation"
+    is_complex_build = score >= 6 or (
+        _BUILD_VERBS.search(text) and _MULTI_COMPONENT.search(text)
+    )
+
+    if is_web_automation and not is_complex_build:
         return TaskProfile(
             complexity="medium",
             category="web_automation",
@@ -282,8 +296,13 @@ def classify_task(user_input: str) -> TaskProfile:
             reason="web automation detected — sequential pipeline",
         )
 
+    # When both web_automation and complex build signals are present, treat as
+    # a coding task (the build intent dominates).
+    if is_web_automation and is_complex_build:
+        category = "coding"
+        pipeline_type = "coding"
+
     # Simple-starter words with no build verb → simple
-    words = text.split()
     if _SIMPLE_STARTERS.match(text) and not _BUILD_VERBS.search(text):
         return TaskProfile(
             complexity="simple",
@@ -302,8 +321,6 @@ def classify_task(user_input: str) -> TaskProfile:
             pipeline_type=None,
             reason="short input, no build verb",
         )
-
-    score = _score(text)
 
     # Clear simple
     if score <= 3:

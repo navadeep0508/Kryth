@@ -13,12 +13,12 @@ import re
 from typing import Optional
 
 # Hard limits
-MAX_HTML_CHARS    = 8000    # max raw HTML/page text kept in a tool result
-MAX_RESULT_CHARS  = 4000    # max any single tool result before compression
-LARGE_THRESHOLD   = 2000    # compress results above this
-MAX_SEARCHES      = 30      # max browser_search calls per session
-MAX_OPEN_PAGES    = 40      # max open_url calls per session
-COMPRESS_EVERY_N  = 8       # auto-compress after this many tool calls
+MAX_HTML_CHARS    = 100000  # max raw HTML/page text kept in a tool result
+MAX_RESULT_CHARS  = 100000  # max any single tool result before compression
+LARGE_THRESHOLD   = 50000   # compress results above this
+MAX_SEARCHES      = 10000   # max browser_search calls per session
+MAX_OPEN_PAGES    = 5000    # max open_url calls per session
+COMPRESS_EVERY_N  = 40      # auto-compress after this many tool calls
 
 # Tool result types that contain large volatile content
 _BROWSER_TOOLS = {

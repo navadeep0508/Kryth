@@ -102,6 +102,7 @@ def _llm_route(user_input: str) -> List[str]:
             ],
             temperature=0,
             max_tokens=200,
+            timeout=8,  # never block the UI for more than 8s
         )
         text = (response.choices[0].message.content or "").strip()
         # Extract JSON array

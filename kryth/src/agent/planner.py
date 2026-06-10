@@ -103,7 +103,7 @@ def plan(user_input: str, project_context: str = "") -> dict | None:
                 {"role": "user", "content": payload},
             ],
             temperature=0,
-            max_tokens=2000,
+            max_tokens=16384,
         )
     except Exception as e:
         logger.warning("Planner unavailable: %s", e)

@@ -15,13 +15,57 @@ function over hints — no I/O, no globals — so it stays testable.
 Opt-in: ``ask_llm_stream`` consults this router only when
 ``KRYTH_AUTO_ROUTE`` is truthy. The default is "use MAIN_MODEL", so
 behaviour is unchanged for users who don't opt in.
+
+Task-role routing (always active):
+  KRYTH_MODEL_PLANNING  → used for DAG gen, intent, team gen, routing
+  KRYTH_MODEL_CODING    → used for agent main loops (write/edit files)
+  KRYTH_MODEL_REASONING → used for debugging, architecture decisions
+  KRYTH_MODEL_VISION    → used for browser screenshot analysis
+  KRYTH_MODEL_SUMMARY   → used for context compression
+  All fall back to MAIN_MODEL / PLANNER_MODEL if unset.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from agent.env import getenv, getenv_bool, getenv_int
+
+
+# ---------------------------------------------------------------------------
+# Task-role model routing
+# ---------------------------------------------------------------------------
+
+class TaskRole(Enum):
+    """Role of an LLM call — used to pick the best model for the job."""
+    PLANNING  = "planning"    # classify, plan, route, generate DAG/team
+    CODING    = "coding"      # write/edit source files
+    REASONING = "reasoning"   # debug, architecture, security decisions
+    VISION    = "vision"      # browser screenshots, OCR, image analysis
+    SUMMARY   = "summary"     # compress context, summarize transcripts
+    SEARCH    = "search"      # interpret search results, rank files
+
+
+def pick_model_for_role(role: TaskRole) -> str:
+    """Return the configured model for a task role.
+
+    Reads ``KRYTH_MODEL_{ROLE}`` env vars. Falls back to PLANNER_MODEL
+    for PLANNING/SEARCH/SUMMARY, MAIN_MODEL for everything else.
+    """
+    main_model, planner_model, summarizer_model = _configured_models()
+    env_key = f"KRYTH_MODEL_{role.value.upper()}"
+    override = getenv(env_key, "").strip()
+    if override:
+        return override
+
+    # Sensible defaults when env vars aren't set
+    if role in (TaskRole.PLANNING, TaskRole.SEARCH):
+        return planner_model
+    if role == TaskRole.SUMMARY:
+        return summarizer_model
+    # CODING, REASONING, VISION → main model (most capable by default)
+    return main_model
 
 
 # Below this payload size the main loop's job is mechanically simple

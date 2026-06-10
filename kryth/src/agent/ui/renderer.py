@@ -178,7 +178,16 @@ def _on_auto_skills(e: Event) -> None:
 
 def _on_llm_waiting(e: Event) -> None:
     global _activity_idx
-    msg = _ACTIVITY_MSGS[_activity_idx % len(_ACTIVITY_MSGS)]
+    # Suppress spinner while Mission Control's Live display is active.
+    # Use sys.modules to avoid circular import (renderer ← mission_control ← renderer).
+    try:
+        import sys
+        mc_mod = sys.modules.get("agent.ui.mission_control")
+        if mc_mod is not None and mc_mod.get_active_mc() is not None:
+            return
+    except Exception:
+        pass
+    msg = e.data.get("message") or _ACTIVITY_MSGS[_activity_idx % len(_ACTIVITY_MSGS)]
     _activity_idx += 1
     _activity.waiting(f"◈ {msg}…")
 
@@ -759,6 +768,13 @@ _HANDLERS: dict[EventKind, Callable[[Event], None]] = {
     EventKind.MISSION_COMPLETE:      _on_mission_complete,
     EventKind.MISSION_FAILED:        _on_mission_failed,
     EventKind.AGENT_UPDATE:          _on_agent_update,
+    # Agent lifecycle events — route through existing agent_update handler
+    EventKind.AGENT_CREATED:         _on_agent_update,
+    EventKind.AGENT_TASK_START:      _on_agent_update,
+    EventKind.AGENT_TASK_DONE:       _on_agent_update,
+    EventKind.AGENT_FAILED:          _on_agent_update,
+    EventKind.WORK_STOLEN:           _on_agent_update,
+    EventKind.QUEUE_STATUS:          _on_agent_update,
     EventKind.TIMELINE_EVENT:        _on_timeline_event,
     EventKind.ENGINEERING_ACTION:    _on_engineering_action,
     EventKind.ENGINEERING_SECTION:   _on_engineering_section,

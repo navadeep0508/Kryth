@@ -110,14 +110,25 @@ def render_plan(
     console.print(cols)
     console.print()
 
-    # Task graph
+    # Execution graph — show AGENT layers (actual execution order), not DAG node layers.
+    # Agent layers reflect inter-agent dependencies and correctly show what runs in parallel.
     console.print("[bold]Execution Graph:[/]")
-    layers = dag.layers()
-    for i, layer in enumerate(layers, 1):
-        names = "  ‖  ".join(n.name for n in layer)
-        prefix = f"  Layer {i}: " if len(layers) > 1 else "  "
-        parallel_hint = " [dim](parallel)[/]" if len(layer) > 1 else ""
-        console.print(f"{prefix}[cyan]{names}[/]{parallel_hint}")
+    try:
+        from agent.orchestration.scheduler import _agent_execution_layers
+        agent_layers = _agent_execution_layers(team.agents)
+        for i, layer in enumerate(agent_layers, 1):
+            names = "  ‖  ".join(a.role for a in layer)
+            prefix = f"  Layer {i}: " if len(agent_layers) > 1 else "  "
+            parallel_hint = " [dim](parallel)[/]" if len(layer) > 1 else ""
+            console.print(f"{prefix}[cyan]{names}[/]{parallel_hint}")
+    except Exception:
+        # Fallback to DAG node layers
+        layers = dag.layers()
+        for i, layer in enumerate(layers, 1):
+            names = "  ‖  ".join(n.name for n in layer)
+            prefix = f"  Layer {i}: " if len(layers) > 1 else "  "
+            parallel_hint = " [dim](parallel)[/]" if len(layer) > 1 else ""
+            console.print(f"{prefix}[cyan]{names}[/]{parallel_hint}")
     console.print()
 
 
@@ -183,6 +194,15 @@ def request_approval(
         console = ui.get_console()
     except Exception:
         console = Console()
+
+    # Stop the spinner BEFORE rendering and calling input().
+    # Rich's Live display owns the terminal cursor while active — any input()
+    # called while it's running gets swallowed and the prompt appears frozen.
+    try:
+        from agent.ui import stop_spinner
+        stop_spinner()
+    except Exception:
+        pass
 
     render_plan(dag, team, analysis, console)
 
