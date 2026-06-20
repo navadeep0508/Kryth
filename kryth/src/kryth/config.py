@@ -117,6 +117,14 @@ def apply_to_env(cfg: dict[str, str] | None = None) -> None:
         value = cfg.get(key, "").strip()
         if value and not os.environ.get(env_var, "").strip():
             os.environ[env_var] = value
+    # The fallback LLM client (llm.py) reads OPENAI_API_KEY and KRYTH_BASE_URL.
+    # Alias them from the NVIDIA key so both the nim_router and fallback paths work.
+    nvidia_key = os.environ.get("NVIDIA_API_KEY", "").strip()
+    if nvidia_key:
+        if not os.environ.get("OPENAI_API_KEY", "").strip():
+            os.environ["OPENAI_API_KEY"] = nvidia_key
+        if not os.environ.get("KRYTH_BASE_URL", "").strip():
+            os.environ["KRYTH_BASE_URL"] = "https://integrate.api.nvidia.com/v1"
     # Propagate legacy aliases so old code paths still work
     for new_var, old_var in LEGACY_ENV.items():
         val = os.environ.get(new_var, "")
