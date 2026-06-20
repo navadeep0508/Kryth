@@ -1,135 +1,135 @@
 import React, { memo } from "react";
-import {
-  PanelLeft, PanelRight, Settings, ChevronDown,
-  Cpu, GitBranch, FolderOpen, Search,
-} from "lucide-react";
+import { PanelLeft, PanelRight, Settings, ChevronDown, Search, Loader2 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/store/uiStore";
 import { useChatStore } from "@/store/chatStore";
+import { useProjectStore } from "@/store/projectStore";
 import { bridge } from "@/lib/krythBridge";
-
-const STATUS_DOT: Record<string, string> = {
-  connected:    "bg-success",
-  disconnected: "bg-error",
-  connecting:   "bg-warning animate-pulse-soft",
-};
 
 export const TopBar = memo(function TopBar() {
   const { toggleSidebar, toggleInspector, openPalette, connStatus } = useUIStore();
-  const status = useChatStore((s) => s.status);
-  const cwd    = useChatStore((s) => s.cwd);
+  const status     = useChatStore((s) => s.status);
+  const cwd        = useChatStore((s) => s.cwd);
+  const { setCwd, setRoots } = useProjectStore();
 
   const projectName = cwd
     ? cwd.replace(/\\/g, "/").split("/").pop() ?? "KRYTH"
-    : "KRYTH";
+    : "Open folder…";
+
+  const openFolder = async () => {
+    try {
+      const path = await invoke<string | null>("open_folder_dialog");
+      if (path) {
+        const entries = await bridge.listFiles(path);
+        setCwd(path);
+        setRoots(entries);
+      }
+    } catch {/* Tauri not available in dev */ }
+  };
 
   return (
-    <header
-      className={cn(
-        "drag-region h-11 flex items-center gap-2 px-3",
-        "border-b border-border bg-surface",
-        "shrink-0 z-40"
-      )}
-    >
-      {/* Spacer for window controls on macOS */}
-      <div className="w-[72px] shrink-0 hidden mac:block" />
+    <header className="drag-region h-10 flex items-center gap-1 px-2 shrink-0 border-b border-[rgba(255,255,255,0.05)] bg-chrome">
+      {/* macOS window controls spacer */}
+      <div className="w-[70px] shrink-0 hidden mac:block" />
 
       {/* Sidebar toggle */}
       <button
         onClick={toggleSidebar}
-        className="no-drag p-1.5 rounded-md text-muted hover:text-text hover:bg-surface2 transition-colors duration-120"
+        className="no-drag p-1.5 rounded-md text-subtle hover:text-text transition-colors duration-100"
         title="Toggle sidebar"
       >
-        <PanelLeft size={15} />
+        <PanelLeft size={14} />
       </button>
 
-      {/* Project name */}
+      {/* KRYTH wordmark */}
+      <span className="no-drag text-xs font-semibold tracking-widest text-subtle select-none px-1">
+        KRYTH
+      </span>
+
+      <div className="no-drag h-3.5 w-px bg-[rgba(255,255,255,0.06)] mx-0.5" />
+
+      {/* Project folder picker */}
       <button
-        className="no-drag flex items-center gap-1.5 px-2.5 h-7 rounded-lg bg-surface2 border border-border hover:border-accent/40 transition-colors duration-120"
-        title={cwd || "No project open"}
+        onClick={openFolder}
+        className="no-drag flex items-center gap-1.5 px-2 h-6 rounded-md text-muted hover:text-text hover:bg-surface3 transition-colors duration-100"
+        title={cwd || "Open project folder"}
       >
-        <FolderOpen size={12} className="text-accent" />
-        <span className="text-sm font-medium text-text truncate max-w-[140px]">
-          {projectName}
-        </span>
-        <ChevronDown size={11} className="text-muted" />
+        <span className="text-xs truncate max-w-[140px]">{projectName}</span>
+        <ChevronDown size={10} className="opacity-50" />
       </button>
-
-      {/* Branch pill */}
-      <div className="no-drag flex items-center gap-1 px-2 h-7 rounded-lg bg-surface2 border border-border">
-        <GitBranch size={12} className="text-muted" />
-        <span className="text-xs text-muted">main</span>
-      </div>
 
       <div className="flex-1" />
 
-      {/* Search / command palette */}
-      <button
-        onClick={openPalette}
-        className="no-drag flex items-center gap-2 px-3 h-7 rounded-lg bg-surface2 border border-border hover:border-accent/40 transition-colors duration-120 text-muted hover:text-text"
-        title="Command Palette (Ctrl+K)"
-      >
-        <Search size={12} />
-        <span className="text-xs">Search…</span>
-        <kbd className="ml-1 text-[10px] px-1 py-0.5 rounded bg-bg border border-border font-mono">
-          ⌃K
-        </kbd>
-      </button>
-
-      {/* Model pill */}
-      <ModelPill />
-
-      {/* Agent running indicator */}
+      {/* Running indicator */}
       {status !== "idle" && (
-        <div className="no-drag flex items-center gap-1.5 px-2.5 h-7 rounded-lg bg-accent/10 border border-accent/20">
-          <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse-soft" />
-          <span className="text-xs text-accent font-medium">
-            {status === "thinking" ? "Thinking…" : "Running…"}
+        <div className="no-drag flex items-center gap-1.5 px-2 h-6">
+          <Loader2 size={11} className="animate-spin-slow text-accent" />
+          <span className="text-xs text-accent">
+            {status === "thinking" ? "Thinking" : "Running"}
           </span>
         </div>
       )}
 
-      {/* Connection dot */}
+      {/* Search / palette */}
+      <button
+        onClick={openPalette}
+        className="no-drag flex items-center gap-1.5 px-2.5 h-6 rounded-md text-subtle hover:text-text hover:bg-surface3 transition-colors duration-100 border border-[rgba(255,255,255,0.06)]"
+        title="Command palette (Ctrl+K)"
+      >
+        <Search size={11} />
+        <span className="text-xs text-subtle">Search</span>
+        <kbd className="ml-0.5 text-[9px] px-1 py-0.5 rounded bg-[rgba(255,255,255,0.04)] font-mono text-subtle">⌃K</kbd>
+      </button>
+
+      {/* Model */}
+      <ModelChip />
+
+      {/* Connection indicator */}
       <div
-        className={cn("w-2 h-2 rounded-full", STATUS_DOT[connStatus] ?? "bg-muted")}
+        className={cn(
+          "w-1.5 h-1.5 rounded-full",
+          connStatus === "connected"    && "bg-success",
+          connStatus === "disconnected" && "bg-error",
+          connStatus === "connecting"   && "bg-warning animate-pulse-soft",
+        )}
         title={connStatus}
       />
 
       {/* Inspector toggle */}
       <button
         onClick={toggleInspector}
-        className="no-drag p-1.5 rounded-md text-muted hover:text-text hover:bg-surface2 transition-colors duration-120"
+        className="no-drag p-1.5 rounded-md text-subtle hover:text-text transition-colors duration-100"
         title="Toggle inspector"
       >
-        <PanelRight size={15} />
+        <PanelRight size={14} />
       </button>
 
       {/* Settings */}
-      <a
-        href="/settings"
-        className="no-drag p-1.5 rounded-md text-muted hover:text-text hover:bg-surface2 transition-colors duration-120"
+      <button
+        onClick={() => useUIStore.getState().setWorkspaceTab("settings")}
+        className="no-drag p-1.5 rounded-md text-subtle hover:text-text transition-colors duration-100"
         title="Settings"
       >
-        <Settings size={15} />
-      </a>
+        <Settings size={14} />
+      </button>
     </header>
   );
 });
 
-const ModelPill = memo(function ModelPill() {
+const ModelChip = memo(function ModelChip() {
   const [model, setModel] = React.useState("…");
 
   React.useEffect(() => {
     bridge.getConfig().then((cfg) => {
       const m = cfg["KRYTH_MAIN_MODEL"];
-      if (m) setModel(m.split("/").pop()?.slice(0, 20) ?? m);
+      if (m) setModel(m.split("/").pop()?.slice(0, 18) ?? m);
     }).catch(() => {});
   }, []);
 
   return (
-    <div className="no-drag flex items-center gap-1 px-2 h-7 rounded-lg bg-surface2 border border-border">
-      <Cpu size={11} className="text-muted" />
-      <span className="text-xs text-muted truncate max-w-[100px]">{model}</span>
+    <div className="no-drag flex items-center gap-1 px-2 h-6 rounded-md border border-[rgba(255,255,255,0.06)] text-subtle">
+      <span className="text-xs truncate max-w-[100px]">{model}</span>
     </div>
   );
 });

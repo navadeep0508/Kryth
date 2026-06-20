@@ -1,12 +1,12 @@
 import React, { useRef, useEffect, useCallback, memo } from "react";
 import { VariableSizeList as List } from "react-window";
-import { Bot, User } from "lucide-react";
+import { Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatStore, type Message } from "@/store/chatStore";
 import { StreamingMessage } from "./StreamingMessage";
 import { ToolActionBubble } from "./ToolActionBubble";
 
-const ESTIMATED_ROW_HEIGHT = 80;
+const ESTIMATED_ROW_HEIGHT = 72;
 
 export const MessageList = memo(function MessageList() {
   const messages = useChatStore((s) => s.messages);
@@ -22,7 +22,6 @@ export const MessageList = memo(function MessageList() {
     listRef.current?.resetAfterIndex(index, false);
   }, []);
 
-  // Auto-scroll to bottom when new messages arrive, unless user has scrolled up
   useEffect(() => {
     if (!userScrolled.current && messages.length > 0) {
       listRef.current?.scrollToItem(messages.length - 1, "end");
@@ -78,7 +77,7 @@ const MessageRow = memo(function MessageRow({
 
   useEffect(() => {
     if (!rowRef.current) return;
-    const ro = new ResizeObserver(([entry]) => onHeight(entry.contentRect.height + 16));
+    const ro = new ResizeObserver(([entry]) => onHeight(entry.contentRect.height + 12));
     ro.observe(rowRef.current);
     return () => ro.disconnect();
   }, [onHeight]);
@@ -86,50 +85,32 @@ const MessageRow = memo(function MessageRow({
   const isUser = message.role === "user";
 
   return (
-    <div style={style} className="px-4 pt-4">
-      <div ref={rowRef} className={cn("flex gap-3", isUser && "flex-row-reverse")}>
-        {/* Avatar */}
-        <div
-          className={cn(
-            "w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5",
-            isUser ? "bg-accent text-bg" : "bg-surface2 text-muted border border-border"
-          )}
-        >
-          {isUser ? <User size={13} /> : <Bot size={13} />}
-        </div>
-
-        {/* Content */}
-        <div className={cn("flex flex-col gap-1.5 max-w-[85%]", isUser && "items-end")}>
-          {/* Tool actions — shown above assistant message content */}
-          {!isUser && message.toolActions && message.toolActions.length > 0 && (
-            <div className="flex flex-col gap-1 w-full">
-              {message.toolActions.map((a) => (
-                <ToolActionBubble key={a.id} action={a} />
-              ))}
+    <div style={style} className="px-6 pt-3">
+      <div ref={rowRef}>
+        {isUser ? (
+          /* User message — right-aligned, subtle pill */
+          <div className="flex justify-end">
+            <div className="max-w-[75%] px-3.5 py-2.5 rounded-xl bg-surface2 border border-[rgba(255,255,255,0.06)]">
+              <p className="text-sm text-text whitespace-pre-wrap leading-relaxed">{message.content}</p>
             </div>
-          )}
-
-          {/* Bubble */}
-          {message.content && (
-            <div
-              className={cn(
-                "rounded-2xl px-3.5 py-2.5",
-                isUser
-                  ? "bg-accent/10 border border-accent/20 text-text"
-                  : "bg-surface border border-border text-text"
-              )}
-            >
-              {isUser ? (
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-              ) : (
-                <StreamingMessage
-                  content={message.content}
-                  isStreaming={message.isStreaming}
-                />
-              )}
-            </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          /* Assistant message — left-aligned, no bubble */
+          <div className="flex flex-col gap-1.5 max-w-[90%]">
+            {/* Tool actions */}
+            {message.toolActions && message.toolActions.length > 0 && (
+              <div className="flex flex-col gap-1 mb-1">
+                {message.toolActions.map((a) => (
+                  <ToolActionBubble key={a.id} action={a} />
+                ))}
+              </div>
+            )}
+            {/* Content */}
+            {message.content && (
+              <StreamingMessage content={message.content} isStreaming={message.isStreaming} />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -137,40 +118,35 @@ const MessageRow = memo(function MessageRow({
 
 function EmptyState() {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
-      <div className="w-12 h-12 rounded-2xl bg-accent/10 border border-accent/20 flex items-center justify-center">
-        <Bot size={22} className="text-accent" />
+    <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
+      <div className="w-10 h-10 rounded-xl bg-surface2 border border-[rgba(255,255,255,0.06)] flex items-center justify-center">
+        <Zap size={18} className="text-accent" />
       </div>
       <div>
-        <h2 className="text-base font-semibold text-text mb-1">Ready</h2>
-        <p className="text-sm text-muted max-w-xs">
-          Ask KRYTH to build, debug, refactor, or explain your code.
+        <h2 className="text-sm font-semibold text-text mb-1">KRYTH</h2>
+        <p className="text-xs text-subtle max-w-xs leading-relaxed">
+          Build, debug, refactor, or explain — just ask.
         </p>
       </div>
     </div>
   );
 }
 
-// Minimal AutoSizer using ResizeObserver
-function AutoSizer({
-  children,
-}: {
-  children: (size: { width: number; height: number }) => React.ReactNode;
-}) {
+function AutoSizer({ children }: { children: (size: { width: number; height: number }) => React.ReactNode }) {
   const [size, setSize] = React.useState({ width: 0, height: 0 });
-  const containerRef = React.useRef<HTMLDivElement>(null);
+  const ref = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
-    if (!containerRef.current) return;
-    const ro = new ResizeObserver(([entry]) => {
-      setSize({ width: entry.contentRect.width, height: entry.contentRect.height });
-    });
-    ro.observe(containerRef.current);
+    if (!ref.current) return;
+    const ro = new ResizeObserver(([entry]) =>
+      setSize({ width: entry.contentRect.width, height: entry.contentRect.height })
+    );
+    ro.observe(ref.current);
     return () => ro.disconnect();
   }, []);
 
   return (
-    <div ref={containerRef} className="w-full h-full">
+    <div ref={ref} className="w-full h-full">
       {size.width > 0 && children(size)}
     </div>
   );

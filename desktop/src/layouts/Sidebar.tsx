@@ -12,57 +12,48 @@ import { bridge, request } from "@/lib/krythBridge";
 
 const FileExplorer = lazy(() => import("@/features/explorer/FileExplorer"));
 
-// ── Activity bar items ────────────────────────────────────────────────────────
+// ── Activity definitions ──────────────────────────────────────────────────────
 
-interface ActivityItem {
-  id: SideActivity;
-  icon: React.ReactNode;
-  label: string;
-}
-
-const ACTIVITIES: ActivityItem[] = [
-  { id: "chat",     icon: <MessageSquare size={18} />, label: "Chats" },
-  { id: "explorer", icon: <FolderOpen size={18} />,    label: "Explorer" },
-  { id: "search",   icon: <Search size={18} />,        label: "Search" },
+const ACTIVITIES: { id: SideActivity; icon: React.ReactNode; label: string }[] = [
+  { id: "chat",     icon: <MessageSquare size={16} />, label: "Chats" },
+  { id: "explorer", icon: <FolderOpen size={16} />,    label: "Explorer" },
+  { id: "search",   icon: <Search size={16} />,        label: "Search" },
 ];
 
-// ── Root component ────────────────────────────────────────────────────────────
+// ── Root ──────────────────────────────────────────────────────────────────────
 
 export const Sidebar = memo(function Sidebar() {
   const { sideActivity, toggleSideActivity, openDrawer } = useUIStore();
 
   return (
     <div className="flex h-full shrink-0">
-      {/* Activity bar — always 48px */}
-      <div className="w-12 flex flex-col items-center py-2 gap-0.5 border-r border-border bg-surface shrink-0">
+      {/* Activity bar — always 44px */}
+      <div className="w-11 flex flex-col items-center py-1.5 gap-0.5 border-r border-[rgba(255,255,255,0.05)] bg-surface shrink-0">
         {ACTIVITIES.map((a) => (
           <ActivityBtn
             key={a.id}
-            item={a}
+            label={a.label}
             active={sideActivity === a.id}
             onClick={() => toggleSideActivity(a.id)}
-          />
+          >
+            {a.icon}
+          </ActivityBtn>
         ))}
 
         <div className="flex-1" />
 
-        {/* Terminal shortcut */}
-        <ActivityBtn
-          item={{ id: "chat", icon: <Terminal size={18} />, label: "Terminal" }}
-          active={false}
-          onClick={() => openDrawer("terminal")}
-        />
-        <ActivityBtn
-          item={{ id: "chat", icon: <FileText size={18} />, label: "Logs" }}
-          active={false}
-          onClick={() => openDrawer("logs")}
-        />
+        <ActivityBtn label="Terminal" active={false} onClick={() => openDrawer("terminal")}>
+          <Terminal size={16} />
+        </ActivityBtn>
+        <ActivityBtn label="Logs" active={false} onClick={() => openDrawer("logs")}>
+          <FileText size={16} />
+        </ActivityBtn>
       </div>
 
       {/* Side panel — 220px collapsible */}
       <div
         className={cn(
-          "flex flex-col border-r border-border bg-surface overflow-hidden",
+          "flex flex-col border-r border-[rgba(255,255,255,0.05)] bg-surface overflow-hidden",
           "transition-[width] duration-150 ease-out",
           sideActivity ? "w-[220px]" : "w-0"
         )}
@@ -80,43 +71,44 @@ export const Sidebar = memo(function Sidebar() {
 // ── Activity button ───────────────────────────────────────────────────────────
 
 const ActivityBtn = memo(function ActivityBtn({
-  item, active, onClick,
+  children, label, active, onClick,
 }: {
-  item: { id: string; icon: React.ReactNode; label: string };
-  active: boolean;
-  onClick: () => void;
+  children: React.ReactNode; label: string; active: boolean; onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      title={item.label}
+      title={label}
       className={cn(
-        "relative w-10 h-10 flex items-center justify-center rounded-lg",
-        "transition-colors duration-120",
-        active
-          ? "bg-accent/15 text-text"
-          : "text-muted hover:text-text hover:bg-surface2"
+        "relative w-9 h-9 flex items-center justify-center rounded-lg transition-colors duration-100",
+        active ? "text-text bg-[rgba(255,255,255,0.06)]" : "text-subtle hover:text-muted hover:bg-[rgba(255,255,255,0.04)]"
       )}
     >
       {active && (
-        <span className="absolute left-0 top-2 bottom-2 w-0.5 -ml-1 rounded-full bg-accent" />
+        <span className="absolute left-0 top-2.5 bottom-2.5 w-0.5 -ml-1 rounded-r-full bg-accent" />
       )}
-      {item.icon}
+      {children}
     </button>
   );
 });
 
-// ── Side panel sections ───────────────────────────────────────────────────────
+// ── Panel header ─────────────────────────────────────────────────────────────
 
-interface RecentSession {
-  id: string;
-  project_path: string;
-  updated_at: string;
+function PanelHeader({ label }: { label: string }) {
+  return (
+    <div className="h-8 flex items-center px-3 shrink-0">
+      <span className="text-[10px] font-semibold text-subtle uppercase tracking-widest">{label}</span>
+    </div>
+  );
 }
 
+// ── Chat panel ────────────────────────────────────────────────────────────────
+
+interface RecentSession { id: string; project_path: string; updated_at: string; }
+
 function ChatPanel() {
-  const clearMessages = useChatStore((s) => s.clearMessages);
-  const { setWorkspaceTab } = useUIStore();
+  const clearMessages   = useChatStore((s) => s.clearMessages);
+  const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
   const [sessions, setSessions] = React.useState<RecentSession[]>([]);
 
   React.useEffect(() => {
@@ -128,23 +120,23 @@ function ChatPanel() {
   return (
     <>
       <PanelHeader label="Chats" />
-      <div className="px-2 pb-2">
+      <div className="px-2 pb-1">
         <button
-          onClick={() => {
-            clearMessages();
-            setWorkspaceTab("chat");
-          }}
-          className="w-full flex items-center gap-2 px-2.5 h-8 rounded-lg border border-dashed border-border hover:border-accent/40 hover:bg-surface2 transition-all duration-120 text-xs text-muted hover:text-text"
+          onClick={() => { clearMessages(); setWorkspaceTab("chat"); }}
+          className="w-full flex items-center gap-2 px-2 h-7 rounded-md border border-dashed border-[rgba(255,255,255,0.08)] hover:border-[rgba(255,255,255,0.14)] hover:bg-[rgba(255,255,255,0.03)] transition-all duration-100 text-xs text-subtle hover:text-muted"
         >
-          <Plus size={12} />
+          <Plus size={11} />
           New chat
         </button>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
+      <nav className="flex-1 overflow-y-auto px-2 pb-2 space-y-px">
         {sessions.length > 0 && (
           <>
-            <SectionLabel icon={<Clock size={10} />} label="Recent" />
+            <div className="flex items-center gap-1.5 px-2 py-1 mt-1">
+              <Clock size={9} className="text-subtle" />
+              <span className="text-[9px] font-medium text-subtle uppercase tracking-widest">Recent</span>
+            </div>
             {sessions.map((s) => <SessionRow key={s.id} session={s} />)}
           </>
         )}
@@ -153,41 +145,64 @@ function ChatPanel() {
   );
 }
 
+function SessionRow({ session }: { session: RecentSession }) {
+  const name = session.project_path
+    ? session.project_path.replace(/\\/g, "/").split("/").pop() ?? "Chat"
+    : "Chat";
+
+  const rel = React.useMemo(() => {
+    const diff = Date.now() - new Date(session.updated_at).getTime();
+    if (diff < 60_000)     return "now";
+    if (diff < 3_600_000)  return `${Math.floor(diff / 60_000)}m`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+    return `${Math.floor(diff / 86_400_000)}d`;
+  }, [session.updated_at]);
+
+  return (
+    <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-100 group text-left">
+      <MessageSquare size={11} className="text-subtle shrink-0" />
+      <span className="flex-1 text-xs text-muted group-hover:text-text truncate">{name}</span>
+      <span className="text-[9px] text-subtle/50 shrink-0">{rel}</span>
+    </button>
+  );
+}
+
+// ── Explorer panel ────────────────────────────────────────────────────────────
+
 function ExplorerPanel() {
   return (
-    <Suspense fallback={<div className="flex-1 flex items-center justify-center text-muted text-xs">Loading…</div>}>
+    <Suspense fallback={<PanelLoading />}>
       <FileExplorer />
     </Suspense>
   );
 }
 
+// ── Search panel ──────────────────────────────────────────────────────────────
+
 function SearchPanel() {
-  const [query, setQuery] = React.useState("");
-  const flatNodes     = useProjectStore((s) => s.flatNodes);
-  const openTab       = useEditorStore((s) => s.openTab);
-  const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
+  const [query, setQuery]   = React.useState("");
+  const flatNodes           = useProjectStore((s) => s.flatNodes);
+  const openTab             = useEditorStore((s) => s.openTab);
+  const setWorkspaceTab     = useUIStore((s) => s.setWorkspaceTab);
 
   const files = useMemo(
     () => flatNodes.filter((n) => !n.is_dir).map((n) => ({ path: n.path, name: n.name })),
     [flatNodes]
   );
 
-  const fuse = useMemo(
-    () => new Fuse(files, { keys: ["name", "path"], threshold: 0.4 }),
-    [files]
-  );
+  const fuse = useMemo(() => new Fuse(files, { keys: ["name", "path"], threshold: 0.4 }), [files]);
 
   const results = useMemo(
     () => query.trim() ? fuse.search(query).slice(0, 15).map((r) => r.item) : files.slice(0, 15),
     [query, fuse, files]
   );
 
-  const openFile = React.useCallback(async (file: { path: string; name: string }) => {
+  const openFile = React.useCallback(async (f: { path: string; name: string }) => {
     try {
-      const content = await bridge.readFile(file.path);
-      openTab({ path: file.path, filename: file.name, content, language: "" });
+      const content = await bridge.readFile(f.path);
+      openTab({ path: f.path, filename: f.name, content, language: "" });
     } catch {
-      openTab({ path: file.path, filename: file.name, content: "", language: "" });
+      openTab({ path: f.path, filename: f.name, content: "", language: "" });
     }
     setWorkspaceTab("editor");
   }, [openTab, setWorkspaceTab]);
@@ -202,71 +217,35 @@ function SearchPanel() {
           autoFocus
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search files…"
-          className="w-full h-7 px-2.5 text-xs bg-surface2 border border-border rounded-md text-text placeholder:text-muted outline-none focus:border-accent/50 transition-colors duration-120"
+          className="w-full h-7 px-2.5 text-xs bg-surface2 border border-[rgba(255,255,255,0.08)] rounded-md text-text placeholder:text-subtle outline-none focus:border-[rgba(255,255,255,0.16)] transition-colors duration-100"
           style={{ userSelect: "text" }}
         />
       </div>
-
       <div className="flex-1 overflow-y-auto">
         {files.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-muted">Open a folder to search files</p>
+          <p className="px-3 py-2 text-xs text-subtle">Open a folder to search</p>
         ) : results.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-muted">No files match</p>
-        ) : results.map((f) => (
-          <button
-            key={f.path}
-            onClick={() => openFile(f)}
-            className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-surface2 transition-colors duration-120 text-left group"
-          >
-            <File size={11} className="text-muted shrink-0" />
-            <span className="text-xs text-text truncate">{f.name}</span>
-            <span className="text-[10px] text-muted/50 truncate ml-auto">{f.path.split(/[\\/]/).slice(-2, -1)[0]}</span>
-          </button>
-        ))}
+          <p className="px-3 py-2 text-xs text-subtle">No files match</p>
+        ) : (
+          results.map((f) => (
+            <button
+              key={f.path}
+              onClick={() => openFile(f)}
+              className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-100 text-left group"
+            >
+              <File size={10} className="text-subtle shrink-0" />
+              <span className="text-xs text-muted group-hover:text-text truncate">{f.name}</span>
+              <span className="text-[9px] text-subtle/50 truncate ml-auto shrink-0">
+                {f.path.split(/[\\/]/).slice(-2, -1)[0]}
+              </span>
+            </button>
+          ))
+        )}
       </div>
     </>
   );
 }
 
-// ── Shared sub-components ─────────────────────────────────────────────────────
-
-function PanelHeader({ label }: { label: string }) {
-  return (
-    <div className="h-9 flex items-center px-3 shrink-0">
-      <span className="text-[11px] font-semibold text-muted uppercase tracking-widest">
-        {label}
-      </span>
-    </div>
-  );
-}
-
-function SectionLabel({ icon, label }: { icon: React.ReactNode; label: string }) {
-  return (
-    <div className="flex items-center gap-1.5 px-2 py-1 mt-0.5">
-      <span className="text-muted">{icon}</span>
-      <span className="text-[10px] font-medium text-muted uppercase tracking-wide">{label}</span>
-    </div>
-  );
-}
-
-function SessionRow({ session }: { session: RecentSession }) {
-  const name = session.project_path
-    ? session.project_path.replace(/\\/g, "/").split("/").pop() ?? "Chat"
-    : "Chat";
-
-  const rel = React.useMemo(() => {
-    const diff = Date.now() - new Date(session.updated_at).getTime();
-    if (diff < 60_000)     return "now";
-    if (diff < 3_600_000)  return `${Math.floor(diff / 60_000)}m ago`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-    return `${Math.floor(diff / 86_400_000)}d ago`;
-  }, [session.updated_at]);
-
-  return (
-    <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface2 transition-colors duration-120 group text-left">
-      <MessageSquare size={12} className="text-muted shrink-0" />
-      <span className="flex-1 text-xs text-muted group-hover:text-text truncate">{name}</span>
-      <span className="text-[10px] text-muted/50 shrink-0">{rel}</span>
-    </button>
-  );
+function PanelLoading() {
+  return <div className="flex-1 flex items-center justify-center text-subtle text-xs">Loading…</div>;
 }

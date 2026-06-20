@@ -50,3 +50,7 @@ Thumbs.db
 .ai-coder/
 .kryth/
 .kryth_cli/
+
+# Un-ignore frontend src/lib (caught by lib/ Python rule above)
+!desktop/src/lib/
+!desktop/src/lib/**

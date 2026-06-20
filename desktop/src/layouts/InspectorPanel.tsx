@@ -11,65 +11,42 @@ export const InspectorPanel = memo(function InspectorPanel() {
   const { inspectorOpen } = useUIStore();
   const pendingDiff      = useEditorStore((s) => s.pendingDiff);
   const pendingApprovals = useApprovalStore((s) => s.pending);
+  const [tab, setTab]    = React.useState<"context" | "diff" | "approvals">("context");
 
-  const [tab, setTab] = React.useState<"context" | "diff" | "approvals">("context");
-
-  // Auto-switch to diff tab when a diff arrives
-  React.useEffect(() => {
-    if (pendingDiff) setTab("diff");
-  }, [pendingDiff]);
-
-  // Auto-switch to approvals tab when approval arrives
-  React.useEffect(() => {
-    if (pendingApprovals.length > 0) setTab("approvals");
-  }, [pendingApprovals.length]);
+  React.useEffect(() => { if (pendingDiff)               setTab("diff"); },      [pendingDiff]);
+  React.useEffect(() => { if (pendingApprovals.length > 0) setTab("approvals"); }, [pendingApprovals.length]);
 
   return (
     <aside
       className={cn(
-        "flex flex-col border-l border-border bg-surface shrink-0",
+        "flex flex-col border-l border-[rgba(255,255,255,0.05)] bg-surface shrink-0",
         "transition-[width] duration-150 ease-out overflow-hidden",
         inspectorOpen ? "w-72" : "w-0"
       )}
     >
       <div className="flex flex-col h-full min-w-[288px]">
-        {/* Tab bar */}
-        <div className="flex border-b border-border shrink-0">
-          <InspectorTab
-            id="context"
-            label="Context"
-            icon={<FileText size={12} />}
-            active={tab === "context"}
-            onClick={() => setTab("context")}
-          />
-          <InspectorTab
-            id="diff"
-            label="Diff"
-            icon={<GitCompare size={12} />}
-            active={tab === "diff"}
-            badge={pendingDiff ? 1 : 0}
-            onClick={() => setTab("diff")}
-          />
-          <InspectorTab
-            id="approvals"
-            label="Approvals"
-            icon={<CheckSquare size={12} />}
-            active={tab === "approvals"}
-            badge={pendingApprovals.length}
-            onClick={() => setTab("approvals")}
-          />
+        {/* Tab strip */}
+        <div className="flex border-b border-[rgba(255,255,255,0.05)] shrink-0">
+          {(["context", "diff", "approvals"] as const).map((id) => (
+            <InspectorTab
+              key={id}
+              id={id}
+              label={id === "context" ? "Context" : id === "diff" ? "Diff" : "Approvals"}
+              icon={id === "context" ? <FileText size={11} /> : id === "diff" ? <GitCompare size={11} /> : <CheckSquare size={11} />}
+              active={tab === id}
+              badge={id === "diff" ? (pendingDiff ? 1 : 0) : id === "approvals" ? pendingApprovals.length : 0}
+              onClick={() => setTab(id)}
+            />
+          ))}
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-hidden">
-          {tab === "context" && <ContextPane />}
-
-          {tab === "diff" && (
-            <Suspense fallback={<LoadingPane label="Loading diff viewer…" />}>
+          {tab === "context"   && <ContextPane />}
+          {tab === "diff"      && (
+            <Suspense fallback={<PaneLoading />}>
               <DiffViewer />
             </Suspense>
           )}
-
           {tab === "approvals" && <ApprovalsPane />}
         </div>
       </div>
@@ -80,23 +57,20 @@ export const InspectorPanel = memo(function InspectorPanel() {
 function InspectorTab({
   label, icon, active, badge, onClick,
 }: {
-  id: string; label: string; icon: React.ReactNode;
-  active: boolean; badge?: number; onClick: () => void;
+  id: string; label: string; icon: React.ReactNode; active: boolean; badge?: number; onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1.5 px-3 py-2 text-xs transition-colors duration-120 relative",
-        active
-          ? "text-text border-b-2 border-accent -mb-px"
-          : "text-muted hover:text-text"
+        "flex items-center gap-1.5 px-3 py-2 text-xs transition-colors duration-100 relative",
+        active ? "text-text border-b border-[rgba(255,255,255,0.15)] -mb-px" : "text-subtle hover:text-muted"
       )}
     >
       {icon}
       {label}
       {!!badge && (
-        <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-accent/20 text-accent">
+        <span className="ml-0.5 w-4 h-4 flex items-center justify-center rounded-full text-[9px] font-medium bg-accent text-[#000] font-mono">
           {badge}
         </span>
       )}
@@ -106,14 +80,13 @@ function InspectorTab({
 
 function ContextPane() {
   return (
-    <div className="p-4 text-muted text-sm space-y-3">
-      <p className="text-xs font-medium text-text/60 uppercase tracking-wide">
-        Active Context
-      </p>
-      <p className="text-xs">
-        KRYTH automatically includes relevant files and project context
-        when answering your questions.
-      </p>
+    <div className="p-4 space-y-3">
+      <p className="text-[10px] font-medium text-subtle uppercase tracking-widest">Context</p>
+      <div className="card p-3 space-y-2">
+        <p className="text-xs text-muted leading-relaxed">
+          KRYTH automatically includes relevant files and project context.
+        </p>
+      </div>
     </div>
   );
 }
@@ -122,25 +95,24 @@ function ApprovalsPane() {
   const pending = useApprovalStore((s) => s.pending);
   if (pending.length === 0) {
     return (
-      <div className="p-4 text-center text-muted text-sm">
-        No pending approvals
+      <div className="p-4 flex flex-col items-center justify-center h-full gap-2 text-subtle">
+        <CheckSquare size={18} className="opacity-30" />
+        <p className="text-xs">No pending approvals</p>
       </div>
     );
   }
   return (
     <div className="p-3 space-y-2 overflow-y-auto h-full">
       {pending.map((a) => (
-        <div
-          key={a.id}
-          className="rounded-lg border border-border bg-surface2 p-3 text-sm"
-        >
-          <p className="text-text text-xs">{a.message}</p>
+        <div key={a.id} className="card p-3 space-y-1.5">
+          <p className="text-xs text-text">{a.message}</p>
           <span
-            className={cn("text-[10px] mt-1 inline-block", {
-              "text-error":   a.risk === "high",
-              "text-warning": a.risk === "medium",
-              "text-muted":   a.risk === "low",
-            })}
+            className={cn(
+              "inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md",
+              a.risk === "high"   && "bg-[rgba(239,68,68,0.1)] text-error/80",
+              a.risk === "medium" && "bg-[rgba(245,158,11,0.1)] text-warning/80",
+              a.risk === "low"    && "bg-[rgba(255,255,255,0.04)] text-subtle",
+            )}
           >
             {a.risk} risk
           </span>
@@ -150,10 +122,8 @@ function ApprovalsPane() {
   );
 }
 
-function LoadingPane({ label }: { label: string }) {
+function PaneLoading() {
   return (
-    <div className="flex items-center justify-center h-full text-muted text-sm">
-      {label}
-    </div>
+    <div className="flex items-center justify-center h-full text-subtle text-xs">Loading…</div>
   );
 }
