@@ -1,11 +1,12 @@
 import { create } from "zustand";
 
-export type WorkspaceTab = "chat" | "editor" | "settings";
-export type DrawerTab    = "terminal" | "logs";
-export type ConnStatus   = "connecting" | "connected" | "disconnected";
+export type WorkspaceTab  = "chat" | "editor" | "settings";
+export type DrawerTab     = "terminal" | "logs";
+export type ConnStatus    = "connecting" | "connected" | "disconnected";
+export type SideActivity  = "chat" | "explorer" | "search";
 
 interface UIState {
-  sidebarOpen:   boolean;
+  sideActivity:  SideActivity | null;  // null = panel collapsed
   inspectorOpen: boolean;
   drawerOpen:    boolean;
   drawerTab:     DrawerTab;
@@ -13,6 +14,8 @@ interface UIState {
   connStatus:    ConnStatus;
   paletteOpen:   boolean;
 
+  setSideActivity:  (a: SideActivity | null) => void;
+  toggleSideActivity: (a: SideActivity) => void;
   toggleSidebar:    () => void;
   toggleInspector:  () => void;
   toggleDrawer:     () => void;
@@ -26,7 +29,7 @@ interface UIState {
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  sidebarOpen:   true,
+  sideActivity:  "chat",
   inspectorOpen: true,
   drawerOpen:    false,
   drawerTab:     "terminal",
@@ -34,7 +37,13 @@ export const useUIStore = create<UIState>((set) => ({
   connStatus:    "connecting",
   paletteOpen:   false,
 
-  toggleSidebar:   () => set((s) => ({ sidebarOpen:   !s.sidebarOpen })),
+  setSideActivity: (a) => set({ sideActivity: a }),
+  toggleSideActivity: (a) => set((s) => ({
+    sideActivity: s.sideActivity === a ? null : a,
+  })),
+  toggleSidebar:   () => set((s) => ({
+    sideActivity: s.sideActivity ? null : "chat",
+  })),
   toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
   toggleDrawer:    () => set((s) => ({ drawerOpen:    !s.drawerOpen })),
   openDrawer:      (tab) => set((s) => ({
