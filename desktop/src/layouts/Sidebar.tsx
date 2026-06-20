@@ -1,13 +1,16 @@
-import React, { memo, lazy, Suspense } from "react";
+import React, { memo, lazy, Suspense, useMemo } from "react";
 import {
-  MessageSquare, FolderOpen, Search, Terminal, FileText, Plus, Clock,
+  MessageSquare, FolderOpen, Search, Terminal, FileText, Plus, Clock, File,
 } from "lucide-react";
-
-const FileExplorer = lazy(() => import("@/features/explorer/FileExplorer"));
+import Fuse from "fuse.js";
 import { cn } from "@/lib/utils";
 import { useUIStore, type SideActivity } from "@/store/uiStore";
 import { useChatStore } from "@/store/chatStore";
-import { request } from "@/lib/krythBridge";
+import { useProjectStore } from "@/store/projectStore";
+import { useEditorStore } from "@/store/editorStore";
+import { bridge, request } from "@/lib/krythBridge";
+
+const FileExplorer = lazy(() => import("@/features/explorer/FileExplorer"));
 
 // ── Activity bar items ────────────────────────────────────────────────────────
 
@@ -160,22 +163,66 @@ function ExplorerPanel() {
 
 function SearchPanel() {
   const [query, setQuery] = React.useState("");
+  const flatNodes     = useProjectStore((s) => s.flatNodes);
+  const openTab       = useEditorStore((s) => s.openTab);
+  const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
+
+  const files = useMemo(
+    () => flatNodes.filter((n) => !n.is_dir).map((n) => ({ path: n.path, name: n.name })),
+    [flatNodes]
+  );
+
+  const fuse = useMemo(
+    () => new Fuse(files, { keys: ["name", "path"], threshold: 0.4 }),
+    [files]
+  );
+
+  const results = useMemo(
+    () => query.trim() ? fuse.search(query).slice(0, 15).map((r) => r.item) : files.slice(0, 15),
+    [query, fuse, files]
+  );
+
+  const openFile = React.useCallback(async (file: { path: string; name: string }) => {
+    try {
+      const content = await bridge.readFile(file.path);
+      openTab({ path: file.path, filename: file.name, content, language: "" });
+    } catch {
+      openTab({ path: file.path, filename: file.name, content: "", language: "" });
+    }
+    setWorkspaceTab("editor");
+  }, [openTab, setWorkspaceTab]);
 
   return (
     <>
       <PanelHeader label="Search" />
-      <div className="px-2 pb-2">
+      <div className="px-2 pb-1">
         <input
           type="text"
           value={query}
+          autoFocus
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search files…"
           className="w-full h-7 px-2.5 text-xs bg-surface2 border border-border rounded-md text-text placeholder:text-muted outline-none focus:border-accent/50 transition-colors duration-120"
           style={{ userSelect: "text" }}
         />
       </div>
-      <div className="flex-1 overflow-y-auto px-2 text-xs text-muted">
-        {!query && <p className="px-2 py-1">Type to search…</p>}
+
+      <div className="flex-1 overflow-y-auto">
+        {files.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-muted">Open a folder to search files</p>
+        ) : results.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-muted">No files match</p>
+        ) : results.map((f) => (
+          <button
+            key={f.path}
+            onClick={() => openFile(f)}
+            className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-surface2 transition-colors duration-120 text-left group"
+          >
+            <File size={11} className="text-muted shrink-0" />
+            <span className="text-xs text-text truncate">{f.name}</span>
+            <span className="text-[10px] text-muted/50 truncate ml-auto">{f.path.split(/[\\/]/).slice(-2, -1)[0]}</span>
+          </button>
+        ))}
       </div>
     </>
   );
