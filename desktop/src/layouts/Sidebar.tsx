@@ -1,7 +1,9 @@
-import React, { memo } from "react";
+import React, { memo, lazy, Suspense } from "react";
 import {
   MessageSquare, FolderOpen, Search, Terminal, FileText, Plus, Clock,
 } from "lucide-react";
+
+const FileExplorer = lazy(() => import("@/features/explorer/FileExplorer"));
 import { cn } from "@/lib/utils";
 import { useUIStore, type SideActivity } from "@/store/uiStore";
 import { useChatStore } from "@/store/chatStore";
@@ -150,12 +152,9 @@ function ChatPanel() {
 
 function ExplorerPanel() {
   return (
-    <>
-      <PanelHeader label="Explorer" />
-      <div className="flex-1 flex items-center justify-center text-muted text-xs p-4 text-center">
-        Open a folder to browse files
-      </div>
-    </>
+    <Suspense fallback={<div className="flex-1 flex items-center justify-center text-muted text-xs">Loading…</div>}>
+      <FileExplorer />
+    </Suspense>
   );
 }
 

@@ -1,4 +1,4 @@
-import React, { lazy, Suspense } from "react";
+import React, { lazy, Suspense, useEffect } from "react";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
 import { InspectorPanel } from "./InspectorPanel";
@@ -8,14 +8,18 @@ import { useApprovalStore } from "@/store/approvalStore";
 
 const ChatPanel      = lazy(() => import("@/features/chat/ChatPanel"));
 const EditorPanel    = lazy(() => import("@/features/editor/EditorPanel"));
-const FileExplorer   = lazy(() => import("@/features/explorer/FileExplorer"));
 const ApprovalModal  = lazy(() => import("@/features/approvals/ApprovalModal"));
 const CommandPalette = lazy(() => import("@/features/palette/CommandPalette"));
 const SettingsPage   = lazy(() => import("@/features/settings/SettingsPage"));
 
 export function MainLayout() {
-  const { workspaceTab, paletteOpen } = useUIStore();
+  const { workspaceTab, paletteOpen, setSideActivity } = useUIStore();
   const hasPending = useApprovalStore((s) => s.pending.length > 0);
+
+  // When switching to editor, open the file explorer in the sidebar
+  useEffect(() => {
+    if (workspaceTab === "editor") setSideActivity("explorer");
+  }, [workspaceTab, setSideActivity]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-bg text-text">
@@ -29,12 +33,7 @@ export function MainLayout() {
           <WorkspaceFallback>
             <Suspense fallback={<WorkspaceLoading />}>
               {workspaceTab === "chat"     && <ChatPanel />}
-              {workspaceTab === "editor"   && (
-                <div className="flex flex-1 overflow-hidden">
-                  <FileExplorer />
-                  <EditorPanel />
-                </div>
-              )}
+              {workspaceTab === "editor"   && <EditorPanel />}
               {workspaceTab === "settings" && <SettingsPage />}
             </Suspense>
           </WorkspaceFallback>

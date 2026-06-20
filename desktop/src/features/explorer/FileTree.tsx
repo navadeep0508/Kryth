@@ -4,6 +4,7 @@ import { ChevronRight, ChevronDown, File, Folder, FolderOpen } from "lucide-reac
 import { cn } from "@/lib/utils";
 import { useProjectStore, type TreeNode } from "@/store/projectStore";
 import { useEditorStore } from "@/store/editorStore";
+import { useUIStore } from "@/store/uiStore";
 import { bridge } from "@/lib/krythBridge";
 
 const ROW_HEIGHT = 26;
@@ -11,6 +12,7 @@ const ROW_HEIGHT = 26;
 export const FileTree = memo(function FileTree({ height }: { height: number }) {
   const { flatNodes, toggleExpand } = useProjectStore();
   const openTab = useEditorStore((s) => s.openTab);
+  const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
 
   const handleClick = useCallback(
     async (node: TreeNode) => {
@@ -32,9 +34,10 @@ export const FileTree = memo(function FileTree({ height }: { height: number }) {
         } catch {
           openTab({ path: node.path, filename: node.name, content: "", language: "" });
         }
+        setWorkspaceTab("editor");
       }
     },
-    [toggleExpand, openTab]
+    [toggleExpand, openTab, setWorkspaceTab]
   );
 
   return (

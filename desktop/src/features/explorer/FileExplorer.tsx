@@ -43,7 +43,7 @@ export default memo(function FileExplorer() {
   }, []);
 
   return (
-    <div className="w-56 border-r border-border bg-surface flex flex-col shrink-0 overflow-hidden">
+    <div className="flex-1 h-full bg-surface flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border shrink-0">
         <span className="text-xs font-medium text-muted uppercase tracking-wide flex-1">
