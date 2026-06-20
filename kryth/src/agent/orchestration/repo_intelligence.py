@@ -57,7 +57,7 @@ _FRAMEWORK_PATTERNS: List[tuple[str, str]] = [
     (r"vue", "Vue"), (r"angular", "Angular"), (r"svelte", "Svelte"),
     (r"nuxt", "Nuxt"), (r"gatsby", "Gatsby"), (r"remix", "Remix"),
     (r"fastapi", "FastAPI"), (r"django", "Django"), (r"flask", "Flask"),
-    (r"express", "Express"), (r"nest[js]?", "NestJS"), (r"hono", "Hono"),
+    (r"express", "Express"), (r"nest(?:js)?", "NestJS"), (r"hono", "Hono"),
     (r"rails|ruby.on.rails", "Rails"), (r"spring", "Spring"),
     (r"laravel", "Laravel"), (r"gin\b", "Gin"), (r"fiber\b", "Fiber"),
     (r"sqlalchemy", "SQLAlchemy"), (r"prisma", "Prisma"),
@@ -120,7 +120,7 @@ def analyze_repo(root: str = ".") -> RepoProfile:
 
     lang_counts: Dict[str, int] = {}
     framework_hits: Set[str] = set()
-    auth_text = payment_text = db_text = api_text = ""
+    has_auth = has_payments = has_db = False
     test_dirs: Set[str] = set()
     file_count = 0
 
@@ -182,9 +182,9 @@ def analyze_repo(root: str = ".") -> RepoProfile:
                 if re.search(pattern, content, re.I) and fw_name not in framework_hits:
                     framework_hits.add(fw_name)
 
-            auth_text += content[:500] if _AUTH_PATTERNS.search(content) else ""
-            payment_text += content[:500] if _PAYMENT_PATTERNS.search(content) else ""
-            db_text += content[:500] if _DB_PATTERNS.search(content) else ""
+            has_auth = has_auth or bool(_AUTH_PATTERNS.search(content))
+            has_payments = has_payments or bool(_PAYMENT_PATTERNS.search(content))
+            has_db = has_db or bool(_DB_PATTERNS.search(content))
 
             # API routes
             for m in _API_ROUTE_PATTERNS.finditer(content):
@@ -201,9 +201,9 @@ def analyze_repo(root: str = ".") -> RepoProfile:
     ][:5]
 
     profile.frameworks = sorted(framework_hits)
-    profile.has_auth = bool(auth_text)
-    profile.has_payments = bool(payment_text)
-    profile.has_database = bool(db_text)
+    profile.has_auth = has_auth
+    profile.has_payments = has_payments
+    profile.has_database = has_db
     profile.has_api = bool(profile.existing_apis)
 
     # Architecture

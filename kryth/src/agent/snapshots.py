@@ -15,7 +15,6 @@ never raise into the mutation path — they are logged-and-swallowed. A
 missing snapshot is far less bad than refusing to write a file because
 the snapshot directory is unwritable.
 """
-
 from __future__ import annotations
 
 import os
@@ -26,26 +25,21 @@ from pathlib import Path
 
 from agent.env import home_dir
 
+MAX_SNAPSHOTS_PER_FILE = 20
 
-MAX_SNAPSHOTS_PER_FILE = 10
-
-
+# Snapshot root. Mirrors persistence and honours env overrides.
 def _root() -> Path:
-    """Snapshot root. Mirrors persistence and honours env overrides."""
     return home_dir() / "snapshots"
 
-
-def _project_hash(cwd: str | Path = ".") -> str:
-    # Lazy import: persistence pulls in dataclasses/json that we don't
-    # need until first snapshot.
-    from agent.persistence import project_hash_for
-    return project_hash_for(cwd)
-
+def _project_hash() -> str:
+    """Short stable identifier for the current working directory."""
+    import hashlib
+    cwd = os.getcwd()
+    return hashlib.sha1(cwd.encode("utf-8")).hexdigest()[:8]
 
 _PATH_SANITISE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-
-def _safe_path_key(abs_path: str) -> str:
+def _safe_path_key(path: str | Path) -> str:
     """Map an absolute path to a single-segment, filesystem-safe key.
 
     We want each file's snapshots in their own dir but also want the key
@@ -56,138 +50,92 @@ def _safe_path_key(abs_path: str) -> str:
     would collide).
     """
     import hashlib
-    h = hashlib.sha1(abs_path.encode("utf-8", "replace")).hexdigest()[:8]
-    cleaned = _PATH_SANITISE_RE.sub("_", abs_path).strip("_")[:120]
-    return f"{h}__{cleaned}"
-
-
-def _file_snapshot_dir(path: str) -> Path:
     abs_path = str(Path(path).resolve())
-    return _root() / _project_hash() / _safe_path_key(abs_path)
+    short_hash = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()[:6]
+    safe = _PATH_SANITISE_RE.sub("_", abs_path)
+    return f"{short_hash}_{safe}"
 
+def _file_snapshot_dir(path: str | Path) -> Path:
+    return _root() / _project_hash() / _safe_path_key(path)
 
-def _ensure(p: Path) -> None:
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
+def _ensure(d: Path) -> Path:
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
-
-def snapshot(path: str) -> Path | None:
+def snapshot(path: str | Path) -> Path | None:
     """Copy ``path``'s current bytes into the snapshot store.
 
     Returns the snapshot Path on success, ``None`` if the source file
     doesn't exist (a create operation has nothing to back up) or the
     store can't be written. Never raises.
     """
-    src = Path(path)
-    if not src.is_file():
-        return None
-
     try:
-        snap_dir = _file_snapshot_dir(path)
-        _ensure(snap_dir)
-        ts = f"{int(time.time() * 1000)}.bak"
-        dst = snap_dir / ts
-        shutil.copy2(src, dst)
-    except OSError:
+        src = Path(path)
+        if not src.exists():
+            return None
+        snap_dir = _ensure(_file_snapshot_dir(path))
+        ts = int(time.time() * 1000)
+        dest = snap_dir / f"{ts}.bak"
+        shutil.copy2(src, dest)
+        _prune(snap_dir)
+        return dest
+    except Exception:
         return None
-
-    _prune(snap_dir)
-    return dst
-
 
 def _prune(snap_dir: Path) -> None:
+    """Keep only the newest MAX_SNAPSHOTS_PER_FILE backups."""
     try:
-        files = sorted(
-            (p for p in snap_dir.iterdir() if p.suffix == ".bak"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return
-    for old in files[MAX_SNAPSHOTS_PER_FILE:]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
-
-
-def list_snapshots(path: str) -> list[dict]:
-    """Newest-first listing of available snapshots for ``path``.
-
-    Each entry: ``{"index": int, "ts": float, "size": int, "backup_path": str}``.
-    ``index`` is stable for the call (0 = newest); pass it to ``restore``.
-    """
-    snap_dir = _file_snapshot_dir(path)
-    if not snap_dir.is_dir():
-        return []
-    try:
-        entries = sorted(
-            (p for p in snap_dir.iterdir() if p.suffix == ".bak"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return []
-    out: list[dict] = []
-    for i, p in enumerate(entries):
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        out.append({
-            "index": i,
-            "ts": st.st_mtime,
-            "size": st.st_size,
-            "backup_path": str(p),
-        })
-    return out
-
-
-def restore(path: str, index: int = 0) -> tuple[bool, str]:
-    """Replace ``path``'s contents with snapshot ``index`` (0 = newest).
-
-    Returns ``(success, message)``. Snapshots the current contents first
-    so the rollback itself is undoable — the agent (or operator) can
-    re-restore the newer version if the rollback was a mistake.
-    """
-    backups = list_snapshots(path)
-    if not backups:
-        return False, f"no snapshots available for {path}"
-    if index < 0 or index >= len(backups):
-        return False, (
-            f"snapshot index {index} out of range (have {len(backups)} backups)"
-        )
-
-    src = Path(backups[index]["backup_path"])
-    if not src.is_file():
-        return False, f"snapshot file vanished: {src}"
-
-    snapshot(path)
-
-    try:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, target)
-    except OSError as e:
-        return False, f"could not restore {path}: {e}"
-
-    try:
-        from agent.tools._file_ops import _invalidate_indexes
-        _invalidate_indexes(path)
+        backups = sorted(snap_dir.glob("*.bak"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in backups[MAX_SNAPSHOTS_PER_FILE:]:
+            old.unlink(missing_ok=True)
     except Exception:
         pass
 
-    return True, (
-        f"restored {path} from snapshot {index} "
-        f"(taken {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(backups[index]['ts']))})"
-    )
+def list_snapshots(path: str | Path) -> list[dict]:
+    """Return a list of snapshot records for ``path``, newest first.
 
+    Each record has:
+        ``backup_path``  — absolute path to the ``.bak`` file
+        ``ts``           — unix timestamp (float seconds)
+        ``size``         — bytes
+    """
+    try:
+        snap_dir = _file_snapshot_dir(path)
+        if not snap_dir.exists():
+            return []
+        backups = sorted(snap_dir.glob("*.bak"), key=lambda p: p.stat().st_mtime, reverse=True)
+        result = []
+        for b in backups:
+            try:
+                stat = b.stat()
+                result.append({
+                    "backup_path": str(b),
+                    "ts": stat.st_mtime,
+                    "size": stat.st_size,
+                })
+            except Exception:
+                pass
+        return result
+    except Exception:
+        return []
 
-__all__ = [
-    "MAX_SNAPSHOTS_PER_FILE",
-    "snapshot",
-    "list_snapshots",
-    "restore",
-]
+def restore(path: str | Path, index: int = 0) -> tuple[bool, str]:
+    """Restore ``path`` from the snapshot at position ``index`` (0 = newest).
+
+    Returns ``(True, message)`` on success, ``(False, error)`` on failure.
+    """
+    try:
+        items = list_snapshots(path)
+        if not items:
+            return False, f"no snapshots available for {path}"
+        if index < 0 or index >= len(items):
+            return False, f"snapshot index {index} out of range (0..{len(items)-1})"
+        backup_path = items[index]["backup_path"]
+        dest = Path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(backup_path, dest)
+        return True, f"restored {path} from snapshot {index} ({backup_path})"
+    except Exception as e:
+        return False, f"restore failed: {e}"
+
+__all__ = ["snapshot", "list_snapshots", "restore", "MAX_SNAPSHOTS_PER_FILE"]

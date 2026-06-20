@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -55,7 +56,7 @@ SOURCE_SUFFIXES = (
     ".toml", ".json", ".md",
 )
 
-MAX_PROJECT_MAP_FILES = 300
+MAX_PROJECT_MAP_FILES = 60   # keeps system-prompt project map under ~400 tok; agent uses glob/list_files to explore
 
 # Directories that are skipped in focused mode for non-matching intents
 _SKIP_DIRS_BY_INTENT = {
@@ -304,3 +305,167 @@ class ProjectSnapshot:
             self._cache_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Retrieval-first repo context (Claude-Code style)
+# ---------------------------------------------------------------------------
+
+# Regex to extract identifiers from user text:
+# - snake_case function/variable names (≥4 chars)
+# - CamelCase class/type names
+# - file names with extension (auth.py, api/routes.ts)
+_IDENTIFIER_RE = re.compile(
+    r"\b([A-Z][a-zA-Z0-9]{2,})\b"          # CamelCase (class names)
+    r"|([a-z][a-z0-9_]{3,})\b"              # snake_case (functions/vars)
+    r"|([a-zA-Z][\w./\\-]+\.\w{1,8})\b",    # file paths
+)
+
+_RETRIEVE_TOP_K  = int(os.environ.get("KRYTH_RETRIEVE_TOP_K", "8"))
+_RETRIEVE_GREP_MAX_LINES = 2  # lines per file per hit (just enough to confirm relevance)
+
+
+def _extract_query_terms(user_input: str) -> list[str]:
+    """Extract identifiers and file names from user query for grep retrieval."""
+    terms: list[str] = []
+    seen: set[str] = set()
+    for m in _IDENTIFIER_RE.finditer(user_input):
+        tok = next(g for g in m.groups() if g)
+        # Filter noise: skip very common words and single-char identifiers
+        if len(tok) < 3 or tok.lower() in {
+            "the", "and", "for", "not", "with", "this", "that", "have", "from",
+            "are", "was", "were", "been", "will", "would", "could", "should",
+            "add", "get", "set", "use", "new", "all", "any", "but", "can",
+            "your", "make", "now", "how", "why", "what", "where", "when",
+        }:
+            continue
+        if tok not in seen:
+            seen.add(tok)
+            terms.append(tok)
+    return terms[:10]  # cap at 10 terms to bound grep work
+
+
+def retrieve_files_for_task(
+    user_input: str,
+    directory: str = ".",
+    top_k: int = _RETRIEVE_TOP_K,
+) -> list[str]:
+    """Grep-first file retrieval: find the files most relevant to the task.
+
+    Algorithm:
+    1. Extract identifiers from user_input (CamelCase, snake_case, file names)
+    2. Grep codebase for each term, collect (file, hit_count) pairs
+    3. Return top_k files by relevance score
+
+    Returns a list of relative file paths sorted by relevance.
+    Used in build_initial_system() as the lightweight retrieval fallback.
+    """
+    import subprocess
+
+    terms = _extract_query_terms(user_input)
+    if not terms:
+        return []
+
+    # File → score (sum of hits across all terms)
+    file_scores: dict[str, int] = {}
+
+    for term in terms:
+        try:
+            result = subprocess.run(
+                ["grep", "-rl", "--include=*.py", "--include=*.js",
+                 "--include=*.ts", "--include=*.tsx", "--include=*.go",
+                 "--include=*.rs", "--include=*.java", "--include=*.rb",
+                 term, directory],
+                capture_output=True, text=True, timeout=3,
+                cwd=directory,
+            )
+            for line in result.stdout.splitlines():
+                path = line.strip()
+                if path and not any(skip in path for skip in (
+                    "node_modules", ".git", "__pycache__", "venv", ".venv",
+                    "dist/", "build/", ".next/",
+                )):
+                    file_scores[path] = file_scores.get(path, 0) + 1
+        except Exception:
+            # grep not available or timed out — skip silently
+            pass
+
+    if not file_scores:
+        return []
+
+    # Sort by score desc, then by path length asc (prefer shallower files)
+    ranked = sorted(file_scores.items(), key=lambda x: (-x[1], len(x[0])))
+    return [f for f, _ in ranked[:top_k]]
+
+
+def build_retrieval_context(
+    user_input: str,
+    directory: str = ".",
+    top_k: int = _RETRIEVE_TOP_K,
+) -> str:
+    """Build compact retrieval context for injection into system prompt.
+
+    Retrieval pipeline (best available wins):
+      1. Semantic index (BM25 + AST chunking) — most relevant, no deps
+      2. Symbol index (SQLite, if built) — symbol-level precision
+      3. Grep-first (subprocess grep) — fast, available on Linux/Mac
+      4. Empty string — fallback (agent uses list_files/glob on its own)
+
+    Token cost: ~50-200 tok (vs 400-2,500 tok for full project map).
+    """
+    files: list[str] = []
+    source = "grep"
+
+    # --- Priority 1: semantic index (BM25 + AST chunking) ---
+    try:
+        from agent.retrieval.semantic_index import get_index as _sem_get
+        sem_idx = _sem_get(directory)
+        # Build index lazily (non-blocking for small repos, fast cache hit)
+        sem_idx.build()
+        sem_files = sem_idx.query_files(user_input, top_k=top_k)
+        if sem_files:
+            files = sem_files
+            source = "semantic"
+    except Exception:
+        pass
+
+    # --- Priority 2: symbol index (SQLite, if already built) ---
+    if not files:
+        try:
+            from agent.retrieval.symbol_index import get_index as _sym_get
+            from agent.retrieval import config as _rcfg
+            if _rcfg.ENABLE_SYMBOL_INDEX:
+                sym_idx = _sym_get(directory)
+                # Extract query terms and search symbol names
+                terms = _extract_query_terms(user_input)
+                seen: set[str] = set()
+                for term in terms[:5]:
+                    results = sym_idx.search(term, limit=20)
+                    for r in results:
+                        f = r.get("file", "")
+                        if f and f not in seen:
+                            seen.add(f)
+                            files.append(f)
+                        if len(files) >= top_k:
+                            break
+                    if len(files) >= top_k:
+                        break
+                if files:
+                    source = "symbol_index"
+        except Exception:
+            pass
+
+    # --- Priority 3: grep-first ---
+    if not files:
+        files = retrieve_files_for_task(user_input, directory, top_k)
+        if files:
+            source = "grep"
+
+    if not files:
+        return ""
+
+    lines = [f"[Relevant files for task — {source} ({len(files)} found)]"]
+    for f in files:
+        rel = os.path.relpath(f, directory).replace("\\", "/")
+        lines.append(f"  {rel}")
+    return "\n".join(lines)

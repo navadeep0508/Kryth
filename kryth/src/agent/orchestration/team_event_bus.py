@@ -71,7 +71,7 @@ class TeamEventBus:
             event = BusEvent(
                 from_agent=from_agent,
                 event_type=event_type,
-                payload=payload or {},
+                payload=payload if payload is not None else {},
                 seq=self._seq,
             )
             for aid, q in self._queues.items():

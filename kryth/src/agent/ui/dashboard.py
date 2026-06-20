@@ -51,6 +51,8 @@ class AgentNode:
     model: str = ""
     turns: int = 0
     files: List[str] = field(default_factory=list)
+    current: str = ""         # what this agent is doing right now (humanized)
+    history: deque = field(default_factory=lambda: deque(maxlen=4))  # recent completed steps
 
 @dataclass
 class StreamEntry:
@@ -120,6 +122,9 @@ class DashboardState:
     # Spawn animation queue
     spawn_queue: deque = field(default_factory=lambda: deque(maxlen=10))
 
+    # Provider health snapshot (updated from push_event)
+    provider_health_rows: List[dict] = field(default_factory=list)
+
     @property
     def elapsed(self) -> str:
         s = int(time.monotonic() - self.start_time)
@@ -142,7 +147,6 @@ class DashboardState:
 _state = DashboardState()
 _lock = threading.RLock()
 _event_queue: queue.Queue = queue.Queue()
-_app_instance = None
 _app_thread: Optional[threading.Thread] = None
 _running = False
 
@@ -152,8 +156,10 @@ _running = False
 # ---------------------------------------------------------------------------
 
 def start_dashboard(goal: str = "", total_agents: int = 0, total_layers: int = 0) -> None:
-    """Initialise dashboard state. The scheduler drives the Live display directly."""
-    global _running, _state, _app_instance
+    """Initialise dashboard state and spawn the background display thread."""
+    global _running, _state, _app_instance, _app_thread
+    if _running:
+        return  # already running
     _running = True
     with _lock:
         _state = DashboardState(goal=goal[:60], total_agents=total_agents,
@@ -165,29 +171,73 @@ def start_dashboard(goal: str = "", total_agents: int = 0, total_layers: int = 0
             "Search":   os.getenv("KRYTH_MODEL_SEARCH", "Fast"),
             "Summary":  os.getenv("KRYTH_MODEL_SUMMARY", "Fast"),
         }
+    _app_thread = threading.Thread(target=_run_app, daemon=True, name="kryth-dashboard")
+    _app_thread.start()
 
 
 def stop_dashboard() -> None:
-    global _running, _app_instance
+    global _running
     _running = False
-    if _app_instance is not None:
-        try:
-            _app_instance.exit()
-        except Exception:
-            pass
-        _app_instance = None
 
 
 def push_event(kind: str, **data) -> None:
     if _running:
-        try:
-            _event_queue.put_nowait({"kind": kind, **data})
-        except queue.Full:
-            pass
+        _event_queue.put({"kind": kind, **data})
 
 
 def get_active() -> bool:
     return _running
+
+
+def push_provider_health() -> None:
+    """Snapshot current provider health metrics and push to all dashboards.
+
+    Only pushes when a dashboard is running (DAG/SWARM modes only).
+    Safe to call from worker threads — uses the existing thread-safe queue.
+    """
+    try:
+        from agent.production.reliability import _provider_health
+        if _provider_health is None:
+            return
+        metrics = _provider_health.all_providers()
+        if not metrics:
+            return
+        rows = []
+        for prov, m in metrics.items():
+            if m.total_requests < 1:
+                continue
+            if m.total_requests < 10:
+                status = "healthy"
+            elif m.success_rate >= 0.95:
+                status = "healthy"
+            elif m.success_rate >= 0.8:
+                status = "degraded"
+            else:
+                status = "unhealthy"
+            rows.append({
+                "provider": prov,
+                "status": status,
+                "timeouts": m.provider_errors,
+                "retries": m.failures - m.provider_errors,
+                "success_rate": m.success_rate * 100,
+            })
+        if not rows:
+            return
+        # Push to Rich dashboard (DAG/SWARM)
+        if _running:
+            push_event("provider_health", rows=rows)
+        # Push to live_engine EngineState for textual/live UI
+        try:
+            import sys as _sys
+            _le = _sys.modules.get("agent.ui.live_engine")
+            if _le is not None:
+                _eng = getattr(_le, "_active_engine", None)
+                if _eng is not None:
+                    _eng._state.provider_health_rows = rows
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +272,27 @@ def _process_events() -> bool:
     except queue.Empty:
         pass
     return changed
+
+
+def _humanize_action(tool: str, detail: str = "") -> str:
+    """Turn a raw tool call into a short human phrase for the agent box — no
+    raw command/arg spam. e.g. write_file hero.tsx → 'Creating hero.tsx'."""
+    import os as _os
+    verb = {
+        "write_file": "Creating", "create_file": "Creating", "edit_file": "Editing",
+        "str_replace": "Editing", "apply_patch": "Editing", "read_file": "Reading",
+        "list_files": "Scanning project", "run_command": "Running", "bash": "Running",
+        "search": "Searching", "grep": "Searching", "todo_write": "Planning",
+    }.get(tool, tool.replace("_", " ").title())
+    target = (detail or "").strip()
+    # keep just a filename / short token, never a full command line
+    if target:
+        target = target.split("\n")[0][:32]
+        base = _os.path.basename(target.split()[0]) if target.split() else target
+        if tool in ("list_files", "todo_write"):
+            return verb
+        return f"{verb} {base}".strip()
+    return verb
 
 
 def _handle(ev: dict) -> None:  # noqa: C901
@@ -275,6 +346,15 @@ def _handle(ev: dict) -> None:  # noqa: C901
                 action=action[:40],
                 detail=detail[:35],
             ))
+            # Per-agent activity: roll the previous "current" into history, set
+            # the new humanized current action. This drives the separate boxes.
+            node = s.agents.get(agent) or next(
+                (a for a in s.agents.values() if a.role == agent), None)
+            if node is not None:
+                phrase = _humanize_action(tool, detail or action)
+                if node.current and node.current != phrase:
+                    node.history.append(node.current)
+                node.current = phrase
 
         elif kind == "tool_stream":
             s.stream.append(StreamEntry(
@@ -360,6 +440,13 @@ def _handle(ev: dict) -> None:  # noqa: C901
                     except (ValueError, IndexError):
                         s.tool_parallel[cat] = 1
 
+        elif kind == "provider_health":
+            # Provider health snapshot pushed by scheduler after each agent run.
+            # rows = list of dicts: {provider, status, timeouts, retries, success_rate}
+            rows = ev.get("rows", [])
+            if rows:
+                s.provider_health_rows = rows[-10:]  # keep last 10 providers
+
         # Decay parallel bars every few cycles
         for cat in list(s.tool_parallel.keys()):
             if s.tool_parallel[cat] > 0:
@@ -434,11 +521,10 @@ def _render_agent_tree(s: DashboardState) -> list:
 def _run_app() -> None:
     """Entry point for the dashboard thread.
 
-    Stops the existing Rich spinner, then starts its own Rich Live display
-    showing the dashboard panel at the bottom of the terminal while logs
-    scroll above it via live.console.print().
+    The caller (scheduler) stops the spinner on the main thread before
+    spawning this thread. This thread then starts its own Rich Live and
+    updates the panel at 4 FPS until stop_dashboard() is called.
     """
-    global _app_instance
     _rich_dashboard_loop()
 
 
@@ -449,12 +535,13 @@ def _rich_dashboard_loop() -> None:
     from rich.console import Group
     from rich.rule import Rule
 
+    from rich.table import Table
+
     def _build_renderable():
         with _lock:
             s = _state
-        rows = []
 
-        # Header: goal + progress bar
+        # Header: goal + progress bar + layer summary
         pct = s.progress
         bar_w = 28
         filled = int(pct * bar_w / 100)
@@ -462,68 +549,94 @@ def _rich_dashboard_loop() -> None:
         bar.append("█" * filled, style="bold cyan")
         bar.append("░" * (bar_w - filled), style="dim")
         bar.append(f" {pct}%", style="bold")
-
         header = Text()
         header.append("  ◈ ", style="bold cyan")
         header.append(s.goal[:45] or "Mission", style="bold white")
         header.append(f"  [{s.elapsed}]", style="dim")
-        rows.append(header)
-        rows.append(bar)
-        rows.append(Text(
-            f"  Layer {s.layer}/{s.total_layers}  ·  "
-            f"{s.active_count} running  ·  {s.done_count}/{s.total_agents} done",
-            style="dim",
-        ))
+        head_panel = Panel(
+            Group(header, bar, Text(
+                f"  {s.active_count} running  ·  {s.done_count}/{s.total_agents} done",
+                style="dim")),
+            border_style="cyan", padding=(0, 1))
 
-        # Agents (compact, max 6)
-        agents = list(s.agents.values())[:6]
-        if agents:
-            rows.append(Rule(style="dim"))
-            for a in agents:
-                icon = _STATUS_ICON.get(a.status, "·")
-                style = _STATUS_STYLE.get(a.status, "white")
-                task = f"  {a.task[:28]}" if a.task else ""
-                t = Text()
-                t.append(f"  {icon} ", style=style)
-                t.append(a.role[:20], style=style)
-                t.append(task, style="dim")
-                rows.append(t)
+        # One SEPARATE box per agent — current action + recent done bullets.
+        # No raw read/write/tool logs; each box is the agent's status card.
+        _SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        s._tick = (getattr(s, "_tick", 0) + 1) % len(_SPIN)
+        spin = _SPIN[s._tick]
+        agents = list(s.agents.values())
+        boxes = []
+        for a in agents:
+            icon = _STATUS_ICON.get(a.status, "·")
+            style = _STATUS_STYLE.get(a.status, "white")
+            running = a.status == "running"
+            body = Text()
+            cur = a.current or (a.task[:30] if a.task else
+                                ("done" if a.status == "done" else "waiting…"))
+            # Animated spinner on the live action line; static marker otherwise.
+            lead = (spin if running else ("✓" if a.status == "done" else "▸"))
+            body.append(f"{lead} ", style=("bold cyan" if running else style))
+            body.append(cur[:34] + "\n", style="bold white" if running else "white")
+            for past in list(a.history)[-3:]:
+                body.append("  ✓ ", style="green")
+                body.append(past[:32] + "\n", style="dim")
+            title = Text()
+            title.append(f"{icon} ", style=style)
+            title.append(a.role[:22], style=f"bold {style}")
+            boxes.append(Panel(body, title=title, title_align="left",
+                               border_style=style, padding=(0, 1)))
 
-        # Parallel bars (compact, only active)
-        active_cats = {k: v for k, v in s.tool_parallel.items() if v > 0}
-        if active_cats:
-            rows.append(Rule(style="dim"))
-            parts = []
-            for cat, n in list(active_cats.items())[:5]:
-                parts.append(f"{cat}{'■' * min(n, 4)}")
-            rows.append(Text("  " + "  ".join(parts), style="cyan"))
+        sections = [head_panel]
+        if boxes:
+            grid = Table.grid(padding=(0, 1), expand=True)
+            cols = 1 if len(boxes) <= 2 else 2 if len(boxes) <= 8 else 3
+            for _ in range(cols):
+                grid.add_column(ratio=1)
+            for i in range(0, len(boxes), cols):
+                grid.add_row(*boxes[i:i + cols])
+            sections.append(grid)
 
-        # Last action
-        if s.stream:
-            last = list(s.stream)[-1]
-            rows.append(Text(
-                f"  {last.icon} {last.agent[:12]}  {last.action[:30]}",
-                style="dim",
+        # Provider health panel — only shown when health data is available
+        if s.provider_health_rows:
+            from rich.table import Table as _Tbl
+            ph_tbl = _Tbl.grid(padding=(0, 2), expand=False)
+            for _ in range(5):
+                ph_tbl.add_column(no_wrap=True)
+            ph_header = Text()
+            ph_header.append("  Provider  ", style="bold dim")
+            ph_header.append("Status      ", style="bold dim")
+            ph_header.append("Timeouts  ", style="bold dim")
+            ph_header.append("Retries   ", style="bold dim")
+            ph_header.append("Success%", style="bold dim")
+            _status_style_map = {
+                "healthy": "bold green", "degraded": "bold yellow",
+                "unhealthy": "bold red",
+            }
+            for row in s.provider_health_rows:
+                _st = row.get("status", "healthy")
+                _sty = _status_style_map.get(_st, "white")
+                ph_tbl.add_row(
+                    Text(str(row.get("provider", ""))[:22], style="dim white"),
+                    Text(_st.upper(), style=_sty),
+                    Text(str(row.get("timeouts", 0)), style="dim"),
+                    Text(str(row.get("retries", 0)), style="dim"),
+                    Text(f"{row.get('success_rate', 100):.0f}%", style=_sty),
+                )
+            sections.append(Panel(
+                Group(ph_header, ph_tbl),
+                title=Text("◈  Provider Health", style="bold cyan"),
+                border_style="dim cyan", padding=(0, 1),
             ))
 
-        # Intel (last 2)
+        # Intel (last 2) — mission-level notes only, no tool logs
         intel = list(s.intel)[-2:]
         if intel:
-            rows.append(Rule(style="dim"))
+            note = Text()
             for msg in intel:
-                rows.append(Text(f"  {msg[:50]}", style="dim"))
+                note.append(f"  {msg[:60]}\n", style="dim")
+            sections.append(note)
 
-        return Panel(Group(*rows), border_style="cyan", padding=(0, 1))
-
-    # Stop the existing spinner so we can own the terminal with our Live
-    try:
-        from agent.ui.renderer import _activity
-        _activity._stop_cycler()
-        spinner = getattr(_activity, "_spinner", None)
-        if spinner:
-            spinner.stop()
-    except Exception:
-        pass
+        return Group(*sections)
 
     from agent.ui.console import console as rich_console
     from rich.live import Live
@@ -532,30 +645,22 @@ def _rich_dashboard_loop() -> None:
         with Live(
             _build_renderable(),
             console=rich_console,
-            refresh_per_second=4,
+            refresh_per_second=8,
             transient=True,
-            vertical_overflow="visible",
+            # CROP (not "visible"): keep the dashboard in a fixed region and
+            # redraw IN PLACE. "visible" re-prints/scrolls when the panel grid is
+            # taller than the terminal, which stacks duplicate headers.
+            vertical_overflow="crop",
         ) as live:
-            # Redirect console.print so log lines print ABOVE the Live panel
-            orig_print = rich_console.print
-
-            def _live_print(*args, **kwargs):
-                try:
-                    live.console.print(*args, **kwargs)
-                except Exception:
-                    try:
-                        orig_print(*args, **kwargs)
-                    except Exception:
-                        pass
-
-            rich_console.print = _live_print
+            # Rich Live automatically routes console.print() calls above the
+            # panel when a Live is active on that console — no redirect needed.
             try:
                 while _running:
                     _process_events()
                     live.update(_build_renderable())
-                    time.sleep(0.25)
+                    time.sleep(0.05)
             finally:
-                rich_console.print = orig_print
+                pass
     except Exception:
         # Live failed — fall back to periodic prints
         while _running:
@@ -570,344 +675,5 @@ def _rich_dashboard_loop() -> None:
                 )
             except Exception:
                 pass
-            time.sleep(4)
+            time.sleep(1)
 
-
-def _run_app_textual() -> None:
-    try:
-        from textual.app import App, ComposeResult
-        from textual.widgets import Static, Log, TabbedContent, TabPane
-        from textual.containers import Horizontal, Vertical
-        from rich.text import Text
-        from rich.panel import Panel
-        from rich.console import Group
-        from rich.rule import Rule
-
-        class MissionPanel(Static):
-            """Main right-panel — agent tree, parallel graph, stream, patch."""
-
-            def on_mount(self) -> None:
-                self.set_interval(0.25, self._tick)
-
-            def _tick(self) -> None:
-                _process_events()
-                self.update(self._render())
-
-            def _render(self):
-                with _lock:
-                    s = _state
-                sections = []
-
-                # ── Header ─────────────────────────────────────────────
-                pct = s.progress
-                bar_w = 22
-                filled = int(pct * bar_w / 100)
-                bar = f"[cyan]{'█' * filled}[/cyan][dim]{'░' * (bar_w - filled)}[/dim] [bold]{pct}%[/bold]"
-                sections.append(Text.from_markup(
-                    f"[bold cyan]  KRYTH[/bold cyan]  [dim]{s.goal[:40]}[/dim]  "
-                    f"[dim][{s.elapsed}][/dim]"
-                ))
-                sections.append(Text.from_markup(f"  {bar}"))
-                sections.append(Text.from_markup(
-                    f"  [dim]Layer {s.layer}/{s.total_layers} · "
-                    f"{s.active_count} active · {s.done_count}/{s.total_agents} done[/dim]"
-                ))
-                sections.append(Rule(style="dim"))
-
-                # ── Spawn animation ────────────────────────────────────
-                if s.spawn_queue:
-                    for msg in list(s.spawn_queue)[-3:]:
-                        sections.append(Text.from_markup(f"  [bold green]{msg}[/bold green]"))
-                    sections.append(Text(""))
-
-                # ── Agent Tree ─────────────────────────────────────────
-                sections.append(Text.from_markup("  [bold]Agents[/bold]"))
-                sections.extend(_render_agent_tree(s))
-                sections.append(Rule(style="dim"))
-
-                # ── Parallel Execution Graph ───────────────────────────
-                sections.append(Text.from_markup("  [bold]Parallel Execution[/bold]"))
-                cats = ["READ","WRITE","EDIT","SEARCH","CMD","BROWSER","TEST"]
-                for cat in cats:
-                    n = s.tool_parallel.get(cat, 0)
-                    total = s.tool_counts.get(cat, 0)
-                    if n > 0 or total > 0:
-                        bar_str = _bar(n, 8, 8)
-                        sections.append(Text.from_markup(
-                            f"  [dim]{cat:<7}[/dim] [cyan]{bar_str}[/cyan]"
-                            + (f" [dim]{n}[/dim]" if n else "")
-                        ))
-                sections.append(Rule(style="dim"))
-
-                # ── Live Tool Stream ───────────────────────────────────
-                sections.append(Text.from_markup("  [bold]Live Actions[/bold]"))
-                stream_items = list(s.stream)[-6:]
-                for entry in stream_items:
-                    sections.append(Text.from_markup(
-                        f"  [dim]{entry.ts}[/dim] [cyan]{entry.agent[:14]}[/cyan]"
-                    ))
-                    detail_str = f" [dim]{entry.detail}[/dim]" if entry.detail else ""
-                    sections.append(Text.from_markup(
-                        f"  {entry.icon} [white]{entry.action}[/white]{detail_str}"
-                    ))
-                if not stream_items:
-                    sections.append(Text("  (waiting for actions…)", style="dim"))
-                sections.append(Rule(style="dim"))
-
-                # ── Live Patch Viewer ──────────────────────────────────
-                if s.patch:
-                    p = s.patch
-                    if p.is_new and p.lines_total > 0:
-                        filled_p = int(p.lines_written * 16 / max(p.lines_total, 1))
-                        pbar = "█" * filled_p + "░" * (16 - filled_p)
-                        sections.append(Text.from_markup(
-                            f"  [bold]✎ NEW[/bold] [cyan]{p.filename}[/cyan]"
-                        ))
-                        sections.append(Text.from_markup(
-                            f"  [dim]{p.lines_written}/{p.lines_total} lines[/dim]"
-                        ))
-                        sections.append(Text.from_markup(f"  [cyan]{pbar}[/cyan]"))
-                    elif p.diff_lines:
-                        sections.append(Text.from_markup(
-                            f"  [bold]✎ PATCH[/bold] [cyan]{p.filename}[/cyan]"
-                        ))
-                        for sign, txt in p.diff_lines[:5]:
-                            if sign == "+":
-                                sections.append(Text.from_markup(
-                                    f"  [green]+ {txt[:38]}[/green]"
-                                ))
-                            elif sign == "-":
-                                sections.append(Text.from_markup(
-                                    f"  [red]- {txt[:38]}[/red]"
-                                ))
-                    sections.append(Rule(style="dim"))
-
-                # ── File Ownership ─────────────────────────────────────
-                if s.ownership:
-                    sections.append(Text.from_markup("  [bold]File Ownership[/bold]"))
-                    for fname, owner in list(s.ownership.items())[:5]:
-                        sections.append(Text.from_markup(
-                            f"  [dim]{fname[:18]:18}[/dim] [cyan]{owner[:16]}[/cyan]"
-                        ))
-                    sections.append(Rule(style="dim"))
-
-                # ── Models ─────────────────────────────────────────────
-                if s.model_routes:
-                    sections.append(Text.from_markup("  [bold]Models[/bold]"))
-                    for role, model in s.model_routes.items():
-                        sections.append(Text.from_markup(
-                            f"  [dim]{role:<10}[/dim] [white]{model[:16]}[/white]"
-                        ))
-                    sections.append(Rule(style="dim"))
-
-                # ── Background Intelligence ────────────────────────────
-                if s.intel:
-                    sections.append(Text.from_markup("  [bold]Optimizer[/bold]"))
-                    for msg in list(s.intel)[-5:]:
-                        sections.append(Text.from_markup(f"  [dim]{msg[:42]}[/dim]"))
-                    sections.append(Rule(style="dim"))
-
-                # ── Performance ────────────────────────────────────────
-                sections.append(Text.from_markup("  [bold]Performance[/bold]"))
-                sections.append(Text.from_markup(
-                    f"  [dim]Tokens[/dim]    [white]{s.tokens // 1000}k[/white]"
-                ))
-                sections.append(Text.from_markup(
-                    f"  [dim]Parallel[/dim]  [cyan]{s.parallelism}[/cyan]"
-                ))
-                sections.append(Text.from_markup(
-                    f"  [dim]Speedup[/dim]   [green]{s.speedup:.1f}x[/green]"
-                ))
-                sections.append(Text.from_markup(
-                    f"  [dim]Peak[/dim]      [white]{s.peak_agents}[/white]"
-                ))
-
-                return Panel(
-                    Group(*sections),
-                    border_style="cyan",
-                    padding=(0, 0),
-                )
-
-        class LogPane(Log):
-            pass
-
-        class KRYTHApp(App):
-            CSS = """
-            Screen { layout: horizontal; }
-            #logs {
-                width: 60%;
-                height: 100%;
-                overflow-y: scroll;
-            }
-            #panel {
-                width: 40%;
-                height: 100%;
-                overflow-y: scroll;
-            }
-            """
-
-            def compose(self) -> ComposeResult:
-                yield LogPane(id="logs", highlight=True, markup=True)
-                yield MissionPanel(id="panel")
-
-            def on_mount(self) -> None:
-                try:
-                    from agent.ui.console import console as rc
-                    log_pane = self.query_one("#logs", LogPane)
-                    _patch_console(rc, log_pane, self)
-                except Exception:
-                    pass
-
-        app = KRYTHApp()
-        _app_instance = app
-        app.run()
-
-    except ImportError:
-        # Textual not installed — use ANSI overlay (works everywhere)
-        _ansi_overlay_loop()
-    except Exception:
-        # Textual crashed — fall back to ANSI overlay
-        _ansi_overlay_loop()
-
-
-def _patch_console(rich_console, log_pane, app) -> None:
-    orig = rich_console.print
-    def _new(*args, **kwargs):
-        try:
-            orig(*args, **kwargs)
-        except Exception:
-            pass
-        try:
-            text = " ".join(str(a) for a in args).strip()
-            if text:
-                app.call_from_thread(log_pane.write_line, text)
-        except Exception:
-            pass
-    rich_console.print = _new
-
-
-def _ansi_overlay_loop() -> None:
-    """ANSI escape code bottom-bar overlay.
-
-    Uses cursor-save/restore to paint a status bar at the bottom of the
-    terminal without interfering with the Rich log stream above it.
-    Works even when a Rich Live is already running.
-    """
-    import sys
-    import shutil
-
-    SAVE    = "\033[s"
-    RESTORE = "\033[u"
-    HIDE    = "\033[?25l"
-    SHOW    = "\033[?25h"
-    CLEAR   = "\033[2K"
-    UP      = "\033[{n}A"
-    DOWN    = "\033[{n}B"
-    CYAN    = "\033[96m"
-    GREEN   = "\033[92m"
-    DIM     = "\033[2m"
-    BOLD    = "\033[1m"
-    RESET   = "\033[0m"
-    BAR_HEIGHT = 3  # lines used by the overlay
-
-    def _paint() -> None:
-        with _lock:
-            s = _state
-        try:
-            cols = shutil.get_terminal_size((80, 24)).columns
-        except Exception:
-            cols = 80
-
-        pct = s.progress
-        bar_w = max(10, cols // 4)
-        filled = int(pct * bar_w / 100)
-        prog = "█" * filled + "░" * (bar_w - filled)
-
-        agents_str = "  ".join(
-            f"{_STATUS_ICON.get(a.status,'·')} {a.role[:14]}"
-            for a in list(s.agents.values())[:4]
-        )
-        parallel_str = "  ".join(
-            f"{cat}:{n}"
-            for cat, n in list(s.tool_parallel.items())[:4]
-            if n > 0
-        )
-        stream_str = ""
-        if s.stream:
-            last = list(s.stream)[-1]
-            stream_str = f"{last.icon} {last.agent[:10]} {last.action[:25]}"
-
-        line1 = (
-            f"{CYAN}{BOLD}◈ KRYTH{RESET}  "
-            f"{DIM}{s.goal[:30]}{RESET}  "
-            f"{CYAN}{prog}{RESET} {pct}%  "
-            f"{DIM}[{s.elapsed}]  "
-            f"{s.active_count} running  "
-            f"{s.done_count}/{s.total_agents} done{RESET}"
-        )
-        line2 = f"{DIM}{agents_str[:cols-4]}{RESET}"
-        line3 = (
-            f"{DIM}{stream_str[:cols//2-2]}  "
-            f"{parallel_str[:cols//2-2]}{RESET}"
-        )
-
-        out = (
-            SAVE
-            + f"\033[{BAR_HEIGHT}B"      # move down past log area (go to bottom)
-            + "\r" + CLEAR + line3
-            + "\033[1A\r" + CLEAR + line2
-            + "\033[1A\r" + CLEAR + line1
-            + RESTORE
-        )
-        sys.stdout.write(out)
-        sys.stdout.flush()
-
-    # Print blank lines to reserve space at bottom
-    try:
-        sys.stdout.write("\n" * BAR_HEIGHT)
-        sys.stdout.flush()
-    except Exception:
-        pass
-
-    while _running:
-        _process_events()
-        try:
-            _paint()
-        except Exception:
-            pass
-        time.sleep(0.3)
-
-    # Clear overlay on exit
-    try:
-        import shutil as _sh
-        cols = _sh.get_terminal_size((80, 24)).columns
-        clear_line = " " * cols
-        out = (
-            "\033[s"
-            + f"\033[{BAR_HEIGHT}B"
-            + "\r" + clear_line
-            + "\033[1A\r" + clear_line
-            + "\033[1A\r" + clear_line
-            + "\033[u"
-        )
-        sys.stdout.write(out)
-        sys.stdout.flush()
-    except Exception:
-        pass
-
-
-def _fallback_loop() -> None:
-    while _running:
-        _process_events()
-        with _lock:
-            s = _state
-        try:
-            from agent.ui.console import console
-            console.print(
-                f"  ◈ {s.goal[:40]}  {s.progress}%  "
-                f"{s.active_count} running  [{s.elapsed}]",
-                style="dim",
-            )
-        except Exception:
-            pass
-        time.sleep(5)

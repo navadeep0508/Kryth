@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re as _re
 import time as _time
 from contextlib import contextmanager
 from typing import Iterator
@@ -11,6 +12,17 @@ from rich.text import Text
 
 from agent.ui.console import console
 from agent.ui.theme import CORE, WAITING
+
+
+def _norm_label(s: str) -> str:
+    """Normalize a spinner label: the braille spinner + ◈ glyph are drawn by
+    the Spinner itself, so strip any leading brand glyph a caller prepended and
+    collapse trailing ellipsis variants to a single … (avoids '◈  ◈ msg……')."""
+    s = (s or "").strip()
+    while s[:1] in ("◈", "◇", "◆"):
+        s = s[1:].lstrip()
+    s = _re.sub(r"[.…]{2,}$", "…", s)
+    return s
 
 
 class Spinner:
@@ -24,7 +36,7 @@ class Spinner:
     def start(self, message: str | None = None) -> None:
         if self._status is not None:
             return
-        label = message or self._message
+        label = _norm_label(message or self._message)
         self._start_time = _time.monotonic()
         try:
             self._status = console.status(
@@ -41,7 +53,7 @@ class Spinner:
         if self._status is not None:
             try:
                 self._status.update(
-                    Text.assemble((CORE, "kryth.core"), ("  " + message, "muted"))
+                    Text.assemble((CORE, "kryth.core"), ("  " + _norm_label(message), "muted"))
                 )
             except Exception:
                 pass

@@ -70,7 +70,7 @@ For more information, visit: https://kryth.vercel.app/
     parser.add_argument(
         "--version",
         action="version",
-        version="kryth %(prog)s 2.3.0",
+        version="kryth %(prog)s 2.4.0",
         help="Show version information and exit"
     )
 
@@ -95,7 +95,7 @@ For more information, visit: https://kryth.vercel.app/
     # OPENAI_API_KEY must be set before any agent import happens.        #
     # ------------------------------------------------------------------ #
 
-    # 1. Stored config (~/.ai-coder/config.json; legacy ~/.xerocodeai is read)
+    # 1. Stored config (~/.kryth/config.json; legacy paths migrated on first load)
     try:
         from kryth.config import apply_to_env
         apply_to_env()
@@ -119,25 +119,16 @@ For more information, visit: https://kryth.vercel.app/
     except Exception:
         pass
 
-    # 4. If still no key, tell the user and open config TUI right away.
-    if not os.environ.get("OPENAI_API_KEY", "").strip():
-        os.environ["OPENAI_API_KEY"] = "not-configured"
-        _no_key_at_startup = True
-    else:
-        _no_key_at_startup = False
-
-    # 5. Prompt for NVIDIA API key on first run (used for vision).
+    # 4. If no NVIDIA key set, prompt once — everything else defaults.
     if not os.environ.get("NVIDIA_API_KEY", "").strip():
         try:
-            from kryth.config import _load, _save, CONFIG_FILE
+            from kryth.config import _load, _save
             cfg = _load()
             if not cfg.get("nvidia_api_key", "").strip():
-                print(
-                    "\n  KRYTH Vision uses NVIDIA AI (stepfun-ai/step-3.7-flash).\n"
-                    "  Get a free API key at: https://build.nvidia.com\n"
-                    "  NVIDIA_API_KEY (press Enter to skip): ",
-                    end="", flush=True,
-                )
+                print("\n  Welcome to KRYTH!\n")
+                print("  KRYTH runs on NVIDIA NIM models (main · planner · summarizer · vision).")
+                print("  Get a free API key at: https://build.nvidia.com\n")
+                print("  NVIDIA API key: ", end="", flush=True)
                 try:
                     nvidia_key = input().strip()
                 except (EOFError, KeyboardInterrupt):
@@ -146,11 +137,41 @@ For more information, visit: https://kryth.vercel.app/
                     cfg["nvidia_api_key"] = nvidia_key
                     _save(cfg)
                     os.environ["NVIDIA_API_KEY"] = nvidia_key
-                    print("  NVIDIA API key saved.\n")
+                    print("  API key saved. You're ready to go!\n")
                 else:
-                    print("  Skipped — vision fallback will be disabled.\n")
+                    print("  No key entered — set it anytime with /config\n")
+            else:
+                os.environ["NVIDIA_API_KEY"] = cfg["nvidia_api_key"]
         except Exception:
             pass
+
+    # Wire NVIDIA NIM as the LLM backend.
+    # llm.py uses OPENAI_API_KEY + KRYTH_BASE_URL + KRYTH_*_MODEL env vars.
+    # When NVIDIA_API_KEY is set and no overrides exist, point everything at NIM.
+    nvidia_key = os.environ.get("NVIDIA_API_KEY", "").strip()
+    if nvidia_key:
+        # Mirror key so OpenAI-compatible client authenticates against NIM
+        if not os.environ.get("OPENAI_API_KEY", "").strip():
+            os.environ["OPENAI_API_KEY"] = nvidia_key
+
+        # Set NIM base URL (overrides openai.com default)
+        if not os.environ.get("KRYTH_BASE_URL", "").strip():
+            os.environ["KRYTH_BASE_URL"] = "https://integrate.api.nvidia.com/v1"
+
+        # Set NIM model defaults for each role (from nim_router/config.py chains)
+        _NIM_DEFAULTS = {
+            "KRYTH_MAIN_MODEL":       "moonshotai/kimi-k2.6",
+            "KRYTH_PLANNER_MODEL":    "moonshotai/kimi-k2.6",
+            "KRYTH_SUMMARIZER_MODEL": "stepfun-ai/step-3.5-flash",
+            "KRYTH_VISION_MODEL":     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        }
+        for env_var, model in _NIM_DEFAULTS.items():
+            # Only set if not already overridden by user in config or env
+            if not os.environ.get(env_var, "").strip():
+                os.environ[env_var] = model
+    else:
+        if not os.environ.get("OPENAI_API_KEY", "").strip():
+            os.environ["OPENAI_API_KEY"] = "not-configured"
 
     # Now safe to import the agent package.
     try:
@@ -182,8 +203,10 @@ For more information, visit: https://kryth.vercel.app/
         return  # Exit after validation
 
     # Delegate to the bundled REPL loop.
+    # Pass any positional arguments as the initial prompt for non-interactive mode.
+    initial_prompt = " ".join(remaining).strip() if remaining else ""
     from kryth._repl_main import main as _repl_main
-    _repl_main()
+    _repl_main(initial_prompt=initial_prompt)
 
 
 if __name__ == "__main__":

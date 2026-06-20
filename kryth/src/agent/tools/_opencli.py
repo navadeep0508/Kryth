@@ -550,8 +550,8 @@ def get_research_report() -> str:
 
 def browser_use_task(
     task: str,
-    llm_provider: str = "nvidia",
-    model_name: str = "stepfun-ai/step-3.7-flash",
+    llm_provider: str = "auto",
+    model_name: str | None = None,
     max_steps: int = 10,
     headless: bool = False,
     use_vision: bool = True,
@@ -571,10 +571,11 @@ def browser_use_task(
         Natural language description of what to do, e.g.
         "Open YouTube, search for Python tutorials, select the top result and play it."
     llm_provider:
-        LLM backend — "nvidia" (default), "openai", "anthropic", "google", "ollama".
+        LLM backend — "auto" (default, detects from env), "nvidia", "openai",
+        "anthropic", "google", "ollama". Override with KRYTH_BROWSER_PROVIDER env var.
     model_name:
-        Model identifier for the chosen provider.
-        Default: "stepfun-ai/step-3.7-flash" (NVIDIA vision model).
+        Model identifier for the chosen provider. Default: auto-selected per provider.
+        Override with KRYTH_BROWSER_MODEL env var.
     max_steps:
         Maximum agent steps before stopping (default 10).
     headless:

@@ -54,37 +54,124 @@ class TeamPlan:
     layer_count: int = 1
 
 
+def team_from_contract(team_contract, user_input: str = "", *,
+                       strategy: str = "parallel") -> TeamPlan:
+    """Build a TeamPlan DIRECTLY from an approved MissionTeamContract.
+
+    This is the source-of-truth path: the teams (and their owned tasks) shown in
+    the Mission Execution Preview become the EXACT agents spawned — no LLM
+    re-generation, no template fallback, no substitution. ``team_contract`` has
+    ``.teams`` = {team label: [task names]} (a dict-like is also accepted).
+    """
+    teams = (team_contract.teams if hasattr(team_contract, "teams")
+             else dict(team_contract or {}))
+    # Priority order: foundational domains first so dependent work starts on
+    # warm outputs (and the concurrency cap spends early slots on what unblocks
+    # the most downstream work). Lower number = sooner.
+    _PRIORITY = {
+        "infrastructure": 0, "database": 1, "auth": 2, "security": 3,
+        "backend": 4, "payments": 5, "frontend": 6, "testing": 7,
+        "documentation": 8, "deploy": 9, "deployment": 9,
+    }
+
+    def _prio(label: str) -> int:
+        key = str(label).lower().replace(" team", "").strip()
+        return _PRIORITY.get(key, 5)
+
+    ordered = sorted(teams.items(), key=lambda kv: (_prio(kv[0]), str(kv[0])))
+    agents: List[AgentRole] = []
+    for label, tasks in ordered:
+        aid = re.sub(r"[^a-z0-9]+", "_", str(label).lower()).strip("_") or "agent"
+        tasks = list(tasks or [])
+        mission = (f"{label}: own and complete {', '.join(tasks)}" if tasks
+                   else f"{label}: complete the {label} work for: {user_input[:80]}")
+        agents.append(AgentRole(
+            id=aid, role=str(label), mission=mission,
+            task_node_ids=list(tasks),          # the previewed tasks = owned tasks
+            dependencies=[],                      # contract teams start together
+            max_turns=80,
+        ))
+    n = max(1, len(agents))
+    return TeamPlan(
+        agents=agents, complexity=float(n), risk_assessment="from-contract",
+        estimated_total_turns=n * 80, estimated_total_tokens=n * 80 * 2000,
+        parallel_benefit=float(n), parallel_cost=1.0,
+        recommended_strategy=strategy, reasoning="Built from approved Mission Execution Preview contract",
+        layer_count=1,
+    )
+
+
 # ---------------------------------------------------------------------------
 # LLM-generated dynamic team
 # ---------------------------------------------------------------------------
 
-_TEAM_SYSTEM = """You are an engineering team architect optimizing for MAXIMUM PARALLELISM.
-Given a task DAG, user request, and repository context, generate the minimum set of
-specialized engineering agents that can execute the work as fast as possible.
+_TEAM_SYSTEM = """You are an engineering team architect. Your job: read the task and generate exactly 4 specialized agents that divide the work into 4 non-overlapping parallel slices.
 
-CRITICAL PARALLELISM RULES:
-- Agents with NO shared file/data dependencies MUST have empty depends_on [].
-- Only add a dependency when agent B literally cannot start without agent A's OUTPUT.
-- Database schema MUST exist before auth or backend can use it → auth/backend depend on db.
-- Frontend/UI components are INDEPENDENT of backend API implementation → no dependency.
-- Tests and docs are INDEPENDENT of each other → no cross-dependency.
-- Aim for wide layers (multiple agents with [] depends_on) not tall chains.
+═══ NON-NEGOTIABLE RULES ═══
+1. ALWAYS generate exactly 4 agents — no more, no fewer.
+2. Every agent MUST have "depends_on": [] — all 4 start at the same time.
+3. Each agent owns distinct, non-overlapping files/directories.
+4. Missions are specific to the actual task — never generic filler.
+5. max_turns: 40–100 per agent based on scope.
 
-Other rules:
-- Generate 1-6 agents. Fewer is better — merge related work into one agent.
-- id: kebab-case unique identifier
-- role: human-readable job title
-- mission: specific one-sentence mission for this exact task (not generic)
-- owned_dirs: directories this agent writes to — NO overlap between agents
-- max_turns: 20-120
+═══ HOW TO SPLIT WORK ═══
+Divide by vertical slice (each agent owns a full vertical of the system):
+  - Slice A: data layer  (db models, schema, migrations, seeds)
+  - Slice B: logic layer (services, business logic, API routes, handlers)
+  - Slice C: UI layer    (components, pages, styles, state management)
+  - Slice D: infra layer (tests, CI, Docker, docs, config)
 
-BAD (all sequential, no parallelism):
-[{"id":"db","depends_on":[]}, {"id":"auth","depends_on":["db"]}, {"id":"api","depends_on":["auth"]}, {"id":"fe","depends_on":["api"]}, {"id":"test","depends_on":["fe"]}]
+For tasks without clear layers, split by feature domain:
+  - Slice A: feature core (main business logic, data structures)
+  - Slice B: feature API  (endpoints, serializers, validators)
+  - Slice C: feature UI   (pages, forms, visualizations)
+  - Slice D: feature ops  (tests, error handling, logging, monitoring)
 
-GOOD (maximum parallelism):
-[{"id":"db","depends_on":[]}, {"id":"auth","depends_on":["db"]}, {"id":"api","depends_on":["db"]}, {"id":"frontend","depends_on":[]}, {"id":"tests","depends_on":["db"]}]
+For single-layer tasks (e.g. pure refactor, pure testing), split by module/directory:
+  - Slice A: first 25% of files by path
+  - Slice B: next 25%
+  - Slice C: next 25%
+  - Slice D: last 25% + integration
 
-Return ONLY a valid JSON array - no prose, no fences."""
+═══ EXAMPLES ═══
+
+REQUEST: "Build a full-stack e-commerce app with auth, products, cart and checkout"
+OUTPUT:
+[
+  {"id":"data","role":"Data & Auth Engineer","mission":"Create database schema for users/products/orders, implement auth middleware with JWT, seed data","depends_on":[],"owned_dirs":["src/db","src/auth","migrations"],"max_turns":70},
+  {"id":"api","role":"API Engineer","mission":"Build REST endpoints for products, cart, checkout; wire up Stripe payments and order processing","depends_on":[],"owned_dirs":["src/api","src/services","src/middleware"],"max_turns":90},
+  {"id":"ui","role":"Frontend Engineer","mission":"Build product listing, cart sidebar, checkout flow, and auth pages with React and Tailwind","depends_on":[],"owned_dirs":["src/components","src/pages","src/hooks"],"max_turns":90},
+  {"id":"ops","role":"DevOps & QA Engineer","mission":"Write unit+integration tests, set up Dockerfile, GitHub Actions CI, and environment configs","depends_on":[],"owned_dirs":["tests","docker",".github","docs"],"max_turns":50}
+]
+
+REQUEST: "Refactor the Python backend to use async SQLAlchemy and fix N+1 query issues"
+OUTPUT:
+[
+  {"id":"models","role":"ORM Migration Engineer","mission":"Convert all SQLAlchemy models to async, update Base classes, fix relationship loading strategies to eliminate N+1","depends_on":[],"owned_dirs":["app/models","app/database"],"max_turns":70},
+  {"id":"services","role":"Service Layer Engineer","mission":"Refactor service functions to async/await, replace synchronous queries with optimized async batch queries","depends_on":[],"owned_dirs":["app/services","app/repositories"],"max_turns":80},
+  {"id":"routes","role":"Route Handler Engineer","mission":"Update all FastAPI route handlers and dependencies to async, fix session lifecycle management","depends_on":[],"owned_dirs":["app/routers","app/dependencies"],"max_turns":70},
+  {"id":"tests","role":"Test & Validation Engineer","mission":"Update all tests to use pytest-asyncio, add query-count assertions, run and fix failing tests","depends_on":[],"owned_dirs":["tests","scripts"],"max_turns":60}
+]
+
+REQUEST: "Add real-time notifications with WebSockets to the existing chat app"
+OUTPUT:
+[
+  {"id":"ws-server","role":"WebSocket Server Engineer","mission":"Implement WebSocket connection manager, message broadcaster, and room/channel logic in the backend","depends_on":[],"owned_dirs":["backend/websockets","backend/channels"],"max_turns":80},
+  {"id":"ws-client","role":"WebSocket Client Engineer","mission":"Build React hooks for WebSocket connections, implement reconnection logic and message queue on the frontend","depends_on":[],"owned_dirs":["frontend/hooks","frontend/context","frontend/websocket"],"max_turns":70},
+  {"id":"notifications","role":"Notification UI Engineer","mission":"Build notification bell component, notification list, toast system, and unread badge with real-time updates","depends_on":[],"owned_dirs":["frontend/components/notifications","frontend/stores"],"max_turns":70},
+  {"id":"persistence","role":"Persistence & Testing Engineer","mission":"Add notification model and DB schema, write integration tests for WebSocket flows, add e2e test","depends_on":[],"owned_dirs":["backend/models","tests","migrations"],"max_turns":50}
+]
+
+═══ JSON SCHEMA ═══
+Each agent object:
+  "id": string (kebab-case, unique)
+  "role": string (specific job title, not "Engineer" alone)
+  "mission": string (one sentence, task-specific, action-oriented)
+  "depends_on": [] (always empty array — mandatory)
+  "owned_dirs": [string] (directories this agent exclusively writes to)
+  "max_turns": number (40–100)
+
+Return ONLY the JSON array. No explanation, no markdown fences."""
 
 
 def _llm_generate_team(
@@ -98,16 +185,16 @@ def _llm_generate_team(
 
         dag_summary = json.dumps([
             {"id": n.id, "name": n.name, "description": n.description,
-             "capabilities": n.capabilities_required, "deps": n.dependencies,
-             "dirs": n.affected_dirs}
+             "capabilities": n.capabilities_required,
+             "dirs": n.affected_dirs, "files": n.affected_files[:4]}
             for n in dag.nodes.values()
         ], separators=(",", ":"))
 
         prompt = (
-            f"User request: {user_input[:500]}\n\n"
-            f"Repository: {repo_summary[:600]}\n\n"
-            f"Task DAG: {dag_summary[:1200]}\n\n"
-            "Generate the engineering team:"
+            f"Task: {user_input[:800]}\n\n"
+            f"Repository context: {repo_summary[:800]}\n\n"
+            f"Work items: {dag_summary[:1500]}\n\n"
+            "Generate the 4-agent parallel team:"
         )
         try:
             from agent.model_router import TaskRole, pick_model_for_role
@@ -122,7 +209,7 @@ def _llm_generate_team(
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
-            max_tokens=1500,
+            max_tokens=2000,
             timeout=10,
         )
         raw = (resp.choices[0].message.content or "").strip()
@@ -145,7 +232,7 @@ def _parse_llm_agents(raw_agents: List[dict], dag: TaskDAG) -> Optional[List[Age
     seen_ids: set = set()
     roles: list[AgentRole] = []
 
-    for raw in raw_agents[:8]:
+    for raw in raw_agents[:4]:
         aid = str(raw.get("id", "")).strip().replace(" ", "-")
         if not aid or aid in seen_ids:
             continue
@@ -234,6 +321,12 @@ def generate_team(dag: TaskDAG, user_input: str = "", repo_profile=None) -> Team
     if not agents:
         agents = _generate_fixed_team(dag, layers)
 
+    # Force all agents into Layer 1: strip every inter-agent dependency so all
+    # 4 agents start simultaneously. Agents read any files they need from disk;
+    # the integrator resolves any ordering concerns at the end.
+    for a in agents:
+        a.dependencies = []
+
     # Compute complexity and strategy
     total_turns = dag.total_estimated_turns()
     num_agents = len(agents)
@@ -242,7 +335,6 @@ def generate_team(dag: TaskDAG, user_input: str = "", repo_profile=None) -> Team
     parallel_cost = _compute_parallel_cost(dag, num_agents)
 
     dag_layers = dag.layers()
-    has_parallel_layers = any(len(layer) > 1 for layer in dag_layers)
 
     if num_agents <= 1:
         strategy = "single"
@@ -295,6 +387,8 @@ _ROLE_TEMPLATES: Dict[str, dict] = {
 }
 
 _CAP_TO_ROLE: Dict[str, str] = {
+    "frontend": "frontend specialist",
+    "backend": "backend specialist",
     "database": "database specialist",
     "authentication": "auth specialist",
     "payments": "payment specialist",

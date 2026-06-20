@@ -122,13 +122,33 @@ def _parse_legacy_json(data: dict) -> dict:
     out: dict[str, Any] = {"mode": "unified"}
     if data.get("model"):
         out["model"] = data["model"]
-    if data.get("base_url"):
-        out["base_url"] = data["base_url"]
-    if data.get("api_key"):
-        out["api_key"] = data["api_key"]
+    base_url = data.get("base_url", "")
+    if base_url:
+        out["base_url"] = base_url
+    api_key = data.get("api_key", "")
+    if api_key:
+        out["api_key"] = api_key
+    # Derive provider from base_url so planner/summarizer use the same endpoint
+    _url = base_url.lower()
+    if "nvidia" in _url or "integrate.api" in _url:
+        _provider = "nvidia"
+    elif "anthropic" in _url or "freemodel" in _url:
+        _provider = "anthropic"
+    elif "openrouter" in _url:
+        _provider = "openrouter"
+    else:
+        _provider = "openai"
+    # Register provider config so router can find base_url + api_key
+    if base_url and api_key:
+        out.setdefault("providers", {})[_provider] = {
+            "api_key": api_key,
+            "base_url": base_url,
+        }
     # Planner / summarizer from legacy keys
     if data.get("planner_model"):
-        out.setdefault("models", {})["planner"] = {"provider": "openai", "model": data["planner_model"]}
+        out.setdefault("models", {})["planner"] = {"provider": _provider, "model": data["planner_model"]}
+    if data.get("summarizer_model"):
+        out.setdefault("models", {})["summary"] = {"provider": _provider, "model": data["summarizer_model"]}
     return out
 
 
@@ -154,11 +174,20 @@ def _env_overrides() -> dict[str, Any]:
     if api_key and api_key not in ("not-configured", "not-set"):
         out["api_key"] = api_key
 
+    # Derive provider from base_url for env-configured planner/summarizer
+    _env_url = base_url.lower() if base_url else ""
+    if "nvidia" in _env_url or "integrate.api" in _env_url:
+        _env_provider = "nvidia"
+    elif "anthropic" in _env_url or "freemodel" in _env_url:
+        _env_provider = "anthropic"
+    else:
+        _env_provider = "openai"
+
     models: dict = {}
     if planner_model:
-        models["planner"] = {"provider": "openai", "model": planner_model}
+        models["planner"] = {"provider": _env_provider, "model": planner_model}
     if summarizer_model:
-        models["summary"] = {"provider": "openai", "model": summarizer_model}
+        models["summary"] = {"provider": _env_provider, "model": summarizer_model}
 
     # Vision: if NVIDIA key present + NVIDIA base_url or default
     if nvidia_key:

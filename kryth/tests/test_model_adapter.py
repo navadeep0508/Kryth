@@ -302,13 +302,14 @@ class TestToolParser:
         assert calls[0].name == "edit_file"
         assert calls[0].arguments["path"] == "app.py"
 
-    def test_xml_text_parsing(self):
+    def test_xml_tool_parsing_removed(self):
+        # Runtime v2: XML tool-call parsing is GONE. The method no longer
+        # exists and XML markup yields no tool calls via from_any.
         from agent.model.tool_parser import ToolParser
         parser = ToolParser()
+        assert not hasattr(parser, "from_xml_text")
         text = '<tool_call><tool_name>run_tests</tool_name><parameters>{"suite": "unit"}</parameters></tool_call>'
-        calls = parser.from_xml_text(text)
-        assert len(calls) == 1
-        assert calls[0].name == "run_tests"
+        assert parser.from_any(text) == []
 
     def test_json_fence_parsing(self):
         from agent.model.tool_parser import ToolParser
@@ -318,12 +319,36 @@ class TestToolParser:
         assert len(calls) == 1
         assert calls[0].name == "shell_exec"
 
-    def test_from_any_xml_fallback(self):
+    def test_from_any_xml_yields_nothing(self):
+        # XML "tool call" text must NOT be parsed into an executable call.
         from agent.model.tool_parser import ToolParser
         parser = ToolParser()
         text = '<invoke><tool_name>get_status</tool_name><input>{"key": "val"}</input></invoke>'
-        calls = parser.from_any(text)
-        assert len(calls) >= 1
+        assert parser.from_any(text) == []
+
+    def test_from_any_bare_json_object(self):
+        # The validated structured-output fallback: a bare JSON object.
+        from agent.model.tool_parser import ToolParser
+        parser = ToolParser()
+        calls = parser.from_any('{"name": "read_file", "arguments": {"path": "a.txt"}}')
+        assert len(calls) == 1
+        assert calls[0].name == "read_file"
+        assert calls[0].arguments == {"path": "a.txt"}
+
+    def test_from_any_rejects_malformed(self):
+        from agent.model.tool_parser import ToolParser
+        parser = ToolParser()
+        # Missing name, non-dict arguments, broken JSON — all rejected.
+        assert parser.from_any('{"arguments": {"path": "a"}}') == []
+        assert parser.from_any('{"name": "read_file", "arguments": "oops"}') == []
+        assert parser.from_any('{"name": "read_file", "arguments":') == []
+
+    def test_harmony_contaminated_name_sanitized(self):
+        from agent.model.tool_parser import ToolParser
+        parser = ToolParser()
+        calls = parser.from_any('{"name": "read_file<|channel|>json", "arguments": {}}')
+        assert len(calls) == 1
+        assert calls[0].name == "read_file"
 
     def test_no_tool_calls_returns_empty(self):
         from agent.model.tool_parser import ToolParser
@@ -598,9 +623,13 @@ class TestModelAdapter:
     def test_parse_tool_calls_from_text(self):
         from agent.model.model_adapter import ModelAdapter
         adapter = ModelAdapter.for_model("gpt-4o")
+        # XML markup is no longer parsed into tool calls (Runtime v2).
         text = '<tool_call><tool_name>run_tests</tool_name><parameters>{"suite":"unit"}</parameters></tool_call>'
         calls = adapter.parse_tool_calls_from_text(text)
-        assert isinstance(calls, list)
+        assert calls == []
+        # A validated JSON object IS parsed.
+        calls2 = adapter.parse_tool_calls_from_text('{"name":"run_tests","arguments":{"suite":"unit"}}')
+        assert len(calls2) == 1 and calls2[0].name == "run_tests"
 
 
 # ---------------------------------------------------------------------------
@@ -623,10 +652,11 @@ class TestStreamingTags:
         names = {s.name for s in _TAG_SPECS}
         assert "reflect" in names
 
-    def test_reasoning_shows_live(self):
+    def test_reasoning_is_silent(self):
+        # Runtime v2: reasoning is consumed and hidden, never rendered.
         from agent.ui.streaming import _TAG_SPECS
         spec = next(s for s in _TAG_SPECS if s.name == "reasoning")
-        assert spec.show_live is True
+        assert spec.show_live is False
 
     def test_tool_use_is_silent(self):
         from agent.ui.streaming import _TAG_SPECS
@@ -647,12 +677,13 @@ class TestStreamingTags:
         assert "function" in silent
         assert "parameter" in silent
 
-    def test_thinking_tags_have_correct_color(self):
+    def test_thinking_tags_are_silent(self):
+        # Runtime v2: reasoning tags are stripped silently (no color, hidden).
         from agent.ui.streaming import _TAG_SPECS
-        _ANSI_CYAN = "\033[38;2;100;200;240m"
         specs = [s for s in _TAG_SPECS if s.name in ("thinking", "thinking_alt", "reasoning", "analysis")]
+        assert specs, "reasoning tags must still exist as silent leak-strippers"
         for s in specs:
-            assert s.ansi_color == _ANSI_CYAN
+            assert s.show_live is False
 
     def test_spec_lookup_dict_built(self):
         from agent.ui.streaming import _SPEC_BY_OPEN, _SPEC_BY_CLOSE

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
+import time
 from typing import Callable, Iterable
 
 from prompt_toolkit import PromptSession
@@ -10,7 +12,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
-from prompt_toolkit.formatted_text import HTML, ANSI
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -33,7 +35,6 @@ def _history() -> FileHistory:
 
 def _term_width() -> int:
     try:
-        import shutil
         return shutil.get_terminal_size((80, 24)).columns
     except Exception:
         return 80
@@ -68,9 +69,20 @@ class _SlashCompleter(Completer):
 def _make_bindings() -> KeyBindings:
     kb = KeyBindings()
 
+    # Track time of last Enter to detect rapid-fire paste (each pasted \n
+    # arrives as an Enter keypress; a human can't press Enter faster than ~100ms).
+    _last_enter: list[float] = [0.0]
+
     @kb.add("enter")
     def _(event):
         buf = event.current_buffer
+        now = time.monotonic()
+        # Enters < 150 ms apart are paste — insert newline, don't submit.
+        is_paste = (now - _last_enter[0]) < 0.15
+        _last_enter[0] = now
+        if is_paste:
+            buf.insert_text("\n")
+            return
         if buf.text.rstrip(" ").endswith("\\"):
             buf.delete_before_cursor(1)
             buf.insert_text("\n")

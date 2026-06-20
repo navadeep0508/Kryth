@@ -1,14 +1,17 @@
-"""KRYTH CLI config â€” interactive TUI + read/write for model, base_url, api_key.
+"""KRYTH CLI config - API key + optional per-role model overrides.
 
-Storage: ``~/.ai-coder/config.json``  (mode 0600)
+Storage: ~/.kryth/config.json  (mode 0600)
 
 Keys
 ----
-  model            -> AICODER_MAIN_MODEL
-  planner_model    -> AICODER_PLANNER_MODEL
-  summarizer_model -> AICODER_SUMMARIZER_MODEL
-  base_url         -> AICODER_BASE_URL
-  api_key          â†’ OPENAI_API_KEY
+  nvidia_api_key   -> NVIDIA_API_KEY   (required - all models run on NVIDIA NIM)
+  main_model       -> KRYTH_MAIN_MODEL       (optional override; NIM chain used by default)
+  planner_model    -> KRYTH_PLANNER_MODEL    (optional override)
+  summarizer_model -> KRYTH_SUMMARIZER_MODEL (optional override)
+  vision_model     -> KRYTH_VISION_MODEL     (optional override)
+
+All other settings (base URL, fallback chains, TTFT thresholds) are fixed
+in the NIM router (nim_router/config.py) and never exposed here.
 """
 
 from __future__ import annotations
@@ -23,90 +26,72 @@ from pathlib import Path
 # Storage
 # ---------------------------------------------------------------------------
 
-CONFIG_DIR  = Path.home() / ".ai-coder"
+CONFIG_DIR  = Path.home() / ".kryth"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-LEGACY_CONFIG_FILE = Path.home() / ".kryth_cli" / "config.json"
+LEGACY_CONFIG_FILE = Path.home() / ".ai-coder" / "config.json"   # legacy path, migrated on first load
 
+# Config key → environment variable (only 5 keys total)
 KEY_TO_ENV: dict[str, str] = {
-    "model":             "AICODER_MAIN_MODEL",
-    "planner_model":     "AICODER_PLANNER_MODEL",
-    "summarizer_model":  "AICODER_SUMMARIZER_MODEL",
-    "base_url":          "AICODER_BASE_URL",
-    "api_key":           "OPENAI_API_KEY",
     "nvidia_api_key":    "NVIDIA_API_KEY",
-    # New role-specific models
+    "main_model":        "KRYTH_MAIN_MODEL",
+    "planner_model":     "KRYTH_PLANNER_MODEL",
+    "summarizer_model":  "KRYTH_SUMMARIZER_MODEL",
     "vision_model":      "KRYTH_VISION_MODEL",
-    "extraction_model":  "KRYTH_EXTRACTION_MODEL",
-    "reasoning_model":   "KRYTH_REASONING_MODEL",
-    # Provider keys
-    "openrouter_api_key": "OPENROUTER_API_KEY",
-    "anthropic_api_key":  "ANTHROPIC_API_KEY",
-    "google_api_key":     "GOOGLE_API_KEY",
 }
 
-LEGACY_ENV: dict[str, str] = {
-    "AICODER_MAIN_MODEL":      "KRYTH_MAIN_MODEL",
-    "AICODER_PLANNER_MODEL":   "KRYTH_PLANNER_MODEL",
-    "AICODER_SUMMARIZER_MODEL": "KRYTH_SUMMARIZER_MODEL",
-    "AICODER_BASE_URL":        "KRYTH_BASE_URL",
-}
+VALID_KEYS = list(KEY_TO_ENV)
 
-LEGACY_ENV_2: dict[str, str] = {
-    "AICODER_MAIN_MODEL":      "KRYTH_CLI_MAIN_MODEL",
-    "AICODER_PLANNER_MODEL":   "KRYTH_CLI_PLANNER_MODEL",
-    "AICODER_SUMMARIZER_MODEL": "KRYTH_CLI_SUMMARIZER_MODEL",
-    "AICODER_BASE_URL":        "KRYTH_CLI_BASE_URL",
-}
-
-VALID_KEYS = list(KEY_TO_ENV)   # ordered
-
+# Defaults: empty model overrides mean NIM router uses its built-in chain
 DEFAULTS: dict[str, str] = {
-    "model":             "gpt-4o-mini",
-    "planner_model":     "gpt-4o-mini",
-    "summarizer_model":  "gpt-4o-mini",
-    "base_url":          "https://api.openai.com/v1",
-    "api_key":           "",
     "nvidia_api_key":    "",
+    "main_model":        "",
+    "planner_model":     "",
+    "summarizer_model":  "",
     "vision_model":      "",
-    "extraction_model":  "",
-    "reasoning_model":   "",
-    "openrouter_api_key": "",
-    "anthropic_api_key":  "",
-    "google_api_key":     "",
 }
 
-# Human-readable labels shown in the TUI
 KEY_LABELS: dict[str, str] = {
-    "model":             "Main model",
-    "planner_model":     "Planner model",
-    "summarizer_model":  "Summarizer model",
-    "base_url":          "Base URL",
-    "api_key":           "API key (OpenAI)",
-    "nvidia_api_key":    "NVIDIA API key (vision)",
-    "vision_model":      "Vision model",
-    "extraction_model":  "Extraction model",
-    "reasoning_model":   "Reasoning model",
-    "openrouter_api_key": "OpenRouter API key",
-    "anthropic_api_key":  "Anthropic API key",
-    "google_api_key":     "Google API key",
+    "nvidia_api_key":    "NVIDIA API key",
+    "main_model":        "Main model override",
+    "planner_model":     "Planner model override",
+    "summarizer_model":  "Summarizer model override",
+    "vision_model":      "Vision model override",
 }
 
-# Which keys are sensitive (masked in display)
-SENSITIVE = {
-    "api_key", "nvidia_api_key", "openrouter_api_key",
-    "anthropic_api_key", "google_api_key",
+SENSITIVE = {"nvidia_api_key"}
+
+# Legacy env var aliases - applied on load so old configs still work
+LEGACY_ENV: dict[str, str] = {
+    "KRYTH_MAIN_MODEL":       "AICODER_MAIN_MODEL",
+    "KRYTH_PLANNER_MODEL":    "AICODER_PLANNER_MODEL",
+    "KRYTH_SUMMARIZER_MODEL": "AICODER_SUMMARIZER_MODEL",
 }
 
 
 def _load() -> dict[str, str]:
     stored: dict[str, str] = {}
-    source = CONFIG_FILE if CONFIG_FILE.exists() else LEGACY_CONFIG_FILE
-    if source.exists():
-        try:
-            stored = json.loads(source.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {k: stored.get(k, DEFAULTS[k]) for k in DEFAULTS}
+    # Prefer ~/.kryth/config.json; fall back to legacy ~/.ai-coder, then ~/.kryth_cli
+    for candidate in (
+        CONFIG_FILE,
+        LEGACY_CONFIG_FILE,
+        Path.home() / ".kryth_cli" / "config.json",
+    ):
+        if candidate.exists():
+            try:
+                stored = json.loads(candidate.read_text(encoding="utf-8"))
+                break
+            except Exception:
+                pass
+
+    # Only keep keys that belong to the new slim schema (DEFAULTS).
+    # Old keys like "model", "base_url", "api_key" are silently dropped —
+    # NIM router uses its own built-in chains when model overrides are empty.
+    result = {k: stored.get(k, DEFAULTS[k]) for k in DEFAULTS}
+
+    # Migrate: if a legacy key "nvidia_api_key" exists at top level, keep it.
+    # If only old "api_key" exists and nvidia_api_key is empty, ignore it
+    # (OpenAI keys are not valid for NVIDIA NIM).
+    return result
 
 
 def _save(cfg: dict[str, str]) -> None:
@@ -120,32 +105,23 @@ def _save(cfg: dict[str, str]) -> None:
 
 def _mask(value: str, key: str) -> str:
     if key in SENSITIVE and len(value) > 8:
-        return value[:6] + "â€¦" + value[-4:]
+        return value[:6] + "..." + value[-4:]
     return value or "(not set)"
 
 
 def apply_to_env(cfg: dict[str, str] | None = None) -> None:
-    """Inject stored config into os.environ (env / .env wins)."""
+    """Inject stored config into os.environ (existing env wins - never overwrite)."""
     if cfg is None:
         cfg = _load()
     for key, env_var in KEY_TO_ENV.items():
-        value = cfg.get(key, "")
-        legacy = LEGACY_ENV.get(env_var)
-        legacy2 = LEGACY_ENV_2.get(env_var)
-        live = os.environ.get(env_var) or (os.environ.get(legacy, "") if legacy else "") or (os.environ.get(legacy2, "") if legacy2 else "")
-        if value and not live:
+        value = cfg.get(key, "").strip()
+        if value and not os.environ.get(env_var, "").strip():
             os.environ[env_var] = value
-            if legacy:
-                os.environ[legacy] = value
-            if legacy2:
-                os.environ[legacy2] = value
-        elif live:
-            if not os.environ.get(env_var):
-                os.environ[env_var] = live
-            if legacy and not os.environ.get(legacy):
-                os.environ[legacy] = live
-            if legacy2 and not os.environ.get(legacy2):
-                os.environ[legacy2] = live
+    # Propagate legacy aliases so old code paths still work
+    for new_var, old_var in LEGACY_ENV.items():
+        val = os.environ.get(new_var, "")
+        if val and not os.environ.get(old_var, ""):
+            os.environ[old_var] = val
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +184,7 @@ def open_config_tui(focus_key: str | None = None) -> None:
     """Full-screen arrow-key config editor.
 
     Navigation:
-      â†‘ / â†“   move between fields
+      â†' / â†"   move between fields
       Enter   edit the selected field inline
       s       save & exit
       q / ESC quit without saving
@@ -340,11 +316,11 @@ def open_config_tui(focus_key: str | None = None) -> None:
 # API-error prompt helper  (called from llm.py after auth/404 errors)
 # ---------------------------------------------------------------------------
 
-# Maps error type names â†’ which config key to focus
+# Maps error type names to which config key to focus
 _ERROR_KEY_MAP: dict[str, str] = {
-    "AuthenticationError": "api_key",
-    "PermissionDeniedError": "api_key",
-    "NotFoundError": "model",
+    "AuthenticationError": "nvidia_api_key",
+    "PermissionDeniedError": "nvidia_api_key",
+    "NotFoundError": "main_model",
 }
 
 
@@ -361,23 +337,30 @@ def prompt_config_fix(error_type: str) -> None:
 
     messages = {
         "AuthenticationError": (
-            "[bold red]  401 â€” API key rejected.[/bold red]\n"
-            "  The key stored in config (or OPENAI_API_KEY) was not accepted.\n"
+            "[bold red]  401 - NVIDIA API key rejected.[/bold red]\n"
+            "  The key stored in config (or NVIDIA_API_KEY) was not accepted.\n"
         ),
         "PermissionDeniedError": (
-            "[bold red]  403 â€” Permission denied.[/bold red]\n"
+            "[bold red]  403 - Permission denied.[/bold red]\n"
             "  Your key doesn't have access to this model or your quota is exhausted.\n"
         ),
         "NotFoundError": (
-            "[bold red]  404 - Endpoint or model not found.[/bold red]\n"
-            "  First confirm the model name is available for this key.\n"
-            "  If the model is right, check that the base URL includes the provider's OpenAI-compatible path, usually /v1.\n"
+            "[bold red]  404 - Model not found.[/bold red]\n"
+            "  Check the model name override in /config, or leave blank to use the NIM default chain.\n"
         ),
     }
 
     msg = messages.get(error_type, "[bold red]  API error.[/bold red]\n")
     console.print()
     console.print(msg)
+
+    # Non-interactive sessions (piped stdin, redirected stdout, CI, harnesses)
+    # must NEVER block on input() — surface guidance and return immediately.
+    import sys as _sys
+    if not _sys.stdin or not _sys.stdin.isatty():
+        console.print()
+        console.print("  [muted]Set a valid key with /config (non-interactive session).[/muted]")
+        return
 
     field_label = KEY_LABELS.get(focus, "config") if focus else "config"
     console.print(

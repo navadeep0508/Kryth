@@ -103,8 +103,13 @@ class StreamNormalizer:
                 out.append(NormalizedChunk(chunk_type=ChunkType.DONE, raw=chunk))
             return out
 
-        # --- Reasoning content (DeepSeek, etc.) ---
-        reasoning_content = getattr(delta, "reasoning_content", None)
+        # --- Reasoning content (DeepSeek, OpenAI o1, etc.) ---
+        reasoning_content = (
+            getattr(delta, "reasoning_content", None)
+            or getattr(delta, "reasoning", None)
+            or getattr(delta, "thinking", None)
+            or getattr(delta, "reasoning_text", None)
+        )
         if reasoning_content:
             out.append(NormalizedChunk(
                 chunk_type=ChunkType.REASONING,
@@ -130,7 +135,10 @@ class StreamNormalizer:
                 ))
 
         # --- Tool calls ---
-        tool_calls = getattr(delta, "tool_calls", None) or []
+        # Normalize: None / missing / non-list → [] so DeltaMessage validation
+        # never sees an invalid type (BUG 1 fix).
+        raw_tool_calls = getattr(delta, "tool_calls", None)
+        tool_calls = raw_tool_calls if isinstance(raw_tool_calls, list) else []
         for tc in tool_calls:
             idx = getattr(tc, "index", 0)
             buf = self._tool_buffers.setdefault(idx, {"name": "", "args": "", "id": ""})

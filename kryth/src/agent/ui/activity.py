@@ -40,15 +40,16 @@ class ActivityIndicator:
     # -- entry points -------------------------------------------------
 
     def _mc_active(self) -> bool:
-        """True when Mission Control's Live display owns the terminal.
-        Lazy import avoids circular dependency (mission_control → activity → mission_control).
-        """
+        """True when Mission Control or Dashboard Live display owns the terminal."""
         try:
             import sys
             mc_mod = sys.modules.get("agent.ui.mission_control")
-            if mc_mod is None:
-                return False
-            return mc_mod.get_active_mc() is not None
+            if mc_mod is not None and mc_mod.get_active_mc() is not None:
+                return True
+            dash_mod = sys.modules.get("agent.ui.dashboard")
+            if dash_mod is not None and dash_mod.get_active():
+                return True
+            return False
         except Exception:
             return False
 
@@ -106,7 +107,10 @@ class ActivityIndicator:
                 return
             suffix = _CYCLE_SUFFIXES[self._cycle_idx % len(_CYCLE_SUFFIXES)]
             self._cycle_idx += 1
-            new_msg = f"{self._base_message}  {suffix}"
+            # Trim any trailing ellipsis on the base so the cycling suffix reads
+            # cleanly ("Surveying repo · analyzing…" not "…  analyzing…").
+            base = self._base_message.rstrip(" .…")
+            new_msg = f"{base}  ·  {suffix}"
             self._spinner.update(new_msg)
             self._schedule_cycle()
 

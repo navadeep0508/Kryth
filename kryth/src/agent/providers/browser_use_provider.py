@@ -114,6 +114,8 @@ def _run(coro, timeout: int = 60) -> Any:
 # ---------------------------------------------------------------------------
 
 def ensure_available() -> str | None:
+    if os.environ.get("KRYTH_NO_BROWSER"):
+        return "[browser disabled in benchmark/headless mode — set KRYTH_NO_BROWSER=0 to enable]"
     if not _ensure_path():
         return (
             "browser_agent not found. Install: "
@@ -599,8 +601,8 @@ def _create_llm(provider: str, model_name: str):
 
 def browser_task(
     task: str,
-    llm_provider: str = "nvidia",
-    model_name: str = "stepfun-ai/step-3.7-flash",
+    llm_provider: str = "auto",
+    model_name: str | None = None,
     max_steps: int = 10,
     headless: bool = False,
     use_vision: bool = True,
@@ -618,7 +620,77 @@ def browser_task(
 
     _ensure_path()
 
+    # --- Env var overrides (highest priority) ---
+    llm_provider = os.environ.get("KRYTH_BROWSER_PROVIDER", llm_provider)
+    model_name = os.environ.get("KRYTH_BROWSER_MODEL", model_name or "")  # "" → still auto
+
+    # --- Auto-detect provider from available API keys ---
+    if llm_provider == "auto" or not llm_provider:
+        nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
+        if nvidia_key.startswith("nvapi-"):
+            llm_provider = "nvidia"
+            model_name = model_name or "stepfun-ai/step-3.7-flash"
+        elif os.environ.get("OPENAI_API_KEY"):
+            llm_provider = "openai"
+            model_name = model_name or "gpt-4o"
+        elif os.environ.get("ANTHROPIC_API_KEY"):
+            llm_provider = "anthropic"
+            model_name = model_name or "claude-3-5-sonnet-20241022"
+        elif os.environ.get("GOOGLE_API_KEY"):
+            llm_provider = "google"
+            model_name = model_name or "gemini-2.0-flash"
+        else:
+            return _err(
+                "No LLM API key found for browser automation. "
+                "Set one of: NVIDIA_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY. "
+                "Or set KRYTH_BROWSER_PROVIDER and KRYTH_BROWSER_MODEL in your .env."
+            )
+    elif not model_name:
+        model_name = "stepfun-ai/step-3.7-flash"
+
+    # Print launch banner before spawning the thread
+    try:
+        from agent.ui.console import console
+        console.print(
+            f"  ◈  [muted]browser agent starting[/muted]  {llm_provider}/{model_name}  "
+            f"[muted]max_steps={max_steps}  headless={headless}[/muted]",
+            highlight=False,
+        )
+    except Exception:
+        pass
+
     result_holder: list = []
+
+    def _make_step_callback(total_steps: int):
+        """Sync callback called after each browser agent step."""
+        def _on_step(browser_state, model_output, step_num: int) -> None:
+            try:
+                from agent.ui.console import console
+                url = getattr(browser_state, "url", "") or ""
+                goal = ""
+                if model_output:
+                    goal = getattr(model_output, "next_goal", "") or ""
+                    if not goal:
+                        cs = getattr(model_output, "current_state", None)
+                        if cs:
+                            goal = getattr(cs, "next_goal", "") or ""
+                # Shorten URL for display
+                if len(url) > 55:
+                    try:
+                        from urllib.parse import urlparse
+                        p = urlparse(url)
+                        url = p.netloc + (p.path[:20] + "…" if len(p.path) > 20 else p.path)
+                    except Exception:
+                        url = url[:55] + "…"
+                parts = [f"step {step_num}/{total_steps}"]
+                if goal:
+                    parts.append(goal[:80])
+                if url:
+                    parts.append(f"[{url}]")
+                console.print(f"  ◈  [muted]browser[/muted]  " + "  ".join(parts), highlight=False)
+            except Exception:
+                pass
+        return _on_step
 
     def _run_in_fresh_thread() -> None:
         import asyncio as _asyncio
@@ -626,23 +698,22 @@ def browser_task(
         async def _main():
             from browser_agent import Agent, BrowserSession
             from browser_agent.agent.views import AgentSettings
-            from browser_agent.llm.nvidia.chat import ChatNVIDIA
 
-            nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
-            openai_key = os.environ.get("OPENAI_API_KEY", "")
-            resolved_key = openai_key if llm_provider == "openai" else nvidia_key
+            _nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
+            _openai_key = os.environ.get("OPENAI_API_KEY", "")
+            resolved_key = _openai_key if llm_provider == "openai" else _nvidia_key
 
             if resolved_key.startswith("nvapi-") or llm_provider == "nvidia":
-                if not nvidia_key:
+                if not _nvidia_key:
                     return _err("NVIDIA_API_KEY not set in environment")
+                from browser_agent.llm.nvidia.chat import ChatNVIDIA
                 llm = ChatNVIDIA(
                     model=model_name,
-                    api_key=nvidia_key,
+                    api_key=_nvidia_key,
                     temperature=0.7,
                     max_tokens=4096,
                 )
             else:
-                # For non-NVIDIA providers fall back to _create_llm
                 llm = _create_llm(llm_provider, model_name)
                 if isinstance(llm, str):
                     return llm
@@ -656,13 +727,31 @@ def browser_task(
                 save_conversation_path="conversations/kryth_browser_agent",
             )
 
-            agent = Agent(task=task, llm=llm, browser=browser, settings=settings)
+            agent = Agent(
+                task=task,
+                llm=llm,
+                browser=browser,
+                settings=settings,
+                register_new_step_callback=_make_step_callback(max_steps),
+            )
 
             try:
                 history = await agent.run()
                 steps = len(history)
                 final = history.final_result()
+                try:
+                    from agent.supervisor.browser_supervisor import browser_supervisor
+                    browser_supervisor.record_success()
+                except Exception:
+                    pass
                 return f"Completed in {steps} step{'s' if steps != 1 else ''}.\n{final or 'Done.'}"
+            except Exception as ex:
+                try:
+                    from agent.supervisor.browser_supervisor import browser_supervisor
+                    browser_supervisor.record_failure(str(ex))
+                except Exception:
+                    pass
+                raise
             finally:
                 try:
                     await browser.close()
@@ -679,6 +768,11 @@ def browser_task(
     t.join(timeout=310)
 
     if not result_holder:
+        try:
+            from agent.supervisor.browser_supervisor import browser_supervisor
+            browser_supervisor.record_failure("browser_task timed out after 310 seconds")
+        except Exception:
+            pass
         return _err("browser_task timed out after 310 seconds")
     return result_holder[0] or "Done."
 

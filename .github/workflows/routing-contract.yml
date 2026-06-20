@@ -1,0 +1,161 @@
+name: Core Contracts
+
+# Protected contracts for the KRYTH kernel. Any change that alters frozen
+# behavior MUST fail here. If a change is intentional, update the matching
+# dataset/contract test in the SAME PR — that is the audit trail.
+#
+#   1. Conversation hard gate & routing  → tests/routing_benchmark_dataset.py
+#   2. DAG scheduler (parallel layering)  → tests/test_dag_scheduler_contract.py
+#
+# The DAG contract historically broke only under certain hash orderings, so it
+# is run under several PYTHONHASHSEED values to guarantee determinism.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'kryth/src/agent/task_classifier.py'
+      - 'kryth/src/agent/agent_loop.py'
+      - 'kryth/src/agent/tools/_file_ops.py'
+      - 'kryth/src/agent/orchestration/task_dag.py'
+      - 'kryth/src/agent/orchestration/scheduler.py'
+      - 'kryth/tests/test_routing_benchmark.py'
+      - 'kryth/tests/routing_benchmark_dataset.py'
+      - 'kryth/tests/test_conversation_gate.py'
+      - 'kryth/tests/test_execution_no_silent_skip.py'
+      - 'kryth/tests/test_harmony_tool_name.py'
+      - 'kryth/tests/test_native_tools_first.py'
+      - 'kryth/tests/test_runtime_v2_no_xml.py'
+      - 'kryth/tests/test_tag_parser.py'
+      - 'kryth/tests/test_event_bus_v2.py'
+      - 'kryth/tests/test_adapter_seam.py'
+      - 'kryth/tests/burn_in_parity.py'
+      - 'kryth/tests/test_runtime_telemetry.py'
+      - 'kryth/tests/test_promotion_gate.py'
+      - 'kryth/tests/test_dag_scheduler_contract.py'
+      - 'kryth/tests/adversarial_gate.py'
+      - '.github/workflows/routing-contract.yml'
+  pull_request:
+    paths:
+      - 'kryth/src/agent/**'
+      - 'kryth/tests/test_routing_benchmark.py'
+      - 'kryth/tests/routing_benchmark_dataset.py'
+      - 'kryth/tests/test_conversation_gate.py'
+      - 'kryth/tests/test_dag_scheduler_contract.py'
+      - 'kryth/tests/adversarial_gate.py'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  routing-contract:
+    name: Conversation gate & routing contract
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./kryth
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -e . || pip install -r requirements.txt || true
+      - name: Conversation gate unit tests
+        run: pytest tests/test_conversation_gate.py -q
+      - name: Routing benchmark (frozen contract)
+        run: pytest tests/test_routing_benchmark.py -q
+      - name: Execution never silently skipped (regression contract)
+        run: pytest tests/test_execution_no_silent_skip.py -q
+      - name: Harmony tool-name sanitization (regression contract)
+        run: pytest tests/test_harmony_tool_name.py -q
+      - name: Native-tools-first (delivery-mode contract)
+        run: pytest tests/test_native_tools_first.py -q
+      - name: Runtime v2 — no XML tag protocol (contract)
+        run: pytest tests/test_runtime_v2_no_xml.py tests/test_tag_parser.py -q
+      - name: Runtime v2 — event bus + adapter seam (contract)
+        run: pytest tests/test_event_bus_v2.py tests/test_adapter_seam.py -q
+      - name: Runtime v2 — burn-in parity + telemetry (contract)
+        run: pytest tests/burn_in_parity.py tests/test_runtime_telemetry.py -q
+      - name: Runtime v2 — promotion gate (contract)
+        run: pytest tests/test_promotion_gate.py -q
+      - name: Stability — non-interactive config guard (regression)
+        run: pytest tests/test_noninteractive_config_guard.py -q
+      - name: Audit — file-operation lifecycle (Phase 2/4)
+        run: pytest tests/test_file_lifecycle_audit.py -q
+      - name: Provider compatibility (stop cap + payload-too-large fast-fail)
+        run: pytest tests/test_provider_compat.py -q
+      - name: Tool curation (token-efficiency contract)
+        run: pytest tests/test_tool_curation.py -q
+      - name: DAG eligibility + cost estimator (contract)
+        run: pytest tests/test_mission_estimator.py -q
+      - name: UI v4 — presentation layer (contract)
+        run: pytest tests/test_ui_v4.py -q
+      - name: UI v5 — live layout engine (contract)
+        run: pytest tests/test_live_engine.py -q
+      - name: DAG visualization & parallel UX (contract)
+        run: pytest tests/test_dag_visualization.py -q
+      - name: DAG live engine — critical path/timeline/replay/TUI (contract)
+        run: pytest tests/test_dag_live_engine.py -q
+      - name: Dependency-aware work stealing (contract)
+        run: pytest tests/test_dependency_scheduler.py -q
+      - name: Dependency-aware scheduling benchmark
+        run: python tests/dependency_scheduling_benchmark.py
+      - name: Production layer — sharding/reputation/adaptive/profiles/telemetry/readiness (contract)
+        run: pytest tests/test_production_layer.py -q
+      - name: Production readiness report
+        run: python tests/production_readiness_report.py
+      - name: Organizational layer + Operations Center (contract)
+        run: pytest tests/test_org_layer.py -q
+      - name: Pre-execution mission gate — mode selection + approval (contract)
+        run: pytest tests/test_mission_gate.py -q
+      - name: Preview → execution team consistency (contract)
+        run: pytest tests/test_team_contract_consistency.py -q
+      - name: Clean execution visibility (operations-center view filter)
+        run: pytest tests/test_clean_view.py -q
+      - name: Orchestration team dashboard — isolated panels (contract)
+        run: pytest tests/test_team_dashboard.py -q
+      - name: Graph-driven orchestration optimizer (contract)
+        run: pytest tests/test_orchestration_optimizer.py -q
+      - name: Orchestration engine validation suite (20 cases + scoring)
+        run: pytest tests/test_orchestration_validation_suite.py -q
+      - name: Orchestration optimizer benchmark (old vs new)
+        run: python tests/orchestration_optimizer_benchmark.py
+      - name: Enterprise readiness audit
+        run: python tests/enterprise_readiness_audit.py
+      - name: Runtime v2 — burn-in parity report
+        run: python tests/burn_in_parity.py
+      - name: Adversarial gate report
+        run: python tests/adversarial_gate.py
+
+  dag-scheduler-contract:
+    name: DAG scheduler contract
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./kryth
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -e . || pip install -r requirements.txt || true
+      - name: DAG layering contract (multiple hash seeds)
+        # The original bug surfaced only under specific hash orderings. Run the
+        # contract under several seeds so an order-dependent regression cannot
+        # slip through CI.
+        run: |
+          for seed in 0 1 2 3 7 42; do
+            echo "--- PYTHONHASHSEED=$seed ---"
+            PYTHONHASHSEED=$seed pytest tests/test_dag_scheduler_contract.py -q
+          done

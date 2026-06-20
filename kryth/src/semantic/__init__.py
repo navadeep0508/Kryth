@@ -33,14 +33,14 @@ __author__ = "KRYTH Team"
 
 # Core semantic editing classes
 from .editor import SemanticEditor, EditOperation, EditPlan
-from .patch import PatchGenerator, PatchSet, PatchApplication
+from .patch import PatchGenerator, PatchSet
 from .transaction import TransactionManager, Transaction
 from .validator import ValidationPipeline, ValidationResult
 from .concurrency import ConcurrencyController, FileOwnership
-from .refactoring import RefactoringEngine, RefactoringOperation
+from .refactoring import RefactoringEngine
 from .insertion import IntelligentInserter, InsertionContext
-from .repair import AutoRepairEngine, RepairAttempt
-from .memory import EditMemory, PatchMemory
+from .auto_repair import AutoRepairEngine, RepairAttempt
+from .memory import EditMemory
 
 __all__ = [
     "SemanticEditor",
@@ -48,7 +48,6 @@ __all__ = [
     "EditPlan",
     "PatchGenerator",
     "PatchSet",
-    "PatchApplication",
     "TransactionManager",
     "Transaction",
     "ValidationPipeline",
@@ -56,11 +55,9 @@ __all__ = [
     "ConcurrencyController",
     "FileOwnership",
     "RefactoringEngine",
-    "RefactoringOperation",
     "IntelligentInserter",
     "InsertionContext",
     "AutoRepairEngine",
     "RepairAttempt",
     "EditMemory",
-    "PatchMemory",
 ]

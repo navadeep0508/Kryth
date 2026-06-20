@@ -132,6 +132,7 @@ class RouteHints:
     recent_failures: int = 0   # consecutive failed tool turns
     has_tool_specs: bool = True
     explicit_override: str | None = None
+    task_complexity: str = ""  # "simple" → try KRYTH_FAST_MODEL if configured
 
 
 def pick_main_model(hints: RouteHints | None = None) -> str:
@@ -139,11 +140,12 @@ def pick_main_model(hints: RouteHints | None = None) -> str:
 
     Rules (least → most permissive):
       * ``explicit_override`` wins unconditionally.
+      * ``task_complexity == "simple"`` → use KRYTH_FAST_MODEL if configured
+        (allows routing trivial tasks to a low-latency provider).
       * If ``KRYTH_AUTO_ROUTE`` is off, return ``MAIN_MODEL``.
       * If recent failures > 0, stay on MAIN_MODEL — a struggling turn
         is the worst time to drop capability.
-      * If payload is small AND tool-call surface is light (no tools, or
-        a short prompt without tool_specs), use PLANNER_MODEL.
+      * If payload is small AND tool-call surface is light, use PLANNER_MODEL.
       * Otherwise MAIN_MODEL.
     """
     h = hints or RouteHints()
@@ -151,6 +153,13 @@ def pick_main_model(hints: RouteHints | None = None) -> str:
 
     if h.explicit_override:
         return h.explicit_override
+
+    # Fast-path for trivial tasks: use KRYTH_FAST_MODEL if configured.
+    # Example: KRYTH_FAST_MODEL=meta/llama-3.1-8b-instruct for quick creates.
+    if h.task_complexity == "simple":
+        fast_model = getenv("KRYTH_FAST_MODEL", "").strip()
+        if fast_model:
+            return fast_model
 
     if not _auto_route_enabled():
         return main_model

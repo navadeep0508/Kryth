@@ -27,10 +27,13 @@ automatically fix issues when possible.
 from __future__ import annotations
 
 import concurrent.futures
+import py_compile
+import shlex
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .data_structures import EditPlan, EditOperation, ValidationResult
 
@@ -313,8 +316,7 @@ class ValidationPipeline:
         elif check.command:
             # Run shell command
             try:
-                import subprocess
-                cmd = check.command.split() + files
+                cmd = shlex.split(check.command) + files
                 completed = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -346,7 +348,6 @@ class ValidationPipeline:
         
         for file_path in files:
             try:
-                import py_compile
                 py_compile.compile(file_path, doraise=True)
             except py_compile.PyCompileError as e:
                 result.add_error(f"Syntax error in {file_path}: {e}")

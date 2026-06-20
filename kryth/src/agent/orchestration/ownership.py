@@ -70,11 +70,11 @@ class OwnershipBus:
 
     def owner_of(self, resource: str) -> Optional[str]:
         with self._lock:
-            return (
-                self._files.get(resource)
-                or self._symbols.get(resource)
-                or self._dirs.get(resource)
-            )
+            for store in (self._files, self._symbols, self._dirs):
+                v = store.get(resource)
+                if v is not None:
+                    return v
+            return None
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -87,15 +87,19 @@ class OwnershipBus:
 
 # Module-level singleton
 _bus: Optional[OwnershipBus] = None
+_bus_lock = threading.Lock()
 
 
 def get_bus() -> OwnershipBus:
     global _bus
     if _bus is None:
-        _bus = OwnershipBus()
+        with _bus_lock:
+            if _bus is None:
+                _bus = OwnershipBus()
     return _bus
 
 
 def reset_bus() -> None:
     global _bus
-    _bus = None
+    with _bus_lock:
+        _bus = None

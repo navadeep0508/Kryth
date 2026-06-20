@@ -212,8 +212,50 @@ def _run_with_live_box(
     return full_output, exit_code
 
 
+_DESTRUCTIVE_PATTERNS = [
+    # Unix mass-delete
+    r"\brm\s+-[a-zA-Z]*rf?\s+[\./\*]",   # rm -rf . / rm -r *
+    r"\brm\s+-[a-zA-Z]*r\b",              # rm -r (anything recursive)
+    r"rm\s+.*(\/\*|\\\*|\*\.\*|\*)",      # rm ... * / rm ../*.*
+    # Windows mass-delete
+    r"\bdel\s+[/\\]?[qsf]*\s*[\*/]",     # del /Q * / del *.*
+    r"\bdel\b.*\*",                        # del ... *
+    r"\brd\b.*/[sS]",                      # rd /S (recursive dir remove)
+    r"\brmdir\b.*/[sS]",                   # rmdir /S
+    r"remove-item\s+.*-recurse",           # PowerShell Remove-Item -Recurse
+    # Common catch-all: delete + wildcard together
+    r"\b(erase|remove)\b.*[\*/]",
+]
+_DESTRUCTIVE_RE = None
+
+def _is_destructive(cmd: str) -> bool:
+    global _DESTRUCTIVE_RE
+    import re as _re
+    if _DESTRUCTIVE_RE is None:
+        _DESTRUCTIVE_RE = _re.compile(
+            "|".join(_DESTRUCTIVE_PATTERNS), _re.IGNORECASE
+        )
+    return bool(_DESTRUCTIVE_RE.search(cmd))
+
+
 def run_command(command, timeout=15, run_in_background=False):
     command = COMMAND_ALIASES.get(command, command)
+
+    # Safety gate: destructive mass-deletion commands require confirmation.
+    # Prints a visible warning so non-interactive callers can see the refusal.
+    if _is_destructive(command):
+        from agent.io import confirm
+        ui.warn(
+            f"  [DANGEROUS] This command will irreversibly delete files:\n"
+            f"    {command}\n"
+            f"  Proceeding is destructive and cannot be undone."
+        )
+        if not confirm("Proceed with destructive command?", default=False):
+            return (
+                "[BLOCKED] Destructive command requires explicit confirmation. "
+                "Command NOT executed. If you are sure, re-run with explicit approval "
+                "or set KRYTH_ASSUME_YES=1."
+            )
 
     # Auto-detect long-running commands and run them in background
     if not run_in_background:

@@ -109,7 +109,8 @@ def build_capability_graph(
     # --- From user input text ---
 
     if any(k in text for k in ("frontend", "ui", "page", "component", "react", "next",
-                                "vue", "svelte", "dashboard", "landing")):
+                                "vue", "svelte", "dashboard", "landing", "tailwind",
+                                "vite", "css", "html", "npm", "tsx", "jsx")):
         add("frontend", True, "Frontend work detected in request")
 
     if any(k in text for k in ("backend", "api", "server", "endpoint", "route",

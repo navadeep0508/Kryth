@@ -112,11 +112,18 @@ from agent.tools._mission_specs import MISSION_TOOL_SPECS
 from agent.tools._mission import MISSION_TOOLS
 from agent.tools._factory_specs import FACTORY_TOOL_SPECS
 from agent.tools._factory import FACTORY_TOOLS
+from agent.tools._stream_write_specs import STREAM_WRITE_TOOL_SPECS
+from agent.tools._stream_write import (
+    write_file_begin,
+    write_file_chunk,
+    write_file_finalize,
+)
 
 TOOL_SPECS = (
     _BASE_SPECS + RETRIEVAL_TOOL_SPECS + TERMINAL_TOOL_SPECS
     + BROWSER_PROFILE_TOOL_SPECS + SUPERVISOR_TOOL_SPECS
     + MISSION_TOOL_SPECS + FACTORY_TOOL_SPECS
+    + STREAM_WRITE_TOOL_SPECS
 )
 
 
@@ -209,6 +216,10 @@ TOOLS = {
     **MISSION_TOOLS,
     # Autonomous Software Factory tools
     **FACTORY_TOOLS,
+    # Streaming file write tools (Rule 16)
+    "write_file_begin": write_file_begin,
+    "write_file_chunk": write_file_chunk,
+    "write_file_finalize": write_file_finalize,
 }
 
 
@@ -275,6 +286,9 @@ READ_ONLY_TOOLS = {
 # whether to emit ``tool_result``.
 SELF_RENDERED_TOOLS = {
     "write_file",
+    "write_file_begin",
+    "write_file_chunk",
+    "write_file_finalize",
     "edit_file",
     "multi_edit",
     "run_command",

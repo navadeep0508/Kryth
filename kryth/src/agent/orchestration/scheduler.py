@@ -15,6 +15,7 @@ Enhancements over the original:
 from __future__ import annotations
 
 import contextvars
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -23,6 +24,44 @@ from typing import Callable, Dict, List, Optional, Set
 from agent.orchestration.task_dag import TaskDAG
 from agent.orchestration.team_generator import AgentRole, TeamPlan
 from agent.orchestration.work_queue import WorkQueue, WorkItem
+
+# Module-level shared state for provider health tracking (additive, advisory only).
+# Workers record successes/failures here; the dashboard reads it for incident display.
+try:
+    from agent.production.reliability import (
+        ProviderHealth, RetryPolicy, classify_error, is_provider_failure,
+    )
+    _provider_health = ProviderHealth()
+    _retry_policy = RetryPolicy()
+    _RELIABILITY_AVAILABLE = True
+except Exception:
+    _provider_health = None  # type: ignore[assignment]
+    _retry_policy = None     # type: ignore[assignment]
+    _RELIABILITY_AVAILABLE = False
+
+
+@dataclass
+class WorkerStats:
+    """Per-worker performance counters — populated during agent execution."""
+    agent_id: str = ""
+    role: str = ""
+    active_s: float = 0.0       # wall time actually executing (LLM calls)
+    wait_s: float = 0.0         # time spent in dependency wait
+    tokens_in: int = 0
+    tokens_out: int = 0
+    llm_calls: int = 0
+    tool_calls: int = 0
+    provider_retries: int = 0
+
+    @property
+    def total_s(self) -> float:
+        return self.active_s + self.wait_s
+
+    @property
+    def utilization(self) -> float:
+        """Fraction of time spent doing useful work (not waiting)."""
+        t = self.total_s
+        return self.active_s / t if t > 0 else 1.0
 
 
 @dataclass
@@ -33,6 +72,7 @@ class WorkerResult:
     output: str
     turns_used: int = 0
     error: str = ""
+    stats: "WorkerStats | None" = None   # V1.7: populated after execution
 
 
 @dataclass
@@ -42,23 +82,90 @@ class SchedulerResult:
     final_output: str = ""
     total_turns: int = 0
     failed_agents: List[str] = field(default_factory=list)
+    worker_stats: "Dict[str, WorkerStats]" = field(default_factory=dict)  # V1.7
 
 
 ProgressCallback = Callable[[str, str, str], None]   # (agent_id, role, status)
 
+# Thread-local storage for the active scheduler's notify callback.
+# _run_single_agent uses this so provider-retry loops can emit RETRYING/RECOVERED
+# status events back to the dashboard without needing a direct function reference.
+_local = threading.local()
+
+
+def _get_notify_fn():
+    """Return the active scheduler's notify callback, or None."""
+    return getattr(_local, "notify_fn", None)
+
+
+def _set_notify_fn(fn):
+    _local.notify_fn = fn
+
 
 def _dynamic_worker_count(team_size: int, cost_estimate: int) -> int:
-    """Scale workers to match actual available parallelism.
-
-    Parallel-first: use as many workers as the team has agents, bounded
-    only by CPU cores (so we don't thrash a 2-core machine with 32 threads).
-    Token cost no longer reduces worker count — agents are I/O bound on
-    the LLM network call, not CPU bound.
+    """Concurrent-agent cap. Each agent is a full LLM session; running many at
+    once hammers the provider and triggers rate-limit (429/api) errors. Cap the
+    number RUNNING simultaneously (default 4) — the work queue lets remaining
+    agents start as soon as a slot frees, so a 9-agent layer drains 4-at-a-time
+    instead of firing all 9 into the API at once.
     """
     import os
-    cpu_cores = max(4, os.cpu_count() or 8)
-    # Allow up to 2× CPU cores since agents spend most time waiting on LLM I/O
-    return min(team_size, cpu_cores * 2, 64)
+    cap = int(os.environ.get("KRYTH_MAX_CONCURRENT_AGENTS", "4"))
+    cap = max(1, min(cap, 16))
+    return min(team_size, cap)
+
+
+def _shard_context(full_context: str, agent_role: str, task_desc: str, max_chars: int = 1800) -> str:
+    """Extract only the context lines relevant to this agent's role and tasks.
+
+    Scores each line: +2 for agent role keyword match, +1 for task keyword match.
+    Returns top-scoring lines up to max_chars. Fallback: first max_chars chars.
+    Phase 5 target: ≥40% context reduction vs full project_context[:3000].
+    """
+    if not full_context:
+        return ""
+    if len(full_context) <= max_chars:
+        return full_context
+
+    # Build keyword sets from role and task descriptions
+    import re as _re
+    role_words = set(_re.findall(r"[a-z]+", agent_role.lower()))
+    task_words = set(_re.findall(r"[a-z]+", task_desc.lower()))
+    # Remove noise words
+    _STOPWORDS = {"the", "a", "an", "is", "in", "of", "to", "for", "and", "or",
+                  "with", "your", "you", "all", "this", "that", "be", "are", "do"}
+    role_words -= _STOPWORDS
+    task_words -= _STOPWORDS
+
+    lines = full_context.splitlines()
+    scored = []
+    for line in lines:
+        if not line.strip():
+            scored.append((0, line))
+            continue
+        low = line.lower()
+        score = sum(2 for w in role_words if w in low) + sum(1 for w in task_words if w in low)
+        scored.append((score, line))
+
+    # Sort descending by score, maintain original order for equal scores
+    order = sorted(range(len(scored)), key=lambda i: -scored[i][0])
+    result_lines = []
+    chars = 0
+    seen = set()
+    for idx in order:
+        line = scored[idx][1]
+        if idx in seen:
+            continue
+        seen.add(idx)
+        if chars + len(line) + 1 > max_chars:
+            break
+        result_lines.append((idx, line))
+        chars += len(line) + 1
+
+    # Restore original order
+    result_lines.sort(key=lambda x: x[0])
+    sharded = "\n".join(l for _, l in result_lines)
+    return sharded if sharded.strip() else full_context[:max_chars]
 
 
 def _build_agent_system_prompt(
@@ -81,9 +188,15 @@ def _build_agent_system_prompt(
     prior_block = ""
     if prior_outputs:
         parts = []
+        direct_deps = set(agent.dependencies)
         for aid, out in prior_outputs.items():
-            if out.strip():
-                parts.append(f"=== {aid} output ===\n{out[:2000]}")
+            if aid.startswith("__"):  # skip internal keys like __user_input__
+                continue
+            if not out.strip():
+                continue
+            # Direct dependencies get more context; transitive get less (Phase 5)
+            cap = 1500 if aid in direct_deps else 800
+            parts.append(f"=== {aid} output ===\n{out[:cap]}")
         if parts:
             prior_block = "\n\nContext from completed agents:\n" + "\n\n".join(parts)
 
@@ -107,9 +220,26 @@ def _build_agent_system_prompt(
         except Exception:
             pass
 
+    # V5: Ponytail worker execution philosophy — additive, only when the
+    # active execution profile is PONYTAIL. Does not touch DAG/team/milestone
+    # generation, only the text injected into this worker's own system prompt.
+    ponytail_block = ""
+    try:
+        from agent.production.execution_profiles import active_profile, is_ponytail
+        if is_ponytail(active_profile()):
+            from agent.orchestration.ponytail import PONYTAIL_RULES, dependency_reuse_hints
+            ponytail_block = "\n\n" + PONYTAIL_RULES
+            hints = dependency_reuse_hints(agent.mission + " " + tasks_block)
+            if hints:
+                ponytail_block += "\n\nKnown shortcuts for this task:\n" + "\n".join(f"- {h}" for h in hints)
+    except Exception:
+        pass
+
     return f"""You are a specialized engineering agent: {agent.role.upper()}
 
 MISSION: {agent.mission}
+
+ORIGINAL USER REQUEST: {prior_outputs.get("__user_input__", "").strip() or "(see tasks below)"}
 
 ASSIGNED TASKS:
 {tasks_block}
@@ -117,12 +247,43 @@ ASSIGNED TASKS:
 STRICT RULES:
 1. Focus ONLY on your assigned tasks. Do not work on other areas.
 2. Call tools and implement code — do not describe what you WOULD do.
-3. When complete, summarize EXACTLY what you built with file paths.
-4. Start your final message with: AGENT_COMPLETE: {agent.id}
+3. When ALL assigned tasks are done and verified: stop calling tools and
+   emit your final summary. Do NOT create extra files, tests, or improvements
+   beyond what was assigned.
+4. Your FINAL message (no tool calls after it) MUST start with: AGENT_COMPLETE: {agent.id}
+5. NEVER re-run a command that already succeeded or already showed
+   "Requirement already satisfied". If pip install shows packages are installed,
+   move on — do NOT run pip install again.
+6. FAILURE PROTOCOL — mandatory when any command fails:
+   a. READ the error output (first 30 lines are enough).
+   b. Identify the ROOT CAUSE before touching any file.
+   c. Make ONE targeted fix based on the root cause.
+   d. If the SAME command fails a THIRD time: give up on that task,
+      document the error, and emit AGENT_COMPLETE. Do not keep guessing.
+7. You have a limited turn budget. Do not waste turns re-running the same
+   failing command with tiny variations. If something fails twice the same
+   way, it needs a fundamentally different approach — or you should stop.
+
+EXECUTION CONTRACT — MANDATORY:
+You are a WORKER in a milestone-driven engineering organization.
+Chain of command: Planner (CEO) → Program Manager → Team Lead → You (Worker).
+
+Your ONLY job:
+- Execute the assigned contract below.
+- Do NOT re-plan, re-scope, or re-architect.
+- Do NOT discuss design decisions with other teams.
+- Call tools immediately on your first turn.
+- When ALL contract deliverables are complete: emit AGENT_COMPLETE: {agent.id}
+
+ORGANIZATIONAL RULES:
+1. Planner has already designed the architecture — do not question it.
+2. Team Leads coordinate. Workers execute.
+3. Your contract is final. Scope is locked.
+4. Deliver what is specified. Nothing more, nothing less.
 
 PROJECT CONTEXT:
-{project_context[:3000] if project_context else "(none)"}
-{prior_block}{validation_block}{recovery_block}{bus_block}"""
+{_shard_context(project_context, agent.role, tasks_block) if project_context else "(none)"}
+{prior_block}{validation_block}{recovery_block}{bus_block}{ponytail_block}"""
 
 
 def _run_single_agent(
@@ -147,27 +308,195 @@ def _run_single_agent(
     if ownership_mgr and lock_keys:
         ownership_mgr.acquire_all(lock_keys)
 
+    # Phase 4 — Dependency waiting guard:
+    # If any required dependency has not produced output yet, return immediately
+    # with status="waiting_dependency" instead of spinning the LLM on a blocked task.
+    # (The layer system prevents this in normal flow; this is a safety net for
+    # work-stealing edge cases where a stolen task's deps might not be complete.)
+    _unmet_deps = [
+        dep for dep in (agent.dependencies or [])
+        if dep not in prior_outputs or not str(prior_outputs.get(dep, "")).strip()
+    ]
+    if _unmet_deps:
+        _waiting_for = ", ".join(_unmet_deps[:3])
+        try:
+            _notify_fn = _get_notify_fn()
+            if _notify_fn is not None:
+                _notify_fn(agent.id, agent.role, "waiting",
+                           f"waiting for: {_waiting_for}")
+        except Exception:
+            pass
+        return WorkerResult(
+            agent_id=agent.id, role=agent.role,
+            success=False, output="",
+            error=f"waiting_dependency:{_waiting_for}",
+        )
+
+    # Respect per-agent turn budget when explicitly set; fall back to caller's cap.
+    effective_turns = max(max_turns, getattr(agent, "max_turns", 0) or max_turns)
     prompt = _build_agent_system_prompt(agent, dag, project_context, prior_outputs, bus=bus)
     parent = get_session()
-    nested = _build_nested(agent.role, prompt, parent.depth)
+    nested = _build_nested(agent.role, prompt, parent.depth, parent_profile=getattr(parent, 'profile', 'default'))
     nested.system_prompt = prompt
     nested._agent_role = agent.role   # shown in live progress spinner
     nested._agent_id   = agent.id    # used by MC dashboard lookup
+    # Inherit the approved mission contract so workers don't re-prompt per file
+    # (the user already approved the mission in the Execution Preview).
+    nested.mission_contract = getattr(parent, "mission_contract", None)
+    nested.remembered_permissions = dict(getattr(parent, "remembered_permissions", {}) or {})
     if not nested.messages:
         nested.messages = [{"role": "system", "content": prompt}]
+    # Phase 6 — No Replanning: inject guard when mission plan exists
+    _has_plan = getattr(parent, "mission_contract", None) is not None
+    try:
+        from agent.anti_paralysis import worker_plan_guard
+        _plan_guard = worker_plan_guard(_has_plan)
+        if _plan_guard:
+            nested.messages.append({"role": "system", "content": _plan_guard})
+    except Exception:
+        pass
+    # V3 — Inject deliverable contract if a ProjectPlan is attached to parent session
+    try:
+        _project_plan = getattr(parent, "_project_plan", None)
+        if _project_plan is not None:
+            _contract = _project_plan.get_contract(agent.role.replace(" Team", ""))
+            if _contract is None:
+                _contract = _project_plan.get_contract(agent.id)
+            if _contract is not None:
+                nested.messages.append({
+                    "role": "system",
+                    "content": (
+                        "[DELIVERABLE CONTRACT — READ BEFORE STARTING]\n"
+                        + _contract.to_worker_brief()
+                    ),
+                })
+    except Exception:
+        pass
     nested.messages.append({"role": "user", "content": f"Begin your work: {agent.mission}"})
+
+    # V1.7: per-agent stats
+    _wstats = WorkerStats(agent_id=agent.id, role=agent.role)
+    _agent_start = __import__("time").monotonic()
 
     token = push_session(nested)
     try:
-        result = run_inner_loop(nested, max_turns, verbose_usage=False)
+        result = run_inner_loop(nested, effective_turns, verbose_usage=False)
+        _wstats.active_s = __import__("time").monotonic() - _agent_start
         content = getattr(result, "content", "") or ""
         turns = getattr(result, "turns_used", 0)
+        _wstats.llm_calls = turns
+        _wstats.tool_calls = getattr(nested, "tool_call_count", 0)
+        _wstats.tokens_in  = getattr(nested, "cumulative_in_tokens", 0)
+        _wstats.tokens_out = getattr(nested, "cumulative_out_tokens", 0)
         # Treat interrupted/api_error as failure so the scheduler can retry.
         # "done" and "max_turns" are both acceptable completions — max_turns
         # means partial output is available and better than nothing.
         status = getattr(result, "status", "done")
         success = status not in ("interrupted", "api_error")
         error = f"agent status: {status}" if not success else ""
+
+        # Record success in provider health tracker.
+        if success and _RELIABILITY_AVAILABLE and _provider_health is not None:
+            import os as _os
+            _prov = _os.environ.get("KRYTH_BASE_URL", "default")
+            try:
+                _provider_health.record_success(_prov)
+            except Exception:
+                pass
+
+        # Provider failure isolation (BUG 3/4): if the failure looks like a
+        # transient provider issue (timeout / rate-limit / malformed stream),
+        # consult the RetryPolicy and retry at the agent level before reporting
+        # the team as FAILED. This prevents a provider blip from marking a
+        # healthy team as failed.
+        if not success and _RELIABILITY_AVAILABLE and _retry_policy is not None:
+            _ec = classify_error(error)
+            if is_provider_failure(_ec):
+                import os as _os
+                import time as _time
+                _prov = _os.environ.get("KRYTH_BASE_URL", "default")
+                try:
+                    _provider_health.record_error(_prov, _ec)
+                except Exception:
+                    pass
+                for _attempt in range(1, 4):  # up to 3 retries for provider errors
+                    _dec = _retry_policy.decide(_ec, _attempt)
+                    if not _dec.should_retry:
+                        break
+                    # Emit RETRYING status so dashboard shows progress
+                    _retry_detail = (
+                        f"provider retry {_attempt}/3 "
+                        f"({_ec.value}, backoff {_dec.backoff_s:.1f}s)"
+                    )
+                    try:
+                        from agent import ui as _ui
+                        _ui.muted(f"  ⟳ {agent.role} — {_retry_detail}")
+                    except Exception:
+                        pass
+                    # Notify scheduler notify callback if available
+                    try:
+                        _notify_fn = _get_notify_fn()
+                        if _notify_fn is not None:
+                            _notify_fn(agent.id, agent.role, "retrying", _retry_detail)
+                    except Exception:
+                        pass
+                    if _dec.backoff_s > 0:
+                        _time.sleep(min(_dec.backoff_s, 8.0))
+                    # Re-run the agent loop for this attempt
+                    nested2 = _build_nested(
+                        agent.role, prompt, parent.depth,
+                        parent_profile=getattr(parent, 'profile', 'default')
+                    )
+                    nested2.system_prompt = prompt
+                    nested2._agent_role = agent.role
+                    nested2._agent_id = agent.id
+                    nested2.mission_contract = getattr(parent, "mission_contract", None)
+                    nested2.remembered_permissions = dict(
+                        getattr(parent, "remembered_permissions", {}) or {}
+                    )
+                    if not nested2.messages:
+                        nested2.messages = [{"role": "system", "content": prompt}]
+                    nested2.messages.append({
+                        "role": "user",
+                        "content": f"Begin your work: {agent.mission}",
+                    })
+                    _tok2 = push_session(nested2)
+                    try:
+                        _r2 = run_inner_loop(nested2, effective_turns, verbose_usage=False)
+                        _s2 = getattr(_r2, "status", "done")
+                        if _s2 not in ("interrupted", "api_error"):
+                            try:
+                                _provider_health.record_success(_prov)
+                            except Exception:
+                                pass
+                            # Emit RECOVERED status
+                            try:
+                                _notify_fn = _get_notify_fn()
+                                if _notify_fn is not None:
+                                    _notify_fn(agent.id, agent.role, "running",
+                                               f"recovered after {_attempt} retry")
+                            except Exception:
+                                pass
+                            return WorkerResult(
+                                agent_id=agent.id, role=agent.role,
+                                success=True,
+                                output=getattr(_r2, "content", "") or "",
+                                turns_used=turns + getattr(_r2, "turns_used", 0),
+                            )
+                        # Another provider failure — record and continue loop
+                        _ec2 = classify_error(f"agent status: {_s2}")
+                        try:
+                            _provider_health.record_error(_prov, _ec2, retried=True)
+                        except Exception:
+                            pass
+                    except Exception as _exc2:
+                        _ec2 = classify_error(_exc2)
+                        try:
+                            _provider_health.record_error(_prov, _ec2, retried=True)
+                        except Exception:
+                            pass
+                    finally:
+                        pop_session(_tok2)
 
         # Self-healing: on failure, attempt automated repair before giving up
         if not success:
@@ -193,16 +522,43 @@ def _run_single_agent(
         return WorkerResult(
             agent_id=agent.id, role=agent.role,
             success=success, output=content, turns_used=turns, error=error,
+            stats=_wstats,
         )
     except Exception as exc:
+        _wstats.active_s = __import__("time").monotonic() - _agent_start
+        # Classify the exception — provider errors get a human reason, not a
+        # raw exception name in the dashboard (BUG 5).
+        _exc_str = str(exc)
+        _reason = _exc_str
+        if _RELIABILITY_AVAILABLE:
+            try:
+                from agent.production.reliability import classify_error as _ce, is_provider_failure as _ipf
+                _ec = _ce(exc)
+                if _ipf(_ec):
+                    _reason = {
+                        "timeout":    "Provider timeout — connection to model dropped",
+                        "rate_limit": "Provider rate-limited — too many concurrent requests",
+                        "malformed":  "Provider stream error — malformed chunk from model",
+                        "payload_too_large": "Tool payload too large — request exceeded limits",
+                        "provider":   "Transient provider error — gateway returned 5xx",
+                    }.get(_ec.value, _exc_str)
+            except Exception:
+                pass
         return WorkerResult(
             agent_id=agent.id, role=agent.role,
-            success=False, output="", error=str(exc),
+            success=False, output="", error=_reason,
+            stats=_wstats,
         )
     finally:
         pop_session(token)
         if ownership_mgr and lock_keys:
             ownership_mgr.release_all(lock_keys)
+        # Push provider health snapshot to dashboard after each agent completes.
+        try:
+            from agent.ui.dashboard import push_provider_health
+            push_provider_health()
+        except Exception:
+            pass
 
 
 def _run_integrator(
@@ -237,8 +593,10 @@ Your job:
 Do NOT rewrite existing work — only add missing glue, fix imports, and surface a clear summary."""
 
     parent = get_session()
-    nested = _build_nested("Integrator", prompt, parent.depth)
+    nested = _build_nested("Integrator", prompt, parent.depth, parent_profile=getattr(parent, 'profile', 'default'))
     nested.system_prompt = prompt
+    nested.mission_contract = getattr(parent, "mission_contract", None)
+    nested.remembered_permissions = dict(getattr(parent, "remembered_permissions", {}) or {})
     nested.messages = [
         {"role": "system", "content": prompt},
         {"role": "user", "content": "Review all component outputs and integrate the system."},
@@ -348,105 +706,77 @@ def run_schedule(
     agent_map: Dict[str, AgentRole] = {a.id: a for a in team.agents}
     completed_ids: Set[str] = set()
     outputs: Dict[str, WorkerResult] = {}
-    prior_outputs: Dict[str, str] = {}
+    prior_outputs: Dict[str, str] = {"__user_input__": user_input}
     failed: List[str] = []
     prior_lock = threading.Lock()
 
-    # ── Live Dashboard — owned by the scheduler (main) thread ────────────────
-    # Rich Live must be driven from the thread that owns the terminal. Agent
-    # workers run in ThreadPoolExecutor threads and only push events; the
-    # scheduler loop calls live.update() between layers and after each agent
-    # completes. No background thread needed.
-    _live = None
+    # Compute agent layers early — needed for dashboard init, MC fallback, and main loop
+    agent_layers = _agent_execution_layers(team.agents)
+    n_layers = len(agent_layers)
+
+    # ── Live Dashboard — background thread owns the Rich Live display ─────────
+    # start_dashboard() spawns a daemon thread (_rich_dashboard_loop) that:
+    #   1. Stops the existing spinner
+    #   2. Creates its own Rich Live
+    #   3. Drains the push_event() queue at 4 FPS
+    # Agent workers call push_event() from any thread — queue is thread-safe.
     _dash_started = False
     if len(team.agents) > 1:
         try:
-            from agent.ui.dashboard import (
-                start_dashboard, push_event, get_active,
-                _build_dashboard_panel, _process_events, _lock as _dlck, _state as _dstate,
-            )
-            from agent.ui.console import console as _rich_con
-            from rich.live import Live
-
-            # Stop spinner so we can own the terminal
+            from agent.ui.dashboard import start_dashboard, push_event
+            # Stop the spinner on the main thread BEFORE spawning the dashboard
+            # thread. Rich Status/Live must be stopped on the thread that created
+            # them; calling stop() from the background thread deadlocks the
+            # Rich internal buffer lock.
             try:
                 from agent.ui.renderer import _activity
                 _activity._stop_cycler()
-                _sp = getattr(_activity, "_spinner", None)
-                if _sp:
-                    _sp.stop()
+                sp = getattr(_activity, "_spinner", None)
+                if sp:
+                    sp.stop()
             except Exception:
                 pass
-
-            # Initialise dashboard state (no thread needed)
             start_dashboard(
                 goal=user_input[:60] or "Mission",
                 total_agents=len(team.agents),
-                total_layers=len(agent_layers),
+                total_layers=n_layers,
             )
             push_event("timeline", message=f"Spawned {len(team.agents)} agents")
-
-            _live = Live(
-                _build_dashboard_panel(),
-                console=_rich_con,
-                refresh_per_second=4,
-                transient=True,
-                vertical_overflow="visible",
-            )
-            _live.__enter__()
-
-            # Redirect console.print so logs go above the panel
-            _orig_print = _rich_con.print
-            def _live_print(*args, **kwargs):
-                try:
-                    _live.console.print(*args, **kwargs)
-                except Exception:
-                    try:
-                        _orig_print(*args, **kwargs)
-                    except Exception:
-                        pass
-            _rich_con.print = _live_print
+            # Pre-register all agents as WAITING so the dashboard shows the
+            # full org before execution starts — agents update to RUNNING as
+            # their layer begins.
+            for _ag in team.agents:
+                push_event("agent_update", id=_ag.id, role=_ag.role,
+                           status="waiting", task="waiting for dependencies")
             _dash_started = True
+            try:
+                from agent.ui.streaming import set_parallel_mode
+                set_parallel_mode(True)
+            except Exception:
+                pass
         except Exception:
-            _live = None
             _dash_started = False
 
     def _dash_update():
-        """Refresh the Live panel — call after any state change."""
-        if _live is not None:
-            try:
-                from agent.ui.dashboard import _build_dashboard_panel, _process_events
-                _process_events()
-                _live.update(_build_dashboard_panel())
-            except Exception:
-                pass
+        pass  # background thread handles refresh automatically
 
     def _dash_stop():
-        """Tear down the Live display and restore console.print."""
-        nonlocal _live
-        if _live is not None:
+        if _dash_started:
             try:
+                from agent.ui.streaming import set_parallel_mode
+                set_parallel_mode(False)
+            except Exception:
+                pass
+            try:
+                import time as _t
                 from agent.ui.dashboard import push_event, stop_dashboard
                 push_event("progress", percent=100)
-                _process_events()
-                _live.update(_build_dashboard_panel())
-            except Exception:
-                pass
-            try:
-                _live.__exit__(None, None, None)
-            except Exception:
-                pass
-            try:
-                _rich_con.print = _orig_print
-            except Exception:
-                pass
-            _live = None
-            try:
+                _t.sleep(0.05)  # let background thread render final frame
                 stop_dashboard()
             except Exception:
                 pass
 
-    # Legacy MC fallback (only if Live init failed)
+    # Legacy MC fallback (only if dashboard failed to start)
     _mc = None
     if not _dash_started and len(team.agents) > 1:
         try:
@@ -454,13 +784,13 @@ def run_schedule(
             _mc = MissionControl(
                 goal=user_input[:60] or "Mission",
                 total_agents=len(team.agents),
-                total_layers=len(agent_layers),
+                total_layers=n_layers,
             )
             _mc.start()
         except Exception:
             _mc = None
 
-    def _notify(aid: str, role: str, status: str) -> None:
+    def _notify(aid: str, role: str, status: str, detail: str = "") -> None:
         if on_progress:
             on_progress(aid, role, status)
 
@@ -474,7 +804,10 @@ def run_schedule(
                 elif status == "done":
                     push_event("timeline", message=f"{role} done")
                 elif status == "failed":
-                    push_event("timeline", message=f"{role} failed")
+                    msg = detail or f"{role} failed"
+                    push_event("timeline", message=msg)
+                elif status == "retrying":
+                    push_event("timeline", message=detail or f"{role} retrying…")
                 _dash_update()
             except Exception:
                 pass
@@ -483,10 +816,11 @@ def run_schedule(
         if _mc is not None:
             try:
                 task_hint = {
-                    "running": f"working on {aid}",
-                    "done": "completed",
-                    "failed": "failed",
+                    "running":  f"working on {aid}",
+                    "done":     "completed",
+                    "failed":   detail or "failed",
                     "repairing": "self-healing…",
+                    "retrying": detail or "provider retry…",
                 }.get(status, status)
                 _mc.set_agent(aid, role, status, task_hint)
             except Exception:
@@ -499,7 +833,9 @@ def run_schedule(
             elif status == "done":
                 ui.muted(f"  ✓ {role}")
             elif status == "failed":
-                ui.warn(f"  ✗ {role} failed")
+                ui.warn(f"  ✗ {role} — {detail or 'failed'}")
+            elif status == "retrying":
+                ui.muted(f"  ⟳ {role} — {detail or 'retrying…'}")
         try:
             from agent.ui import agent_task_start, agent_task_done, agent_failed
             if status == "running":
@@ -507,7 +843,7 @@ def run_schedule(
             elif status == "done":
                 agent_task_done(aid, aid, 0)
             elif status == "failed":
-                agent_failed(aid, role, "execution error")
+                agent_failed(aid, role, detail or "execution error")
         except Exception:
             pass
 
@@ -540,16 +876,12 @@ def run_schedule(
             failed_agents=failed,
         )
 
+    # Register _notify in thread-local so provider-retry loops in worker
+    # threads can emit RETRYING/RECOVERED status events to the dashboard.
+    _set_notify_fn(_notify)
+
     # Build work queue for stealing
     work_queue = WorkQueue()
-
-    # Compute execution layers from AGENT dependencies (not DAG node layers).
-    # This is the correct approach: agents are ordered by their inter-agent
-    # dependencies (agent A depends on agent B → B runs first). Using DAG
-    # node layers instead caused agents to be found in Layer 1 and then
-    # silently skipped in later layers when their task_node_ids spanned layers.
-    agent_layers = _agent_execution_layers(team.agents)
-    n_layers = len(agent_layers)
 
     for layer_idx, layer_agents in enumerate(agent_layers, 1):
         if not layer_agents:
@@ -627,28 +959,40 @@ def run_schedule(
                             return steal_result
                 return result
 
-            with ThreadPoolExecutor(max_workers=effective_workers, thread_name_prefix="kryth-agent") as pool:
+            # Cap CONCURRENT agents (effective_workers) — not one thread per
+            # agent. A 9-agent layer with a cap of 4 runs 4 at a time; the rest
+            # queue in the pool and start as slots free. Prevents the provider
+            # rate-limit storm from firing all agents at once.
+            _layer_workers = max(1, min(effective_workers, len(layer_agents)))
+            with ThreadPoolExecutor(max_workers=_layer_workers, thread_name_prefix="kryth-agent") as pool:
                 for agent in layer_agents:
                     _notify(agent.id, agent.role, "running")
 
                 futures = {pool.submit(_worker, ag): ag for ag in layer_agents}
 
-                for future in as_completed(futures):
-                    ag = futures[future]
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        result = WorkerResult(
-                            agent_id=ag.id, role=ag.role,
-                            success=False, output="", error=str(exc),
-                        )
-                    outputs[ag.id] = result
-                    completed_ids.add(ag.id)
-                    with prior_lock:
-                        prior_outputs[ag.id] = result.output
-                    if not result.success:
+                # Per-layer timeout: 480s leaves headroom within the 600s mission limit
+                _layer_timeout = int(os.environ.get("KRYTH_LAYER_TIMEOUT", "480"))
+                try:
+                    for future in as_completed(futures, timeout=_layer_timeout):
+                        ag = futures[future]
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            result = WorkerResult(
+                                agent_id=ag.id, role=ag.role,
+                                success=False, output="", error=str(exc),
+                            )
+                        outputs[ag.id] = result
+                        completed_ids.add(ag.id)
+                        with prior_lock:
+                            prior_outputs[ag.id] = result.output
+                        if not result.success:
+                            failed.append(ag.id)
+                        _notify(ag.id, ag.role, "done" if result.success else "failed")
+                except TimeoutError:
+                    for ag in [a for a in layer_agents if a.id not in completed_ids]:
                         failed.append(ag.id)
-                    _notify(ag.id, ag.role, "done" if result.success else "failed")
+                        _notify(ag.id, ag.role, "failed")
 
         else:
             for agent in layer_agents:
@@ -696,6 +1040,24 @@ def run_schedule(
         else:
             work_queue.complete(stolen.task_id, "")
 
+    # Save mission state after all layers complete (Task 9 — recovery support).
+    # Writes agent outputs to the session store so a crashed mission can be
+    # inspected and partial results are not lost.
+    try:
+        from agent.persistence import session_store
+        _store = session_store()
+        _store.append_checkpoint(
+            label="mission-state",
+            summary=(
+                f"Mission completed {len(outputs) - len(failed)}/{len(outputs)} agents. "
+                f"Failed: {failed or 'none'}. "
+                f"Total turns: {sum(r.turns_used for r in outputs.values())}."
+            ),
+            modified_files=[],
+        )
+    except Exception:
+        pass
+
     # Stop dashboards before integrator
     if _dash_started:
         try:
@@ -723,10 +1085,18 @@ def run_schedule(
 
     total_turns = sum(r.turns_used for r in outputs.values())
 
+    # V1.7: collect per-worker stats for utilization / token accounting
+    _all_stats = {
+        aid: wr.stats
+        for aid, wr in outputs.items()
+        if wr.stats is not None
+    }
+
     return SchedulerResult(
         success=not failed,
         outputs=outputs,
         final_output=final,
         total_turns=total_turns,
         failed_agents=failed,
+        worker_stats=_all_stats,
     )

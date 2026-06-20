@@ -159,7 +159,7 @@ class TestSimpleTaskRouting:
     @patch('agent.agent_loop.auto_select_skills')
     def test_simple_task_uses_main_agent(self, mock_auto_select, mock_route, mock_run_inner_loop, mock_dynamic, mock_classify):
         """Simple tasks should not trigger dynamic builder."""
-        mock_classify.return_value = MagicMock(complexity='simple')
+        mock_classify.return_value = MagicMock(complexity='simple', is_conversational=False)
         mock_run_inner_loop.return_value = MagicMock(status='done', content='OK')
         mock_route.return_value = []
         mock_auto_select.return_value = []
@@ -172,21 +172,21 @@ class TestSimpleTaskRouting:
         mock_auto_select.assert_called_once()
 
     @patch('agent.agent_loop.classify_task')
-    @patch('agent.agent_loop.run_dynamic_build_with_approval')
+    @patch('agent.agent_loop.orchestrate')
     @patch('agent.agent_loop.run_inner_loop')
     @patch('agent.agent_loop.route')
     @patch('agent.agent_loop.auto_select_skills')
-    def test_complex_task_uses_dynamic_builder(self, mock_auto_select, mock_route, mock_run_inner_loop, mock_dynamic, mock_classify):
-        """Complex tasks should use dynamic builder."""
-        mock_classify.return_value = MagicMock(complexity='complex')
-        mock_dynamic.return_value = "Task Completed"
+    def test_complex_task_uses_orchestration(self, mock_auto_select, mock_route, mock_run_inner_loop, mock_orchestrate, mock_classify):
+        """Complex tasks should use orchestration."""
+        mock_classify.return_value = MagicMock(complexity='complex', is_conversational=False)
+        mock_orchestrate.return_value = MagicMock(approved=True, output="Task Completed")
         mock_run_inner_loop.return_value = MagicMock(status='done', content='OK')
         mock_route.return_value = []
         mock_auto_select.return_value = []
         
         run_agent("build a full-stack web app")
         
-        mock_dynamic.assert_called_once()
+        mock_orchestrate.assert_called_once()
         # run_inner_loop may be called by workers, but not directly by run_agent
         # So we don't assert on run_inner_loop here
 
@@ -197,7 +197,7 @@ class TestSimpleTaskRouting:
     @patch('agent.agent_loop.auto_select_skills')
     def test_medium_task_uses_main_agent_directly(self, mock_auto_select, mock_route, mock_run_inner_loop, mock_dynamic, mock_classify):
         """Medium tasks should use main agent directly (no orchestration)."""
-        mock_classify.return_value = MagicMock(complexity='medium')
+        mock_classify.return_value = MagicMock(complexity='medium', is_conversational=False)
         mock_run_inner_loop.return_value = MagicMock(status='done', content='OK')
         mock_route.return_value = []
         mock_auto_select.return_value = []

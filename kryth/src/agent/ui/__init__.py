@@ -41,15 +41,39 @@ from agent.ui import run_summary as _summary
 # ---------------------------------------------------------------------------
 
 def install() -> None:
-    """Install the default Rich renderer + run-summary tracker on the
-    shared bus. Call once from the REPL entrypoint. Safe to call
-    multiple times.
+    """Install the UI on the shared bus. Call once from the REPL entrypoint.
+    Safe to call multiple times.
+
+    Renderer selection (presentation only — backend untouched either way):
+      • KRYTH_LIVE_UI=1 → the UI v5 Live Layout Engine (persistent sticky
+        header/footer, live timeline, assistant + tool panels).
+      • default (OFF)   → the incremental Rich renderer (immediate rollback).
+    The run-summary tracker is installed in both modes.
     """
-    _renderer.install()
     _summary.install()
+    try:
+        from agent.ui.live_engine import live_ui_enabled
+        if live_ui_enabled():
+            from agent.ui import live_engine as _live
+            _live.install()
+            return
+    except Exception:
+        # Live engine failed to install — fall through to the stable
+        # incremental renderer (immediate, automatic rollback).
+        try:
+            from agent.ui import live_engine as _live
+            _live.uninstall()
+        except Exception:
+            pass
+    _renderer.install()
 
 
 def uninstall() -> None:
+    try:
+        from agent.ui import live_engine as _live
+        _live.uninstall()
+    except Exception:
+        pass
     _renderer.uninstall()
 
 
@@ -58,14 +82,28 @@ def begin_turn() -> None:
     _summary.reset()
 
 
-def publish_turn_summary(*, status: str = "done", turns_used: int = 0) -> None:
+def publish_turn_summary(
+    *,
+    status: str = "done",
+    turns_used: int = 0,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+) -> None:
     """If side-effects happened OR the turn ended abnormally, emit the
     RUN_SUMMARY panel. ``status`` is one of ``done``/``max_turns``/
     ``interrupted``/``api_error`` and is passed through to the renderer
-    so it can paint the appropriate header."""
+    so it can paint the appropriate header.
+
+    Pass ``tokens_in`` / ``tokens_out`` (session cumulative totals) so the
+    Session Summary always shows the real session token count, not whatever
+    stale value was cached from a prior turn.
+    """
     summary = _summary.snapshot()
     summary["status"] = status
     summary["turns_used"] = turns_used
+    if tokens_in or tokens_out:
+        summary["tokens_in"] = tokens_in
+        summary["tokens_out"] = tokens_out
     if status == "done" and _summary.is_empty():
         return
     emit(EventKind.RUN_SUMMARY, summary=summary)
@@ -151,6 +189,13 @@ def llm_usage(turn_in: int, turn_out: int, session_in: int, session_out: int, ve
          turn_in=turn_in, turn_out=turn_out,
          session_in=session_in, session_out=session_out,
          verbose=verbose)
+
+
+def token_budget(*, est_before: int = 0, tools_tok: int = 0, history_tok: int = 0, tools_count: int = 0) -> None:
+    """Emit pre-call token breakdown: estimated input tokens before LLM call."""
+    emit(EventKind.TOKEN_BUDGET,
+         est_before=est_before, tools_tok=tools_tok,
+         history_tok=history_tok, tools_count=tools_count)
 
 
 def llm_error(label: str, message: str, hint: str | None = None) -> None:
@@ -301,8 +346,35 @@ def debug(message: str) -> None:
     emit(EventKind.LOG, level="debug", message=message)
 
 
+def _live_active() -> bool:
+    """True when the v5 Live Layout Engine owns the terminal — direct console
+    prints must be suppressed so nothing renders outside the live frame."""
+    try:
+        from agent.ui import live_engine as _live
+        eng = _live.get_engine()
+        return bool(getattr(eng, "_installed", False) and getattr(eng, "_live", None) is not None)
+    except Exception:
+        return False
+
+
 def muted(message: str) -> None:
-    """Subtle one-liner for user-facing notices (commands, status)."""
+    """Subtle one-liner for user-facing notices (commands, status).
+
+    Under the Live Layout Engine, a raw console print would land outside the
+    persistent frame — so it is dropped (the dashboard already conveys state).
+    """
+    if _live_active():
+        return
+    # During orchestrated (DAG/SWARM) execution the team dashboard owns the view —
+    # suppress these direct one-liners (scheduler layer notes, parallel-tool spam)
+    # unless a detail view is open. This is the same gate the renderer applies.
+    try:
+        from agent.ui.clean_view import should_render
+        from agent.ui.events import EventKind
+        if not should_render(EventKind.LOG):
+            return
+    except Exception:
+        pass
     from agent.ui.console import console
     console.print(f"[muted]{message}[/muted]")
 
@@ -421,6 +493,30 @@ def dag_update(nodes: list) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Runtime v2 — spec-named event emitters
+# ---------------------------------------------------------------------------
+
+def assistant_message(text: str) -> None:
+    """Emit a unit of assistant prose (the spec's `assistant_message`)."""
+    emit(EventKind.ASSISTANT_MESSAGE, text=text)
+
+
+def tool_arguments(tool: str, arguments: dict | None = None) -> None:
+    """Emit parsed/validated tool arguments (the spec's `tool_arguments`)."""
+    emit(EventKind.TOOL_ARGUMENTS, tool=tool, arguments=arguments or {})
+
+
+def tool_finish(tool: str, ok: bool = True) -> None:
+    """Emit tool-dispatch completion (the spec's `tool_finish`)."""
+    emit(EventKind.TOOL_FINISH, tool=tool, ok=ok)
+
+
+def complete(status: str = "done", turns_used: int = 0) -> None:
+    """Emit task/turn completion (the spec's `complete`)."""
+    emit(EventKind.COMPLETE, status=status, turns_used=turns_used)
+
+
+# ---------------------------------------------------------------------------
 # Re-exports
 # ---------------------------------------------------------------------------
 
@@ -436,7 +532,7 @@ __all__ = [
     "llm_waiting",
     "llm_reasoning_chunk", "llm_reasoning_end",
     "llm_content_chunk", "llm_content_end",
-    "llm_usage", "llm_error", "llm_retry",
+    "llm_usage", "llm_error", "llm_retry", "token_budget",
     "llm_hermes_recovery", "llm_degenerate",
     # tools
     "tool_start", "tool_result", "tool_error",
@@ -460,4 +556,6 @@ __all__ = [
     "layer_change", "approval_batch",
     "reflection_show", "memory_display",
     "terminal_summary", "dag_update",
+    # runtime v2 spec-named events
+    "assistant_message", "tool_arguments", "tool_finish", "complete",
 ]

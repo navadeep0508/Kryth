@@ -128,8 +128,10 @@ class WorkQueue:
             if retry and item.retry_count <= MAX_RETRIES:
                 item.status = TaskStatus.PENDING
                 item.priority = max(0, item.priority - 1)  # bump priority on retry
-                self._pending.append(task_id)
-                self._pending.sort(key=lambda tid: self._items[tid].priority)
+                # Only re-queue if currently not already pending (avoid duplicates)
+                if task_id not in self._pending:
+                    self._pending.append(task_id)
+                    self._pending.sort(key=lambda tid: self._items[tid].priority)
             else:
                 item.status = TaskStatus.FAILED
 

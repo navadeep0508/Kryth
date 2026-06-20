@@ -13,6 +13,8 @@ Rules:
 from __future__ import annotations
 
 import os
+import re
+import sys
 import time as _time
 from typing import Callable
 
@@ -66,11 +68,20 @@ def _is_debug() -> bool:
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
 
+_session_model: str = ""
+_session_base_url: str = ""
+_session_tools: int = 0
+
+
 def _on_banner(e: Event) -> None:
+    global _session_model, _session_base_url, _session_tools
+    _session_model = e.data.get("model", "") or ""
+    _session_base_url = e.data.get("base_url", "") or ""
+    _session_tools = e.data.get("skill_count", 0) or 0
     C.banner(
-        model=e.data["model"],
-        base_url=e.data["base_url"],
-        skill_count=e.data.get("skill_count", 0),
+        model=_session_model,
+        base_url=_session_base_url,
+        skill_count=_session_tools,
     )
 
 
@@ -101,6 +112,22 @@ def _on_turn_end(e: Event) -> None:
         "tokens_in": e.data.get("tokens_in", 0),
         "tokens_out": e.data.get("tokens_out", 0),
     })
+    # UI v3 — premium status bar + debug panel.
+    try:
+        _tokens = e.data.get("tokens_in", 0) + e.data.get("tokens_out", 0)
+        _tel_on = bool(os.environ.get("KRYTH_RUNTIME_TELEMETRY"))
+        from agent.ui.components import _provider_label, _adapter_label
+        C.status_bar(
+            provider=_provider_label(_session_model, _session_base_url),
+            tools=_turn_tool_count,
+            tokens=_tokens,
+            adapter=_adapter_label(),
+            telemetry_on=_tel_on,
+        )
+        C.debug_panel(model=_session_model, base_url=_session_base_url, tools=_session_tools)
+    except Exception:
+        pass
+
     status.turn_reset()
     try:
         from agent.ui.ui_state import ui_state
@@ -178,12 +205,12 @@ def _on_auto_skills(e: Event) -> None:
 
 def _on_llm_waiting(e: Event) -> None:
     global _activity_idx
-    # Suppress spinner while Mission Control's Live display is active.
-    # Use sys.modules to avoid circular import (renderer ← mission_control ← renderer).
     try:
-        import sys
         mc_mod = sys.modules.get("agent.ui.mission_control")
         if mc_mod is not None and mc_mod.get_active_mc() is not None:
+            return
+        dash_mod = sys.modules.get("agent.ui.dashboard")
+        if dash_mod is not None and dash_mod.get_active():
             return
     except Exception:
         pass
@@ -223,6 +250,7 @@ def _on_llm_content_end(e: Event) -> None:
 
 
 def _on_llm_usage(e: Event) -> None:
+    # Record for budget tracking
     try:
         from agent.supervisor.budget import budget_controller
         budget_controller.record_tokens(
@@ -231,6 +259,40 @@ def _on_llm_usage(e: Event) -> None:
         )
     except Exception:
         pass
+    # Live token display after every LLM turn
+    try:
+        turn_in  = e.data.get("turn_in", 0)
+        turn_out = e.data.get("turn_out", 0)
+        sess_in  = e.data.get("session_in", 0)
+        sess_out = e.data.get("session_out", 0)
+        total    = sess_in + sess_out
+        console.print(
+            f"  [muted]tokens this turn:[/muted] "
+            f"[dim]{turn_in:,}[/dim][muted] in[/muted]  "
+            f"[dim]{turn_out:,}[/dim][muted] out[/muted]"
+            f"   [muted]session total:[/muted] [kryth.core]{total:,}[/kryth.core]"
+        )
+    except Exception:
+        pass
+
+
+def _on_token_budget(e: Event) -> None:
+    """Show pre-call token breakdown when KRYTH_TOKEN_TELEMETRY=1."""
+    import os
+    if os.environ.get("KRYTH_TOKEN_TELEMETRY", "0") not in ("1", "true", "yes"):
+        return
+    est    = e.data.get("est_before", 0)
+    tools  = e.data.get("tools_tok", 0)
+    hist   = e.data.get("history_tok", 0)
+    count  = e.data.get("tools_count", 0)
+    sys_tok = max(0, est - tools - hist)
+    console.print(
+        f"  [muted]ctx budget:[/muted]"
+        f" [dim]sys≈{sys_tok:,}[/dim]"
+        f" [dim]tools≈{tools:,}({count})[/dim]"
+        f" [dim]hist≈{hist:,}[/dim]"
+        f" [kryth.core]total≈{est:,}[/kryth.core]"
+    )
 
 
 def _on_llm_error(e: Event) -> None:
@@ -274,12 +336,19 @@ def _on_tool_start(e: Event) -> None:
     name = e.data["name"]
     args = e.data.get("args") or {}
 
-    # Update activity spinner with human label
+    # In DAG/SWARM parallel mode: update spinner only — no raw log spam.
+    # The dashboard cards show per-agent progress; terminal sees agent cards only.
+    try:
+        from agent.ui.streaming import _parallel_mode as _pm
+    except Exception:
+        _pm = False
+
     lbl = label(name, args)
     _activity.waiting(f"◈ {lbl}…")
 
-    # Route through mission_console — it decides what's visible
-    mission_console.on_tool_start(name, args)
+    if not _pm:
+        # Route through mission_console — it decides what's visible
+        mission_console.on_tool_start(name, args)
 
     # Update engineering state tracker
     try:
@@ -295,10 +364,16 @@ def _on_tool_result(e: Event) -> None:
     error = e.data.get("error", False)
     result_str = str(e.data.get("result", ""))
 
-    mission_console.on_tool_result(name, result_str, error)
+    try:
+        from agent.ui.streaming import _parallel_mode as _pm
+    except Exception:
+        _pm = False
 
-    # In debug only: show first result line
-    if _is_debug():
+    if not _pm:
+        mission_console.on_tool_result(name, result_str, error)
+
+    # In debug only: show first result line (never in parallel mode)
+    if _is_debug() and not _pm:
         lines = result_str.strip().splitlines()
         first = lines[0][:120] if lines else "(empty)"
         extra = max(0, len(lines) - 1)
@@ -306,11 +381,19 @@ def _on_tool_result(e: Event) -> None:
 
 
 def _on_tool_error(e: Event) -> None:
+    # In DAG/SWARM parallel mode suppress tool errors from the main timeline —
+    # per-agent card panels show agent status; raw error lines are noise.
+    try:
+        from agent.ui.streaming import _parallel_mode as _pm
+    except Exception:
+        _pm = False
+    if _pm:
+        return  # DAG mode: tool errors hidden from main terminal
+
     msg = e.data.get("message", "")
     if _is_debug():
         C.tool_error_line(msg)
     else:
-        # Surface as a brief timeline warning, not raw error dump
         short = msg[:80]
         emit_timeline(f"Issue  —  {short}", "warn")
 
@@ -337,16 +420,14 @@ def _on_tool_hook_blocked(e: Event) -> None:
 # ── File / shell ─────────────────────────────────────────────────────────────
 
 def _on_write_preview(e: Event) -> None:
-    import os as _os
     path = e.data["path"]
-    emit_timeline(f"File created  —  {_os.path.basename(path)}", "success")
+    emit_timeline(f"File created  —  {os.path.basename(path)}", "success")
     file_updates.on_write_preview(e)
 
 
 def _on_diff(e: Event) -> None:
-    import os as _os
     path = e.data.get("path") or ""
-    emit_timeline(f"Changes applied  —  {_os.path.basename(path) or 'file'}", "success")
+    emit_timeline(f"Changes applied  —  {os.path.basename(path) or 'file'}", "success")
     file_updates.on_diff(e)
 
 
@@ -533,7 +614,12 @@ def _render_turn_summary(s: dict) -> None:
 
 def _on_run_summary(e: Event) -> None:
     data = dict(e.data["summary"])
-    data.update(_turn_stats_cache)
+    # Merge cached turn stats (elapsed, tool counts) but let explicit token
+    # values in the event win — they come directly from session.cumulative_*
+    # and are always accurate. Stale cache values would show wrong numbers.
+    for k, v in _turn_stats_cache.items():
+        if k not in ("tokens_in", "tokens_out") or k not in data:
+            data.setdefault(k, v)
     _render_turn_summary(data)
 
 
@@ -554,7 +640,6 @@ def _on_todos(e: Event) -> None:
 # ── Subagents ────────────────────────────────────────────────────────────────
 
 def _on_subagent_start(e: Event) -> None:
-    import re
     desc = e.data.get("description", "")
     clean = re.sub(r'^\[\d+\]\s*', '', desc)
     emit_timeline(f"Team member deployed  —  {clean[:60]}")
@@ -651,8 +736,11 @@ def _on_timeline_event(e: Event) -> None:
         ui_state.add_timeline_event(e.data.get("message", ""), e.data.get("kind", "info"))
     except Exception:
         pass
-    from agent.ui.timeline import append_timeline_line
-    append_timeline_line(e.data.get("message", ""), e.data.get("kind", "info"))
+    try:
+        from agent.ui.timeline import append_timeline_line
+        append_timeline_line(e.data.get("message", ""), e.data.get("kind", "info"))
+    except Exception:
+        pass
 
 
 def _on_engineering_action(e: Event) -> None:
@@ -718,6 +806,44 @@ def _on_dag_update(e: Event) -> None:
     pass  # DAG visualization only in engineering/debug layers
 
 
+# ── Runtime v2 spec-named events ─────────────────────────────────────────────
+# These provide the canonical event vocabulary. Normal-mode visuals are already
+# produced by the granular events (content chunks, tool start/result, turn end),
+# so these consume cleanly without double-rendering. Debug mode surfaces them.
+
+def _on_assistant_message(e: Event) -> None:
+    if _is_debug():
+        txt = str(e.data.get("text", ""))[:200]
+        console.print(Text.assemble((CORE, "kryth.core"), ("  assistant_message  ", "muted"), (txt, "title")))
+
+
+def _on_tool_arguments(e: Event) -> None:
+    if _is_debug():
+        console.print(Text.assemble(
+            (CORE, "kryth.core"), ("  tool_arguments  ", "muted"),
+            (f"{e.data.get('tool', '')}  {e.data.get('arguments', {})}"[:160], "muted"),
+        ))
+
+
+def _on_tool_finish(e: Event) -> None:
+    if _is_debug():
+        ok = e.data.get("ok", True)
+        console.print(Text.assemble(
+            (CORE, "kryth.core"), ("  tool_finish  ", "muted"),
+            (f"{e.data.get('tool', '')}  {'ok' if ok else 'failed'}", "muted"),
+        ))
+
+
+def _on_complete(e: Event) -> None:
+    # Turn-end visuals are already emitted via TURN_END / RUN_SUMMARY; this is
+    # the canonical completion signal and stays silent in normal mode.
+    if _is_debug():
+        console.print(Text.assemble(
+            (CORE, "kryth.core"), ("  complete  ", "muted"),
+            (f"{e.data.get('status', 'done')}  turns={e.data.get('turns_used', 0)}", "muted"),
+        ))
+
+
 # ── Handler registry ─────────────────────────────────────────────────────────
 
 _HANDLERS: dict[EventKind, Callable[[Event], None]] = {
@@ -740,6 +866,7 @@ _HANDLERS: dict[EventKind, Callable[[Event], None]] = {
     EventKind.LLM_CONTENT_CHUNK:     _on_llm_content_chunk,
     EventKind.LLM_CONTENT_END:       _on_llm_content_end,
     EventKind.LLM_USAGE:             _on_llm_usage,
+    EventKind.TOKEN_BUDGET:          _on_token_budget,
     EventKind.LLM_ERROR:             _on_llm_error,
     EventKind.LLM_RETRY:             _on_llm_retry,
     EventKind.LLM_HERMES_RECOVERY:   _on_llm_hermes_recovery,
@@ -784,10 +911,24 @@ _HANDLERS: dict[EventKind, Callable[[Event], None]] = {
     EventKind.MEMORY_DISPLAY:        _on_memory_display,
     EventKind.TERMINAL_SUMMARY:      _on_terminal_summary,
     EventKind.DAG_UPDATE:            _on_dag_update,
+    # Runtime v2 spec-named events
+    EventKind.ASSISTANT_MESSAGE:     _on_assistant_message,
+    EventKind.TOOL_ARGUMENTS:        _on_tool_arguments,
+    EventKind.TOOL_FINISH:           _on_tool_finish,
+    EventKind.COMPLETE:              _on_complete,
 }
 
 
 def _dispatch(event: Event) -> None:
+    # Clean execution view: during orchestrated (DAG/SWARM) missions, suppress
+    # internal events (tool calls, reasoning, planning, logs) from the main view
+    # unless the user opened /agents, /logs, or /debug. Presentation-only.
+    try:
+        from agent.ui.clean_view import should_render
+        if not should_render(event.kind):
+            return
+    except Exception:
+        pass
     handler = _HANDLERS.get(event.kind)
     if handler:
         handler(event)

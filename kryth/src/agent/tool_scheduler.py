@@ -194,6 +194,13 @@ import os as _os
 _MAX_PARALLEL_TOOLS = min(64, max(16, (_os.cpu_count() or 8) * 4))
 
 
+# Tools that write to the filesystem — run_command must never be in the same
+# parallel stage as these, since the command may depend on files being written.
+_FILE_WRITE_TOOLS = frozenset({
+    "write_file", "edit_file", "multi_edit", "delete_file", "rollback_file",
+})
+
+
 def _group_into_stages(slots: list[_CallSlot]) -> list[list[_CallSlot]]:
     """Group slots into the MINIMUM number of sequential stages.
 
@@ -203,6 +210,10 @@ def _group_into_stages(slots: list[_CallSlot]) -> list[list[_CallSlot]]:
 
     Algorithm: greedy bin-packing — assign each slot to the first stage
     it fits into. Read-only slots always fit in any non-exclusive stage.
+
+    Ordering constraint: run_command is always placed in a stage AFTER any
+    file-writing tool (write_file, edit_file, multi_edit). The written file
+    must exist on disk before the command that executes it can run.
     """
     stages: list[list[_CallSlot]] = []
     # Collect all read-only slots first — they all go into one shared stage
@@ -213,8 +224,17 @@ def _group_into_stages(slots: list[_CallSlot]) -> list[list[_CallSlot]]:
     if reads:
         stages.append(reads)
 
-    # Writes: bin-pack non-conflicting writes into as few stages as possible
-    for slot in writes:
+    # Writes: bin-pack non-conflicting writes into as few stages as possible.
+    # run_command is processed last (sorted to end) so file-writes always land
+    # in an earlier stage first.
+    writes_sorted = sorted(
+        writes,
+        key=lambda s: (1 if s.tool_name == "run_command" else 0),
+    )
+
+    _batch_has_file_writes = any(s.tool_name in _FILE_WRITE_TOOLS for s in writes)
+
+    for slot in writes_sorted:
         if _is_exclusive(slot.lock_keys):
             stages.append([slot])
             continue
@@ -223,6 +243,16 @@ def _group_into_stages(slots: list[_CallSlot]) -> list[list[_CallSlot]]:
             # Skip read-only stages (don't mix writes into the read batch)
             if all(not s.lock_keys for s in stage):
                 continue
+            # run_command must come AFTER file-writing tools when both appear
+            # in the same model response — the file must exist before execution.
+            if slot.tool_name == "run_command" and _batch_has_file_writes:
+                if any(s.tool_name in _FILE_WRITE_TOOLS for s in stage):
+                    continue  # force to a later stage
+            # Symmetric guard: don't put a file-write in the same stage as
+            # a run_command that was already placed there.
+            if slot.tool_name in _FILE_WRITE_TOOLS:
+                if any(s.tool_name == "run_command" for s in stage):
+                    continue
             stage_keys: set[str] = set()
             for s in stage:
                 stage_keys.update(s.lock_keys)
@@ -317,6 +347,11 @@ def _run_stage_parallel(session, stage: list[_CallSlot], dispatch_fn) -> None:
         tool_names = [s.tool_name for s in stage]
         label = f"  ◈ parallel: {len(stage)} tools → {', '.join(tool_names[:6])}" + (" …" if len(tool_names) > 6 else "")
         ui.muted(label)
+        # Track parallel stats on session for MetricsCollector
+        n = len(stage)
+        session._par_batches = getattr(session, "_par_batches", 0) + 1
+        session._par_calls = getattr(session, "_par_calls", 0) + n
+        session._par_max = max(getattr(session, "_par_max", 0), n)
         # Update any running MissionControl dashboard
         try:
             from agent.ui.mission_control import get_active_mc

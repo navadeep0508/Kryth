@@ -19,7 +19,6 @@ import difflib
 import os
 from pathlib import Path
 
-from agent import snapshots
 from agent.tools._results import err
 
 
@@ -38,6 +37,7 @@ def _diff_against_snapshot(path: str) -> tuple[str, str]:
     ``no-snapshot``, ``unreadable``. The diff is empty whenever the file
     contents match the latest snapshot (no change to review).
     """
+    from agent import snapshots  # lazy — avoids circular import at module load time
     backups = snapshots.list_snapshots(path)
     current = _read_text(path)
     if current is None:

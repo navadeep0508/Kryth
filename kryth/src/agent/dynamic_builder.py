@@ -8,13 +8,14 @@ in the task analysis, not from fixed presets.
 from __future__ import annotations
 
 import time
+import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent import ui
 from agent.ui.streaming import set_parallel_mode
-from agent.task_analyzer import WorkComponent
+from agent.task_analyzer import TaskAnalysis, WorkComponent
 from agent.execution_strategy import AgentConfig, StrategyDecision
 
 
@@ -194,7 +195,7 @@ def _run_sequential(
         # Wait for dependencies to complete
         for dep in component.dependencies:
             while dep not in outputs:
-                time.sleep(0.5)
+                time.sleep(0.05)
         
         prompt = _build_agent_prompt(component, spec.project_context, spec.skill_context)
         ui.info(f"  Running sequential agent: {component.name} (depends on: {component.dependencies or 'none'})")
@@ -436,7 +437,3 @@ def run_dynamic_build_with_approval(
         max_turns_per_agent=max_turns_per_agent,
         on_progress=on_progress,
     )
-
-
-# Import re for _extract_project_name
-import re

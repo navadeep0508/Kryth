@@ -139,6 +139,19 @@ class EventKind(str, Enum):
     # DAG visualization
     DAG_UPDATE = "dag.update"             # data: nodes list [{id, label, status, active}]
 
+    # ── Runtime v2 — spec-named event vocabulary ─────────────────────────────
+    # First-class names for the event-driven runtime contract. They sit
+    # alongside the existing granular events (which remain the primary emit
+    # path); these provide the canonical "modern coding CLI" vocabulary and are
+    # consumed by the renderer without changing normal-mode visuals.
+    ASSISTANT_MESSAGE = "assistant.message"  # data: text (a unit of assistant prose)
+    TOOL_ARGUMENTS = "tool.arguments"        # data: tool, arguments (parsed/validated)
+    TOOL_FINISH = "tool.finish"              # data: tool, ok (dispatch fully complete)
+    COMPLETE = "runtime.complete"            # data: status, turns_used (task/turn finished)
+
+    # Token budget telemetry — emitted before/after each LLM call
+    TOKEN_BUDGET = "token.budget"  # data: est_before, tools_tok, history_tok, tools_count
+
 
 @dataclass
 class Event:

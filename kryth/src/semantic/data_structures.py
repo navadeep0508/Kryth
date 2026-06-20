@@ -29,7 +29,7 @@ import json
 import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 class EditType(enum.Enum):
@@ -522,3 +522,165 @@ class AgentCapability:
         if "operations" in data:
             data["operations"] = [EditType(op) for op in data["operations"]]
         return cls(**data)
+
+
+@dataclass
+class EditRange:
+    """A range of lines being edited by an agent, used for conflict detection."""
+
+    path: str
+    start_line: int
+    end_line: int
+    agent_id: str
+    operation_id: str = ""
+
+    def overlaps(self, other: EditRange) -> bool:
+        """Check if this range overlaps with another on the same file."""
+        if self.path != other.path:
+            return False
+        return not (self.end_line < other.start_line or other.end_line < self.start_line)
+
+
+@dataclass
+class FileOwnership:
+    """Tracks ownership of a file by an agent."""
+    
+    agent_id: str
+    file_path: str
+    acquired_at: float = field(default_factory=__import__('time').time)
+    lease_expires: Optional[float] = None
+    operation_id: Optional[str] = None  # associated operation if any
+    
+    def is_expired(self) -> bool:
+        """Check if the ownership lease has expired."""
+        if self.lease_expires is None:
+            return False
+        return __import__('time').time() > self.lease_expires
+    
+    def extend_lease(self, duration: float = 300.0) -> None:
+        """Extend the lease by the given duration."""
+        self.lease_expires = __import__('time').time() + duration
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> FileOwnership:
+        return cls(**data)
+
+
+class ConcurrencyState:
+    """Tracks the state of file ownership across all agents.
+    
+    This class manages a optimistic concurrency control system where
+    agents must acquire ownership of files before editing them. It
+    prevents simultaneous writes to the same file and detects conflicts.
+    """
+    
+    def __init__(self) -> None:
+        # agent_id -> set of file paths owned
+        self.agent_ownership: Dict[str, Set[str]] = {}
+        # file_path -> set of agent_ids waiting for it
+        self.pending_edits: Dict[str, Set[str]] = {}
+        # file_path -> FileOwnership (current owner)
+        self.file_owners: Dict[str, FileOwnership] = {}
+        # All registered edit ranges for conflict detection
+        self.edit_ranges: Dict[str, List[EditRange]] = {}
+    
+    def acquire_file(self, agent_id: str, file_path: str) -> bool:
+        """Try to acquire ownership of a file.
+        
+        Returns True if successful, False if the file is owned by someone else.
+        """
+        # Check if file is already owned
+        if file_path in self.file_owners:
+            owner = self.file_owners[file_path]
+            if not owner.is_expired() and owner.agent_id != agent_id:
+                return False
+            # If expired or same agent, allow acquisition
+        
+        # Acquire ownership
+        self.file_owners[file_path] = FileOwnership(
+            agent_id=agent_id,
+            file_path=file_path
+        )
+        
+        # Update agent ownership tracking
+        if agent_id not in self.agent_ownership:
+            self.agent_ownership[agent_id] = set()
+        self.agent_ownership[agent_id].add(file_path)
+        
+        # Remove from pending if present
+        if file_path in self.pending_edits:
+            self.pending_edits[file_path].discard(agent_id)
+            if not self.pending_edits[file_path]:
+                del self.pending_edits[file_path]
+        
+        return True
+    
+    def release_file(self, agent_id: str, file_path: str) -> None:
+        """Release ownership of a file."""
+        # Remove from file_owners if this agent owns it
+        if file_path in self.file_owners and self.file_owners[file_path].agent_id == agent_id:
+            del self.file_owners[file_path]
+        
+        # Remove from agent_ownership
+        if agent_id in self.agent_ownership:
+            self.agent_ownership[agent_id].discard(file_path)
+            if not self.agent_ownership[agent_id]:
+                del self.agent_ownership[agent_id]
+        
+        # Remove from pending
+        if file_path in self.pending_edits:
+            self.pending_edits[file_path].discard(agent_id)
+            if not self.pending_edits[file_path]:
+                del self.pending_edits[file_path]
+    
+    def get_owner(self, file_path: str) -> Optional[str]:
+        """Get the agent ID that owns a file, or None if unowned."""
+        if file_path in self.file_owners:
+            owner = self.file_owners[file_path]
+            if not owner.is_expired():
+                return owner.agent_id
+            # If expired, treat as unowned
+        return None
+    
+    def cleanup_agent(self, agent_id: str) -> None:
+        """Clean up all state for an agent (called when agent exits)."""
+        # Release all files owned by this agent
+        if agent_id in self.agent_ownership:
+            files = list(self.agent_ownership[agent_id])
+            for file_path in files:
+                self.release_file(agent_id, file_path)
+        
+        # Remove from all pending queues
+        for file_path, agents in list(self.pending_edits.items()):
+            agents.discard(agent_id)
+            if not agents:
+                del self.pending_edits[file_path]
+        
+        # Remove edit ranges
+        for file_path, ranges in list(self.edit_ranges.items()):
+            self.edit_ranges[file_path] = [r for r in ranges if r.agent_id != agent_id]
+            if not self.edit_ranges[file_path]:
+                del self.edit_ranges[file_path]
+    
+    def register_edit_range(self, edit_range: EditRange) -> None:
+        """Register an edit range for conflict detection."""
+        if edit_range.path not in self.edit_ranges:
+            self.edit_ranges[edit_range.path] = []
+        self.edit_ranges[edit_range.path].append(edit_range)
+    
+    def unregister_edit_range(self, edit_range: EditRange) -> None:
+        """Unregister an edit range."""
+        if edit_range.path in self.edit_ranges:
+            try:
+                self.edit_ranges[edit_range.path].remove(edit_range)
+            except ValueError:
+                pass
+            if not self.edit_ranges[edit_range.path]:
+                del self.edit_ranges[edit_range.path]
+    
+    def get_edit_ranges(self, file_path: str) -> List[EditRange]:
+        """Get all registered edit ranges for a file."""
+        return self.edit_ranges.get(file_path, [])

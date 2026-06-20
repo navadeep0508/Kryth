@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .data_structures import FileOwnership, ConcurrencyState
+from .data_structures import FileOwnership, ConcurrencyState, EditRange
 
 
 @dataclass
@@ -39,22 +39,9 @@ class Conflict:
     severity: str  # "low", "medium", "high", "critical"
     can_auto_merge: bool = False
     resolution: Optional[str] = None
-    
+
     def __str__(self) -> str:
         return f"[{self.severity}] {self.type} conflict in {self.path}: {self.description}"
-
-
-@dataclass
-class EditRange:
-    """A range of lines being edited."""
-    start_line: int
-    end_line: int
-    agent_id: str
-    operation_id: str
-    
-    def overlaps(self, other: EditRange) -> bool:
-        """Check if this range overlaps with another."""
-        return not (self.end_line < other.start_line or other.end_line < self.start_line)
 
 
 class ConcurrencyController:

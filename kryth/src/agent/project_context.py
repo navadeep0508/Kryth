@@ -216,12 +216,15 @@ def load_memory_layers(start: str | Path = ".") -> list[MemoryLayer]:
     return layers
 
 
-def load_context_file(start: str | Path = ".") -> str:
+def load_context_file(start: str | Path = ".", max_chars: int = 8000) -> str:
     """Layered memory joined for direct injection into a system prompt.
 
     Each layer is preceded by a header naming its scope and path so the
     model can attribute guidance back to its source — and so the user
     can audit ``/memory`` to see exactly what's loaded.
+
+    ``max_chars`` caps the total combined content to prevent large AGENTS.md
+    files from bloating the system prompt (~2,000 tok at 8,000 chars).
     """
     layers = load_memory_layers(start)
     if not layers:
@@ -230,7 +233,11 @@ def load_context_file(start: str | Path = ".") -> str:
     for layer in layers:
         header = f"[Memory · {layer.scope} · {layer.path}]"
         parts.append(f"{header}\n{layer.content.rstrip()}")
-    return "\n\n".join(parts)
+    combined = "\n\n".join(parts)
+    if max_chars > 0 and len(combined) > max_chars:
+        truncated = len(combined) - max_chars
+        combined = combined[:max_chars] + f"\n...[{truncated} chars truncated; use read_file for full content]"
+    return combined
 
 
 def find_context_file(start: str | Path = ".") -> Optional[str]:

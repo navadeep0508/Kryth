@@ -68,25 +68,44 @@ class TaskDAG:
         return sum(n.estimated_turns for n in self.nodes.values())
 
     def layers(self) -> List[List[TaskNode]]:
-        """Topological layers: each layer can be executed in parallel."""
+        """Topological layers: each layer can be executed in parallel.
+
+        A node belongs to layer N iff ALL of its dependencies completed in a
+        STRICTLY EARLIER layer (< N). The set of completed nodes is therefore
+        snapshotted per layer: nodes placed in the current layer must NOT
+        satisfy dependencies for their siblings in that same layer — otherwise
+        a dependent node could be wrongly merged into its dependency's layer,
+        breaking parallel-scheduling correctness.
+
+        This mirrors the agent-level scheduler (`_agent_execution_layers`),
+        which is the runtime source of truth.
+
+        Iteration follows insertion order so layer contents are deterministic
+        regardless of hash seed.
+        """
         completed: Set[str] = set()
         layers: List[List[TaskNode]] = []
         remaining = set(self.nodes.keys())
         while remaining:
-            layer = []
-            for nid in list(remaining):
-                node = self.nodes[nid]
-                if all(dep in completed for dep in node.dependencies):
-                    layer.append(node)
-                    completed.add(nid)
-                    remaining.discard(nid)
-            if not layer:
-                if remaining:
-                    nid = next(iter(remaining))
-                    layer.append(self.nodes[nid])
-                    completed.add(nid)
-                    remaining.discard(nid)
-            layers.append(layer)
+            # Ready = every dependency was completed in a PRIOR layer.
+            # `completed` is read-only for the duration of this pass; the new
+            # layer is folded in only AFTER the layer is fully built.
+            ready = [
+                nid
+                for nid in self.nodes            # insertion order → deterministic
+                if nid in remaining
+                and all(dep in completed for dep in self.nodes[nid].dependencies)
+            ]
+            if not ready:
+                # No progress possible: a dependency points at a missing node
+                # or a cycle exists. Emit one node to guarantee termination
+                # (fail-safe behavior preserved from the original).
+                nid = next(n for n in self.nodes if n in remaining)
+                ready = [nid]
+            layers.append([self.nodes[nid] for nid in ready])
+            for nid in ready:
+                completed.add(nid)
+                remaining.discard(nid)
         return layers
 
     def risk_summary(self) -> Dict[str, int]:
@@ -170,7 +189,7 @@ def _llm_build_dag(
             ],
             temperature=0,
             max_tokens=1200,
-            timeout=10,
+            timeout=7,
         )
         raw = (resp.choices[0].message.content or "").strip()
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()

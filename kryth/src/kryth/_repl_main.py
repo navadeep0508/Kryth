@@ -15,10 +15,13 @@ from agent.ui.input import PromptUI
 
 
 REPL_COMMANDS = {
-    "/clear", "/todos", "/tokens", "/plan", "/skills", "/help", "/diag",
+    "/clear", "/todos", "/tokens", "/plan", "/mode", "/skills", "/help", "/diag",
     "/log", "/resume", "/memory", "/profile", "/config", "/bridge",
     "/models", "/tools", "/status", "/session",
-    "/graph", "/init", "/layer",
+    "/graph", "/init", "/layer", "/replay", "/agents", "/logs", "/debug",
+    "/exec", "/audit",
+    # Manual orchestration — never auto-triggered
+    "/dag", "/swarm", "/org", "/mission", "/parallel",
 }
 
 
@@ -88,6 +91,79 @@ def _cmd_plan(_args: str = "") -> None:
         ui.plan_mode_active()
     else:
         ui.muted("mode → default")
+
+
+def _cmd_mode(args: str = "") -> None:
+    """Set the execution mode for this session.
+
+    direct  — single-agent tool loop, no orchestration (default).
+    dag     — every task this session uses DAG multi-agent orchestration.
+    swarm   — every task this session uses swarm (max parallelism).
+
+    Tip: for a one-off orchestrated task, use /dag or /swarm directly
+    instead of changing the session mode.
+
+    ``/mode ponytail`` is a convenience alias for the PONYTAIL worker
+    execution profile (see /exec) — it does NOT change orchestration mode,
+    only how lean the spawned workers are told to be.
+    """
+    from agent.mission_estimator import normalize_mode
+    s = get_session()
+    arg = (args or "").strip().lower()
+    if arg in ("ponytail", "lean", "lazy"):
+        _set_exec_profile("ponytail")
+        return
+    m = normalize_mode(args)
+    if not m:
+        cur = getattr(s, "exec_mode", "auto")
+        ui.muted(f"execution mode: {cur}   (set with /mode auto|direct|dag|swarm|ponytail)")
+        return
+    s.exec_mode = m
+    ui.muted(f"execution mode → {m}")
+
+
+def _cmd_replay(args: str = "") -> None:
+    """``/replay``            list recorded missions
+    ``/replay <id>``       replay a recorded mission's event stream
+
+    Recordings are written when KRYTH_MISSION_RECORD=1. Replay re-emits the
+    captured UI events so the dashboard re-draws the run like a recording.
+    """
+    from agent.ui.replay import list_missions, replay_mission, recordings_dir
+    arg = (args or "").strip()
+    if not arg or arg in ("list", "ls"):
+        ids = list_missions()
+        if not ids:
+            ui.muted(
+                f"no recordings · set KRYTH_MISSION_RECORD=1 to capture · dir: {recordings_dir()}"
+            )
+            return
+        ui.info("  recorded missions (newest first):")
+        for mid in ids[:20]:
+            ui.muted(f"    {mid}")
+        ui.muted("  replay one with  /replay <id>")
+        return
+    ui.muted(f"replaying mission {arg} …")
+    try:
+        n = replay_mission(arg)
+        ui.muted(f"replayed {n} events" if n else f"no events found for mission {arg}")
+    except Exception as exc:
+        ui.muted(f"replay failed: {exc}")
+
+
+def _cmd_detail_view(view: str):
+    """Factory for /agents /logs /debug — toggle a clean-view detail pane so
+    worker internals (tool calls, reasoning, logs) become visible on demand."""
+    def _handler(args: str = "") -> None:
+        from agent.ui import clean_view as cv
+        arg = (args or "").strip().lower()
+        if arg in ("off", "hide", "close"):
+            cv.close_detail_view(view)
+            ui.muted(f"  {view} view hidden — clean execution view restored")
+            return
+        cv.open_detail_view(view)
+        ui.muted(f"  {view} view open — internals visible (use /{view} off to hide)")
+    return _handler
 
 
 def _cmd_skills(args: str = "") -> None:
@@ -308,10 +384,18 @@ def _cmd_help(_args: str = "") -> None:
         ("/tools", "Show available tools"),
         ("/config", "Edit model, endpoint, and API key"),
         ("/profile", "View or change permission profile"),
+        ("/exec", "Set worker execution profile (fast|balanced|ponytail|maximum_quality)"),
         ("/memory", "Inspect project/user memory"),
         ("/session", "List or resume sessions"),
         ("/diag", "Ping configured models"),
         ("/bridge", "Manage browser provider bridge"),
+        # Orchestration — manual only
+        ("/dag <task>",      "Run task with parallel DAG multi-agent orchestration"),
+        ("/swarm <task>",    "Run task with max-parallelism swarm (many agents)"),
+        ("/org <task>",      "Run task through full organisational runtime"),
+        ("/mission <task>",  "Alias for /dag — explicit mission with full orchestration"),
+        ("/parallel <task>", "Alias for /swarm — parallel agent execution"),
+        ("/mode [dag|swarm|direct]", "Set orchestration mode for the whole session"),
     ]
 
     for cmd, desc in commands:
@@ -604,6 +688,7 @@ _HANDLERS = {
     "/todos":   _cmd_todos,
     "/tokens":  _cmd_tokens,
     "/plan":    _cmd_plan,
+    "/mode":    _cmd_mode,
     "/skills":  _cmd_skills,
     "/diag":    _cmd_diag,
     "/help":    _cmd_help,
@@ -613,6 +698,10 @@ _HANDLERS = {
     "/session": _cmd_session,
     "/log":     _cmd_log,
     "/resume":  _cmd_resume,
+    "/replay":  _cmd_replay,  # defined above; the rest are bound below
+    "/agents":  _cmd_detail_view("agents"),
+    "/logs":    _cmd_detail_view("logs"),
+    "/debug":   _cmd_detail_view("debug"),
     "/memory":  None,  # bound below once _cmd_memory is defined
 }
 
@@ -640,7 +729,7 @@ def _cmd_memory(args: str = "") -> None:
             ui.muted(
                 "no memory layers loaded · "
                 f"project root looks for {', '.join(PROJECT_MEMORY_NAMES[:3])}, "
-                f"user-global at ~/.ai-coder/{USER_MEMORY_NAMES[0]}"
+                f"user-global at ~/.kryth/{USER_MEMORY_NAMES[0]}"
             )
             return
         from rich.table import Table
@@ -729,10 +818,53 @@ def _cmd_memory(args: str = "") -> None:
 _HANDLERS["/memory"] = _cmd_memory
 
 
+def _set_exec_profile(name: str) -> None:
+    """Set the worker EXECUTION profile (fast/balanced/maximum_quality/ponytail).
+
+    Distinct from /profile's PERMISSION profile (readonly/safe/default/yolo) —
+    this controls how lean/thorough spawned workers are, not what they're
+    allowed to do without asking. Sets KRYTH_EXEC_PROFILE for the process,
+    which agent.production.execution_profiles.active_profile() reads.
+    """
+    import os
+    from agent.production.execution_profiles import get_profile as get_exec_profile, render
+
+    resolved = get_exec_profile(name)
+    if resolved.name != name.strip().lower().replace("-", "_"):
+        # Unknown name fell back to BALANCED — still apply it, but say so.
+        pass
+    os.environ["KRYTH_EXEC_PROFILE"] = resolved.name
+    ui.success(f"execution profile → {resolved.name.upper()}")
+    ui.muted(render(resolved))
+    if resolved.name == "ponytail":
+        ui.muted("  Workers will favor stdlib/existing code over new files and abstractions.")
+
+
+def _cmd_exec(args: str = "") -> None:
+    """``/exec``              show current worker execution profile
+    ``/exec <name>``       set it: fast | balanced | maximum_quality | ponytail
+    """
+    from agent.production.execution_profiles import active_profile, all_profiles, render
+    import os
+
+    arg = (args or "").strip().lower()
+    if not arg:
+        ui.muted(render(active_profile()))
+        ui.muted("  available: " + ", ".join(p.name for p in all_profiles()))
+        ui.muted("  set with: /exec <name>")
+        return
+    _set_exec_profile(arg)
+
+
+_HANDLERS["/exec"] = _cmd_exec
+
+
 def _cmd_profile(args: str = "") -> None:
     """``/profile``           show available profiles + active one
     ``/profile show NAME``  print the resolved rules for a profile
     ``/profile set NAME``   switch the active profile (persists in session)
+    ``/profile ponytail``   shortcut for /exec ponytail (worker execution
+                            profile, not a permission profile — see /exec)
     """
     from agent.profiles import PROFILES, names as profile_names, get as get_profile
     from agent.session import get_session
@@ -742,6 +874,10 @@ def _cmd_profile(args: str = "") -> None:
     sub = parts[0].lower() if parts else ""
     rest = parts[1].strip().lower() if len(parts) > 1 else ""
     s = get_session()
+
+    if sub in ("ponytail", "lean", "lazy"):
+        _set_exec_profile("ponytail")
+        return
 
     if sub in ("", "list", "ls"):
         from rich.table import Table
@@ -1144,6 +1280,150 @@ _HANDLERS["/init"]  = _cmd_init
 _HANDLERS["/layer"] = _cmd_layer
 
 
+# ---------------------------------------------------------------------------
+# Manual orchestration commands — DAG / SWARM / ORG / MISSION
+# ---------------------------------------------------------------------------
+# Orchestration is NEVER auto-triggered. These are the only entry points.
+# Usage: /dag <task description>   /swarm <task>   /org <task>   /mission <task>
+
+def _run_orchestrated(task: str, mode: str) -> None:
+    """Launch orchestration explicitly for `task` using the given mode."""
+    if not task.strip():
+        ui.muted(f"Usage: /{mode} <task description>")
+        ui.muted(f"  Example: /{mode} build a SaaS app with auth, billing, and dashboard")
+        return
+
+    from agent.agent_loop import run_agent, get_session
+    s = get_session()
+    prev_mode = getattr(s, "exec_mode", "direct")
+    s.exec_mode = mode
+    try:
+        run_agent(task)
+    finally:
+        s.exec_mode = prev_mode   # restore after this one mission
+
+
+def _cmd_dag(args: str = "") -> None:
+    """/dag <task>   Run task with parallel DAG multi-agent orchestration.
+
+    Launches the full planner → DAG → milestone → worker pipeline.
+    Each module is executed in parallel where dependencies allow.
+
+    Example:
+      /dag build a REST API with auth, database, and tests
+    """
+    _run_orchestrated(args, "dag")
+
+
+def _cmd_swarm(args: str = "") -> None:
+    """/swarm <task>   Run task with maximum-parallelism swarm orchestration.
+
+    Like /dag but with higher worker concurrency — best for large refactors
+    or tasks with many independent modules.
+
+    Example:
+      /swarm refactor the entire authentication system
+    """
+    _run_orchestrated(args, "swarm")
+
+
+def _cmd_org(args: str = "") -> None:
+    """/org <task>   Run task through the full organisational runtime.
+
+    Activates portfolio manager, org health, digital twin, program manager,
+    and all V5/V6 intelligence layers. For enterprise-scale missions.
+
+    Example:
+      /org migrate legacy monolith to microservices
+    """
+    _run_orchestrated(args, "dag")   # org uses DAG mode; org layers activate via tier
+
+
+def _cmd_mission(args: str = "") -> None:
+    """/mission <task>   Alias for /dag — explicit mission with full orchestration.
+
+    Example:
+      /mission build SaaS platform with auth, payments, dashboard, and CI/CD
+    """
+    _run_orchestrated(args, "dag")
+
+
+def _cmd_parallel(args: str = "") -> None:
+    """/parallel <task>   Alias for /swarm — run task with parallel agents.
+
+    Example:
+      /parallel write unit tests for all modules in src/
+    """
+    _run_orchestrated(args, "swarm")
+
+
+_HANDLERS["/dag"]      = _cmd_dag
+_HANDLERS["/swarm"]    = _cmd_swarm
+_HANDLERS["/org"]      = _cmd_org
+_HANDLERS["/mission"]  = _cmd_mission
+_HANDLERS["/parallel"] = _cmd_parallel
+
+
+def _cmd_audit(_args: str = "") -> None:
+    """/audit   Print a live token forensics report for the current session.
+
+    Shows per-source token breakdown (system, tools, history), the budget tier
+    currently in effect, and how close the session is to triggering compression.
+    """
+    from agent.session import get_session as _gs
+    from agent.tools import TOOL_SPECS
+    from agent.task_classifier import classify_task
+
+    s = _gs()
+
+    # Determine complexity from the most recent user message for budget display
+    _complexity = "medium"
+    for m in reversed(s.messages):
+        if m.get("role") == "user":
+            try:
+                p = classify_task(str(m.get("content", "")))
+                if p:
+                    _complexity = getattr(p, "complexity", "medium")
+            except Exception:
+                pass
+            break
+
+    # Curate tools as the loop would for this complexity
+    _tools = TOOL_SPECS
+    try:
+        from agent.tool_curator import curate
+        _tools = curate(s.messages, TOOL_SPECS)
+    except Exception:
+        pass
+
+    try:
+        from agent.token_budget import audit_report
+        report = audit_report(s.messages, _tools, _complexity)
+    except Exception as _e:
+        report = f"(audit unavailable: {_e})"
+
+    from agent.ui.console import console
+    console.print(report)
+
+    # Also show context supervisor state
+    try:
+        from agent.context_supervisor import ContextSupervisor, _model_max_tokens
+        _sup = ContextSupervisor(s)
+        _frac = _sup.token_fraction()
+        _max = _model_max_tokens()
+        console.print(
+            f"\n  Model max       : {_max:,} tok"
+            f"\n  Context fraction: {_frac:.1%}"
+            f"\n  Messages        : {len(s.messages)}"
+            f"\n  Tool calls      : {s.tool_call_count}"
+        )
+    except Exception:
+        pass
+
+
+_HANDLERS["/audit"] = _cmd_audit
+
+
 def handle_repl_command(line: str) -> bool:
     parts = line.split(None, 1)
     cmd = parts[0]
@@ -1228,7 +1508,7 @@ def _maybe_offer_resume() -> bool:
     return True
 
 
-def main() -> None:
+def main(initial_prompt: str = "") -> None:
     ui.install()
 
     # Banner + first-time hint.
@@ -1255,6 +1535,32 @@ def main() -> None:
     except Exception:
         pass
 
+    # ── Non-interactive single-prompt mode ────────────────────────────────
+    # When a prompt is passed on the command line (kryth "do something"),
+    # run it once and exit — no interactive REPL loop needed.
+    if initial_prompt:
+        try:
+            from agent.persistence import session_store
+            session_store().start_new(".")
+        except Exception:
+            pass
+        try:
+            if initial_prompt.startswith("/"):
+                handle_repl_command(initial_prompt)
+            else:
+                run_agent(initial_prompt)
+        except KeyboardInterrupt:
+            ui.turn_interrupted()
+        finally:
+            try:
+                from agent.persistence import session_store
+                session_store().flush()
+                session_store().close()
+            except Exception:
+                pass
+        return
+    # ── End non-interactive mode ──────────────────────────────────────────
+
     # Offer to resume a recent session before opening a fresh log so we
     # don't litter the sessions directory with empty starts. /resume
     # also reinstates the previously-saved profile.
@@ -1280,6 +1586,14 @@ def main() -> None:
     )
 
     while True:
+        # UI v5.1 — guarantee the Live Layout Engine is stopped before the
+        # prompt renders, so the cursor/scrollback are always clean regardless
+        # of how the previous turn ended. No-op when the live UI is off.
+        try:
+            from agent.ui import live_engine as _live
+            _live.get_engine().ensure_stopped()
+        except Exception:
+            pass
         try:
             user_input = prompt_ui.read()
         except KeyboardInterrupt:
@@ -1324,12 +1638,23 @@ def main() -> None:
                 run_agent(prompt_text, extra_system=extra)
             except KeyboardInterrupt:
                 ui.turn_interrupted()
+                try:
+                    from agent.session import get_session
+                    get_session()._task_interrupted = True
+                except Exception:
+                    pass
             continue
 
         try:
             run_agent(cmd)
         except KeyboardInterrupt:
             ui.turn_interrupted()
+            # Mark session so next run_agent() knows to discard interrupted context
+            try:
+                from agent.session import get_session
+                get_session()._task_interrupted = True
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

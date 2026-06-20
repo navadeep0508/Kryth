@@ -96,6 +96,16 @@ class ModelAdapter:
     # Stream normalization
     # ------------------------------------------------------------------
 
+    def reset(self) -> None:
+        """Clear per-stream state (reasoning detector + tool buffers).
+
+        Call before reusing a cached adapter on a NEW stream when driving it
+        chunk-by-chunk via ``normalize_chunk`` (``normalize_stream`` resets
+        automatically).
+        """
+        self._rd.reset()
+        self._normalizer.reset()
+
     def normalize_stream(self, raw_stream: Any) -> Iterator[NormalizedChunk]:
         """Iterate over *raw_stream* and yield ``NormalizedChunk`` objects.
 

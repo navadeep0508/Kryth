@@ -86,7 +86,7 @@ def analyze(
         for layer in layers
     )
     parallel_turns = critical_path_turns + int(sequential_turns * 0.15)  # merge overhead
-    parallelism_ratio = 1.0 - (parallel_turns / max(sequential_turns, 1))
+    parallelism_ratio = max(0.0, 1.0 - (parallel_turns / max(sequential_turns, 1)))
 
     # Tokens: each agent duplicates some context
     token_overhead = 0.3 * num_agents

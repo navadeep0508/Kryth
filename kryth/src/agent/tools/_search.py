@@ -16,7 +16,22 @@ from agent.tools._common import trim_head_tail
 from agent.tools._results import err
 
 
+def _clamp_to_cwd(path_str: str) -> str:
+    """Resolve path. Absolute paths are used as-is; relative paths are
+    clamped to cwd to prevent ../.. escapes."""
+    p = Path(path_str).resolve()
+    if Path(path_str).is_absolute():
+        return str(p)
+    _cwd = Path(os.getcwd()).resolve()
+    try:
+        p.relative_to(_cwd)
+        return str(p)
+    except ValueError:
+        return str(_cwd)
+
+
 def search_code(keyword, directory="."):
+    directory = _clamp_to_cwd(directory)
     matches = []
     for root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
@@ -37,6 +52,7 @@ def search_code(keyword, directory="."):
 def _grep_python_fallback(
     pattern, path, glob_filter, output_mode, case_insensitive, max_results
 ):
+    path = _clamp_to_cwd(path)
     try:
         regex = re.compile(pattern, re.IGNORECASE if case_insensitive else 0)
     except re.error as e:
@@ -87,6 +103,7 @@ def grep(
     case_insensitive=False,
     max_results=200,
 ):
+    path = _clamp_to_cwd(path)
     if output_mode not in ("files_with_matches", "content", "count"):
         return err(
             "BAD_ARGS",
@@ -137,9 +154,16 @@ def grep(
 
 
 def glob_files(pattern, path=".", max_results=500):
-    root = Path(path)
+    import os as _os
+    _cwd = Path(_os.getcwd()).resolve()
+    root = Path(path).resolve()
+    # Never search outside the current working directory
+    try:
+        root.relative_to(_cwd)
+    except ValueError:
+        root = _cwd
     if not root.exists():
-        return err("NOT_FOUND", f"path does not exist: {path}")
+        return err("NOT_FOUND", f"path does not exist: {root}")
 
     try:
         matches = []

@@ -13,8 +13,6 @@ Usage:
 """
 from __future__ import annotations
 
-import copy
-from dataclasses import replace
 from typing import List
 
 from agent.orchestration.task_dag import TaskDAG
@@ -144,10 +142,8 @@ def _explode_agent(
         )
         sub_agents.append(sub)
 
-    # Inject a Lead agent when there are 3+ workers — it coordinates them
-    if len(sub_agents) >= 3:
-        sub_agents = _inject_lead_agent(sub_agents, agent)
-
+    # Do NOT inject a Lead agent — it would serialize Layer 1 (lead runs first,
+    # all workers depend on it). With 4-agent flat Layer 1 we skip the lead.
     return sub_agents
 
 

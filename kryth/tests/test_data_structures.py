@@ -211,14 +211,13 @@ class TestEditOperation:
         op3 = EditOperation(id="op3", type=EditType.INSERT_CODE, target_path="c.py", dependencies=["op1", "op2"])
         
         completed = {"op1"}
-        assert not op2.can_execute(completed)  # op1 done, but op2 depends only on op1 -> should be True
-        assert op2.can_execute(completed)
+        assert op2.can_execute(completed)  # op2 depends only on op1, which is completed
         
         completed = {"op1", "op2"}
-        assert op3.can_execute(completed)
+        assert op3.can_execute(completed)  # all dependencies satisfied
         
         completed = {"op1"}
-        assert not op3.can_execute(completed)  # missing op2
+        assert not op3.can_execute(completed)  # missing op2 dependency
 
 
 class TestEditPlan:

@@ -109,9 +109,31 @@ def _combined_rules(session) -> dict:
     }
 
 
-def check_permission(tool: str, args: dict) -> str:
-    session = get_session()
+def check_permission(tool: str, args: dict, session=None) -> str:
+    if session is None:
+        session = get_session()
     sig = _args_signature(tool, args)
+
+    # Mission contract: when the user approved a DAG/SWARM mission in the
+    # Execution Preview, routine actions (write/edit/command) inside that mission
+    # are pre-approved — workers must not re-prompt per file. Critical actions
+    # (prod deploy, DB drop, credential changes) are excluded by the contract and
+    # still fall through to the normal rules below.
+    contract = getattr(session, "mission_contract", None)
+    if contract is not None and getattr(contract, "approved", False):
+        kind = {
+            "write_file": "write", "create_file": "write", "edit_file": "edit",
+            "multi_edit": "edit", "str_replace": "edit", "apply_patch": "edit",
+            "run_command": "command", "bash": "command",
+        }.get(tool)
+        if kind is not None:
+            try:
+                target = str(args.get("path") or args.get("command")
+                             or args.get("file") or "")
+                if contract.covers(kind, target):
+                    return "allow"
+            except Exception:
+                pass
 
     # Wildcard key set by "always" covers all args; exact key is legacy fallback.
     remembered = (

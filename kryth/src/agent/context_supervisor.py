@@ -6,13 +6,15 @@ the context window is always within safe limits by:
   1. Monitoring token usage against a tiered budget
   2. Compressing/archiving old messages before overflow
   3. Replacing raw tool outputs with compact summaries
-  4. Emitting live UI feedback so users see what's happening
+  4. Deduplicating redundant system messages (Phase 9)
+  5. Evicting stale context injections past their useful window (Phase 9)
+  6. Emitting live UI feedback so users see what's happening
 
 Token Budget Tiers (configurable via env):
-  WARN        70% of max  → muted notice, no action
-  COMPRESS    80%         → Python-fallback compression (instant, no LLM)
-  AGGRESSIVE  88%         → heavy compression + archive tool outputs
-  EMERGENCY   94%         → archive everything except last N messages
+  WARN        40% of max  → muted notice, no action
+  COMPRESS    55%         → Python-fallback compression (instant, no LLM)
+  AGGRESSIVE  70%         → heavy compression + archive tool outputs
+  EMERGENCY   85%         → archive everything except last N messages
 
 Usage:
     supervisor = ContextSupervisor(session)
@@ -59,10 +61,10 @@ def _model_max_tokens() -> int:
 
 @dataclass
 class BudgetTiers:
-    warn: float = 0.70
-    compress: float = 0.80
-    aggressive: float = 0.88
-    emergency: float = 0.94
+    warn: float = 0.40       # emit notice early; for 128K model = ~51K tok
+    compress: float = 0.55   # light compression at 55%; for 128K model = ~70K tok
+    aggressive: float = 0.70 # heavy compression at 70%; for 128K model = ~90K tok
+    emergency: float = 0.85  # emergency archive at 85%; for 128K model = ~109K tok
     hard_limit: float = 0.97
 
 
@@ -160,6 +162,134 @@ def _make_mission_summary(messages: list) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Phase 9 — Deduplication and stale eviction
+# ---------------------------------------------------------------------------
+
+# System message prefixes that are considered "stale" after they've been
+# present in the conversation for more than _STALE_AFTER_TURNS turns without
+# being referenced. Inject-once context that the model already "knows".
+_STALE_PREFIXES = (
+    "[Preloaded relevant files]",
+    "[Dynamic graph context]",
+    "[Memory: similar past tasks]",
+    "[Mission progress summary]",
+)
+_STALE_AFTER_TURNS = int(os.getenv("KRYTH_STALE_EVICT_TURNS", "6"))
+
+
+def _count_non_system_turns(messages: list) -> int:
+    return sum(1 for m in messages if m.get("role") in ("user", "assistant"))
+
+
+def dedup_system_messages(messages: list) -> tuple[list, int]:
+    """Remove exact-duplicate system messages, keeping the first occurrence.
+
+    Returns (new_messages, count_removed).
+    """
+    seen_content: set[str] = set()
+    result: list = []
+    removed = 0
+    for m in messages:
+        if m.get("role") != "system":
+            result.append(m)
+            continue
+        content = m.get("content", "")
+        # Checkpoint blocks are always kept (they merge history)
+        if content.startswith("[checkpoint]"):
+            result.append(m)
+            continue
+        if content in seen_content:
+            removed += 1
+        else:
+            seen_content.add(content)
+            result.append(m)
+    return result, removed
+
+
+def evict_stale_context(messages: list) -> tuple[list, int]:
+    """Remove inject-once system messages after _STALE_AFTER_TURNS conversation turns.
+
+    These prefixes are useful on turn 1 but become dead weight as the model
+    already has the information in its weights/context. Evicting them frees
+    ~200–800 tok per stale block.
+
+    Returns (new_messages, count_evicted).
+    """
+    turns = _count_non_system_turns(messages)
+    if turns <= _STALE_AFTER_TURNS:
+        return messages, 0
+
+    result: list = []
+    evicted = 0
+    for m in messages:
+        if m.get("role") == "system":
+            content = m.get("content", "")
+            if any(content.startswith(p) for p in _STALE_PREFIXES):
+                evicted += 1
+                continue
+        result.append(m)
+    return result, evicted
+
+
+def merge_checkpoint_blocks(messages: list) -> tuple[list, int]:
+    """Collapse multiple [checkpoint] system messages into one merged block.
+
+    When aggressive compression runs multiple times, multiple checkpoints
+    accumulate. This merges them into a single block to save tokens.
+
+    Returns (new_messages, blocks_merged).
+    """
+    import json as _json
+
+    checkpoints = [(i, m) for i, m in enumerate(messages)
+                   if m.get("role") == "system"
+                   and m.get("content", "").startswith("[checkpoint]")]
+
+    if len(checkpoints) < 2:
+        return messages, 0
+
+    # Parse and merge all checkpoint dicts
+    merged: dict = {
+        "type": "checkpoint",
+        "goal": "",
+        "completed": [],
+        "files_modified": [],
+        "decisions": [],
+        "open_issues": [],
+    }
+    indices_to_remove: set[int] = set()
+    for idx, m in checkpoints:
+        indices_to_remove.add(idx)
+        try:
+            data = _json.loads(m["content"][len("[checkpoint]\n"):])
+            if not merged["goal"] and data.get("goal"):
+                merged["goal"] = data["goal"]
+            for key in ("completed", "files_modified", "decisions", "open_issues"):
+                for item in data.get(key, []):
+                    if item not in merged[key]:
+                        merged[key].append(item)
+        except Exception:
+            pass
+
+    # Keep last checkpoint's position, insert merged there, remove others
+    last_idx = checkpoints[-1][0]
+    merged_msg = {
+        "role": "system",
+        "content": f"[checkpoint]\n{_json.dumps(merged, ensure_ascii=False, indent=2)}",
+    }
+    result = []
+    for i, m in enumerate(messages):
+        if i in indices_to_remove:
+            if i == last_idx:
+                result.append(merged_msg)
+            # else: skip (merged into last position)
+        else:
+            result.append(m)
+
+    return result, len(checkpoints) - 1
+
+
+# ---------------------------------------------------------------------------
 # Core supervisor
 # ---------------------------------------------------------------------------
 
@@ -185,6 +315,10 @@ class ContextSupervisor:
 
     def check(self) -> None:
         """Run the supervision cycle. Call before each LLM turn."""
+        # Phase 9: always run dedup + stale eviction first — cheap O(n) pass,
+        # often frees 200–1000 tok without any compression needed.
+        self._dedup_and_evict()
+
         frac = self.token_fraction()
 
         if frac < _TIERS.warn:
@@ -207,6 +341,23 @@ class ContextSupervisor:
                 if ui:
                     ui.muted(f"  ◈ Context at {frac:.0%} — approaching limit")
                 self._last_tier = "warn"
+
+    def _dedup_and_evict(self) -> None:
+        """Phase 9: deduplicate system messages and evict stale inject-once blocks."""
+        try:
+            msgs, dupes = dedup_system_messages(self._session.messages)
+            if dupes:
+                self._session.messages = msgs
+
+            msgs, evicted = evict_stale_context(self._session.messages)
+            if evicted:
+                self._session.messages = msgs
+
+            msgs, merged = merge_checkpoint_blocks(self._session.messages)
+            if merged:
+                self._session.messages = msgs
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Compression levels

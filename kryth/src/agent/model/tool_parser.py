@@ -1,11 +1,13 @@
-"""ToolParser — parse tool calls from any provider format.
+"""ToolParser — parse tool calls from provider-native structured formats.
 
-Supports:
-- OpenAI JSON function calls (delta.tool_calls[].function.{name,arguments})
-- Anthropic XML tool_use blocks
-- Generic XML: <tool_call>, <function>, <invoke>
-- Plain text heuristics (model outputs tool calls inline)
-- JSON blocks embedded in markdown code fences
+Runtime v2 — NO XML, NO free-form text heuristics. Supports:
+- OpenAI native function calls (delta.tool_calls[].function.{name,arguments})
+- Anthropic native tool_use content blocks
+- A strict, VALIDATED JSON object as the only text-mode fallback (the
+  "structured output" path) — malformed payloads are rejected, not coerced.
+
+Tool names are sanitized of Harmony/gpt-oss channel tokens so a contaminated
+name like ``read_file<|channel|>json`` resolves to ``read_file``.
 """
 
 from __future__ import annotations
@@ -29,20 +31,27 @@ class ParsedToolCall:
                 "call_id": self.call_id}
 
 
-# XML patterns
-_XML_TOOL_OPEN = re.compile(
-    r"<(?:tool_call|function_call|invoke|tool_use)\s*>",
-    re.IGNORECASE,
-)
-_XML_TOOL_CLOSE = re.compile(
-    r"</(?:tool_call|function_call|invoke|tool_use)\s*>",
-    re.IGNORECASE,
-)
-_XML_NAME = re.compile(r"<tool_name\s*>([^<]+)</tool_name\s*>", re.IGNORECASE)
-_XML_FUNC_NAME = re.compile(r"<function_name\s*>([^<]+)</function_name\s*>", re.IGNORECASE)
-_XML_PARAMS = re.compile(r"<parameters\s*>(.*?)</parameters\s*>", re.IGNORECASE | re.DOTALL)
-_XML_ARGS = re.compile(r"<arguments\s*>(.*?)</arguments\s*>", re.IGNORECASE | re.DOTALL)
-_XML_INPUT = re.compile(r"<input\s*>(.*?)</input\s*>", re.IGNORECASE | re.DOTALL)
+# Tool/function names are bare identifiers. Models that speak the OpenAI
+# Harmony channel protocol (gpt-oss family) can bleed channel markers into the
+# name field, e.g. ``read_file<|channel|>json``. Strip any ``<|...|>`` token and
+# keep the first identifier-shaped token so the dispatcher resolves the real
+# tool. Mirrors agent.llm._sanitize_tool_name (kept local to avoid coupling the
+# model/ package to llm.py).
+_TOOL_NAME_ID_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _sanitize_tool_name(name: str) -> str:
+    if not name:
+        return ""
+    cleaned = re.sub(r"<\|[^|>]*\|>", " ", name)
+    cleaned = cleaned.replace("<|", " ").replace("|>", " ")
+    m = _TOOL_NAME_ID_RE.search(cleaned)
+    return m.group(0) if m else cleaned.strip()
+
+
+# Runtime v2: XML tool-call parsing has been removed. Tool calls come from the
+# provider's NATIVE structured format (OpenAI delta / Anthropic tool_use), with
+# a strict VALIDATED JSON object as the only text-mode fallback.
 
 # JSON blocks in markdown fences
 _JSON_FENCE = re.compile(r"```(?:json|tool_call)?\s*\n({.*?})\s*```", re.DOTALL)
@@ -79,6 +88,7 @@ class ToolParser:
                 else:
                     name = getattr(fn, "name", "") or ""
                     args_str = getattr(fn, "arguments", "") or ""
+                name = _sanitize_tool_name(name)
                 if not name:
                     continue
                 try:
@@ -108,83 +118,72 @@ class ToolParser:
                 name = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else "")
                 args = getattr(block, "input", {}) or (block.get("input", {}) if isinstance(block, dict) else {})
                 call_id = getattr(block, "id", "") or (block.get("id", "") if isinstance(block, dict) else "")
+                name = _sanitize_tool_name(name or "")
                 if name:
                     result.append(ParsedToolCall(name=name, arguments=args or {}, call_id=call_id))
         return result
 
     # ------------------------------------------------------------------
-    # XML text-based parsing (Anthropic legacy, custom XML)
+    # Structured JSON parsing (validated — the only text-mode fallback)
     # ------------------------------------------------------------------
-
-    def from_xml_text(self, text: str) -> list[ParsedToolCall]:
-        """Extract tool calls from XML-tagged text."""
-        result: list[ParsedToolCall] = []
-        # Find all XML tool call blocks
-        starts = [m.start() for m in _XML_TOOL_OPEN.finditer(text)]
-        ends = [m.end() for m in _XML_TOOL_CLOSE.finditer(text)]
-
-        for i, start in enumerate(starts):
-            end = ends[i] if i < len(ends) else len(text)
-            block = text[start:end]
-
-            name = ""
-            m = _XML_NAME.search(block) or _XML_FUNC_NAME.search(block)
-            if m:
-                name = m.group(1).strip()
-
-            args: dict = {}
-            pm = _XML_PARAMS.search(block) or _XML_ARGS.search(block) or _XML_INPUT.search(block)
-            if pm:
-                param_text = pm.group(1).strip()
-                try:
-                    args = json.loads(param_text)
-                except (json.JSONDecodeError, ValueError):
-                    args = _parse_xml_params(param_text)
-
-            if name:
-                result.append(ParsedToolCall(name=name, arguments=args, raw=block))
-
-        return result
-
-    # ------------------------------------------------------------------
-    # Markdown JSON fence parsing
-    # ------------------------------------------------------------------
+    #
+    # Runtime v2: free-form XML tool-call recovery is REMOVED. The only
+    # accepted non-native format is a strict, VALIDATED JSON object. Anything
+    # that is not a well-formed {"name": str, "arguments": obj} is rejected
+    # (returns no call) rather than being coerced from free-form text.
 
     def from_json_fences(self, text: str) -> list[ParsedToolCall]:
-        """Extract tool calls from JSON code blocks in markdown."""
+        """Extract tool calls from JSON code blocks in markdown.
+
+        Each candidate object is VALIDATED: it must have a string ``name`` and
+        an object/absent ``arguments``. Malformed payloads are rejected.
+        """
         result: list[ParsedToolCall] = []
         for m in _JSON_FENCE.finditer(text):
-            try:
-                obj = json.loads(m.group(1))
-                if isinstance(obj, dict):
-                    name = obj.get("name") or obj.get("function") or obj.get("tool")
-                    args = obj.get("arguments") or obj.get("parameters") or obj.get("input") or {}
-                    if name and isinstance(name, str):
-                        result.append(ParsedToolCall(name=name, arguments=args, raw=m.group(0)))
-            except (json.JSONDecodeError, ValueError):
-                pass
+            call = self._validate_json_tool_obj(m.group(1), raw=m.group(0))
+            if call:
+                result.append(call)
         return result
 
+    @staticmethod
+    def _validate_json_tool_obj(payload: str, raw: str = "") -> "ParsedToolCall | None":
+        """Validate a JSON string as a tool call. Returns None if malformed."""
+        try:
+            obj = json.loads(payload)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return None
+        if not isinstance(obj, dict):
+            return None
+        name = obj.get("name") or obj.get("function") or obj.get("tool")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        name = _sanitize_tool_name(name)
+        if not name:
+            return None
+        args = obj.get("arguments")
+        if args is None:
+            args = obj.get("parameters")
+        if args is None:
+            args = obj.get("input")
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            return None  # arguments must be a structured object
+        return ParsedToolCall(name=name, arguments=args, raw=raw or payload)
+
     # ------------------------------------------------------------------
-    # Universal fallback
+    # Universal fallback — native first, then strict JSON. NO XML.
     # ------------------------------------------------------------------
 
     def from_any(self, text: str) -> list[ParsedToolCall]:
-        """Try all parsers in sequence and return the union of findings."""
-        calls = self.from_xml_text(text)
-        if not calls:
-            calls = self.from_json_fences(text)
-        return calls
+        """Validated structured-output fallback. Never parses XML.
 
-
-def _parse_xml_params(text: str) -> dict:
-    """Parse simple <key>value</key> XML parameter blocks."""
-    result: dict = {}
-    pattern = re.compile(r"<(\w+)\s*>([^<]*)</\1\s*>")
-    for m in pattern.finditer(text):
-        key, val = m.group(1), m.group(2).strip()
-        try:
-            result[key] = json.loads(val)
-        except (json.JSONDecodeError, ValueError):
-            result[key] = val
-    return result
+        Tries a bare top-level JSON object, then JSON code fences. Free-form
+        text and XML tool-call markup yield no calls.
+        """
+        stripped = (text or "").strip()
+        if stripped.startswith("{"):
+            call = self._validate_json_tool_obj(stripped)
+            if call:
+                return [call]
+        return self.from_json_fences(text)

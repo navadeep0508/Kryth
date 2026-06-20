@@ -1,0 +1,9 @@
+id: create_hello_py
+description: "Create hello.py that prints Hello KRYTH"
+category: creation
+expected_files:
+  - hello.py
+validation:
+  - python hello.py
+timeout_s: 60
+tags: [trivial, python, creation]

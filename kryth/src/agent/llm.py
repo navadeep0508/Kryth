@@ -16,6 +16,7 @@ import json
 import os
 import re
 import time
+import types
 
 from agent import ui
 from agent.env import getenv
@@ -52,7 +53,7 @@ def _make_client() -> OpenAI:
     return OpenAI(
         base_url=getenv("KRYTH_BASE_URL", BASE_URL),
         api_key=key,
-        timeout=httpx.Timeout(connect=15.0, read=360.0, write=60.0, pool=15.0),
+        timeout=httpx.Timeout(connect=30.0, read=float(os.getenv("KRYTH_READ_TIMEOUT", "180")), write=60.0, pool=30.0),
     )
 
 
@@ -230,6 +231,31 @@ def health_check() -> dict:
     return results
 
 
+def _adapter_tool_deltas_to_openai(norm_chunks: list) -> list:
+    """Convert adapter NormalizedChunk tool calls into OpenAI delta shape.
+
+    The ModelAdapter emits a COMPLETE tool call per chunk (sanitized name +
+    parsed args dict). We re-shape it into the streaming-delta form that
+    ``_merge_tool_call_delta`` consumes, so the accumulation path is identical
+    to the native code. Indices are assigned sequentially per emission.
+    """
+    out = []
+    for i, nc in enumerate(norm_chunks):
+        name = getattr(nc, "tool_name", "") or ""
+        args = getattr(nc, "tool_args", {}) or {}
+        call_id = getattr(nc, "tool_call_id", "") or None
+        try:
+            args_str = json.dumps(args) if isinstance(args, (dict, list)) else str(args)
+        except Exception:
+            args_str = "{}"
+        out.append(types.SimpleNamespace(
+            index=i,
+            id=call_id,
+            function=types.SimpleNamespace(name=name, arguments=args_str),
+        ))
+    return out
+
+
 def _merge_tool_call_delta(accum: dict, delta_call) -> None:
     idx = delta_call.index
     slot = accum.setdefault(
@@ -247,8 +273,20 @@ def _merge_tool_call_delta(accum: dict, delta_call) -> None:
 
 
 def _classify_400(e: APIStatusError) -> str:
-    """Return 'max_tokens' | 'context_overflow' | 'tools_unsupported' | 'content_tool_calls' | 'other'."""
+    """Return 'max_tokens' | 'context_overflow' | 'tools_unsupported' |
+    'content_tool_calls' | 'payload_too_large' | 'other'."""
     body = (str(getattr(e, "body", "") or "") + " " + str(e)).lower()
+    # Provider per-request / per-minute token CAPACITY exceeded (e.g. Groq
+    # free-tier TPM, or a 413 "request too large"). NOT time-recoverable when
+    # driven by a fixed payload (the tool schemas), so it must fail FAST with
+    # actionable guidance instead of slow-retrying for a minute.
+    if (
+        "request too large" in body
+        or "reduce your message size" in body
+        or ("tokens per minute" in body and "limit" in body)
+        or ("tpm" in body and "limit" in body)
+    ):
+        return "payload_too_large"
     if ("max_tokens" in body or "max_completion_tokens" in body) and (
         "too large" in body or "is larger than" in body or "exceeds" in body
     ):
@@ -302,6 +340,31 @@ _model_max_tokens_cache: dict[str, int] = {}
 
 # Models that rejected structured tool schemas — always use text-mode for these.
 _model_text_tool_cache: set[str] = set()
+
+# ── Runtime v2 ModelAdapter normalization seam (feature-flagged, default OFF) ──
+# When KRYTH_ADAPTER_STREAM is set, each raw streaming chunk is parsed by the
+# provider-agnostic ModelAdapter instead of the inline manual delta parsing.
+# The surrounding loop (TTFT, degenerate detection, max-token retry, schema
+# fallback, accumulators) is UNCHANGED — only the per-chunk parse is swapped.
+_adapter_cache: dict[str, object] = {}
+
+
+def _adapter_stream_enabled() -> bool:
+    try:
+        from agent.env import getenv_bool
+        return getenv_bool("KRYTH_ADAPTER_STREAM")
+    except Exception:
+        return False
+
+
+def _get_adapter(model_name: str):
+    """Lazily build + cache a ModelAdapter for the active model."""
+    adp = _adapter_cache.get(model_name)
+    if adp is None:
+        from agent.model.model_adapter import ModelAdapter
+        adp = ModelAdapter.for_model(model_name, BASE_URL)
+        _adapter_cache[model_name] = adp
+    return adp
 
 # Known output-token ceilings for models that don't report their limit
 # clearly in 400 error bodies (e.g. NVIDIA NIM nemotron). Substring-matched
@@ -361,11 +424,20 @@ def _is_nvidia_endpoint() -> bool:
 
 
 def _tool_mode() -> str:
-    """Return schema/text tool delivery mode for the active provider."""
+    """Return schema/text tool delivery mode for the active provider.
+
+    Native function calling ("schema") is the default for ALL providers — it
+    is the robust path and avoids text/XML/Harmony parsing entirely. Models
+    that genuinely cannot accept a tool schema are detected automatically: the
+    provider returns a `tools_unsupported` 400 on the first call, the model is
+    added to ``_model_text_tool_cache``, and the request is replayed in text
+    mode (see the retry loop in ``ask_llm_stream``). Set KRYTH_TOOL_MODE=text
+    to force the legacy text protocol.
+    """
     mode = getenv("KRYTH_TOOL_MODE", "auto").strip().lower()
     if mode in {"schema", "text"}:
         return mode
-    return "text" if _is_nvidia_endpoint() else "schema"
+    return "schema"
 
 
 def _status_detail(err: APIStatusError) -> str:
@@ -498,7 +570,80 @@ def _sanitize_messages_for_provider(messages: list) -> list:
     """Apply all provider-compatibility message fixes in one pass."""
     msgs = _sanitize_tool_call_ids(messages)
     msgs = _sanitize_assistant_messages(msgs)
+    # Stable prefix ordering — ensures system messages are grouped at the top
+    # so OpenAI automatic caching and Anthropic cache_control both get maximum hits.
+    msgs = _ensure_stable_prefix_order(msgs)
+    # Anthropic: add explicit cache_control breakpoints
+    if _is_anthropic_provider():
+        msgs = _apply_anthropic_cache_control(msgs)
     return msgs
+
+
+def _is_anthropic_provider() -> bool:
+    """True when BASE_URL points to the Anthropic API (supports prompt caching)."""
+    url = os.getenv("KRYTH_BASE_URL", BASE_URL).lower()
+    return "anthropic" in url or "claude" in url
+
+
+def _ensure_stable_prefix_order(messages: list) -> list:
+    """Guarantee all system messages precede conversation turns.
+
+    OpenAI models (gpt-4o-mini-2024-07-18+, gpt-4o-2024-05-13+) cache the
+    longest matching prefix from a previous request automatically — no markers
+    needed.  For this to work, the stable parts (system prompt, injected repo
+    context) must appear at the START of the messages array, unchanged between
+    turns.  If system messages have drifted into the middle of history (e.g.
+    from inject-once context blocks), this reorders them to the top so the
+    stable prefix is as long as possible across consecutive calls.
+
+    Disabled via KRYTH_NO_PREFIX_CACHE=1.
+    """
+    if os.environ.get("KRYTH_NO_PREFIX_CACHE", "0") in ("1", "true", "yes"):
+        return messages
+
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    non_system  = [m for m in messages if m.get("role") != "system"]
+
+    # Already ordered correctly — avoid allocating a new list
+    if messages == system_msgs + non_system:
+        return messages
+
+    return system_msgs + non_system
+
+
+def _apply_anthropic_cache_control(messages: list) -> list:
+    """Add cache_control breakpoints to stable prefix components.
+
+    Anthropic prompt caching reduces cost and latency for repeated prefixes.
+    We mark the system prompt and early context messages as ephemeral cache
+    breakpoints. The system prompt is stable; only the conversation tail changes.
+
+    Only the last 4 cache_control markers matter per Anthropic's docs — we
+    place them at the top 2-3 system messages for maximum cache reuse.
+    """
+    if os.environ.get("KRYTH_NO_PREFIX_CACHE", "0") in ("1", "true", "yes"):
+        return messages
+
+    result = []
+    system_count = 0
+    MAX_CACHE_MARKERS = 3  # Anthropic supports up to 4; leave 1 for tools
+
+    for msg in messages:
+        if msg.get("role") == "system" and system_count < MAX_CACHE_MARKERS:
+            content = msg.get("content", "")
+            # Only cache substantial blocks (>200 chars = ~50 tok minimum)
+            if isinstance(content, str) and len(content) > 200:
+                msg = dict(msg)
+                msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+                system_count += 1
+        result.append(msg)
+    return result
 
 
 def _chat_completion_with_compat(call_label: str, *, compat_fallback: bool = True, **kwargs):
@@ -656,16 +801,32 @@ _PROTOCOL_BOUNDARY_RE = re.compile(
     r"|experience|memory)\b",
     re.IGNORECASE,
 )
-_PRE_TAG_FLUSH = 200   # chars: give up waiting for <CONTENT> (tighter now)
+_PRE_TAG_FLUSH = 600   # chars: give up waiting for <CONTENT>; larger window avoids mid-sentence flush
 
-# Stop sequences sent to the gateway. NVIDIA's OpenAI-compatible
-# endpoint honours these for most models, terminating the response
-# before the model can spam its way to max_tokens. They are sequences
-# no legitimate output would emit consecutively.
+# Dangling reasoning-close: some reasoning models (e.g. stepfun step-3.7-flash
+# on NVIDIA NIM) stream their chain-of-thought INSIDE the `content` field,
+# terminated by a closing </think> with NO matching opening <think> (the open
+# only appears in the separate reasoning_content channel). The balanced
+# think-depth counter never engages, so the reasoning would leak into the
+# visible reply. We treat such a dangling close as a reasoning→answer
+# separator: everything up to and including it is reasoning.
+_REASONING_CLOSE_RE = re.compile(
+    r"</(?:think|thinking|seed:think|reasoning|analysis|reflect)\s*>",
+    re.IGNORECASE,
+)
+
+# Stop sequences sent to the gateway. OpenAI-compatible endpoints terminate
+# the response before the model can spam its way to max_tokens. They are
+# sequences no legitimate output would emit consecutively.
+#
+# IMPORTANT: the OpenAI `stop` parameter is capped at 4 items by the spec, and
+# several gateways (e.g. Groq) hard-reject >4 with a 400 — which forced KRYTH
+# into a slow compatibility-retry loop on every call. Keep this list to <= 4.
+# These four cover the degenerate-loop tails we actually observe across
+# providers (Hermes/Qwen tool tags, parameter spam, Llama code-interpreter).
 _STOP_SEQUENCES = [
     "</function></function></function>",
     "</tool_call></tool_call></tool_call>",
-    "</seed:tool_call></seed:tool_call>",
     "</parameter></parameter></parameter></parameter>",
     "<|python_tag|><|python_tag|>",  # Llama code-interpreter token loop
 ]
@@ -701,7 +862,7 @@ def _recover_hermes_tool_calls(content: str) -> list[dict]:
             except json.JSONDecodeError:
                 payload = None
             if isinstance(payload, dict):
-                name = payload.get("name")
+                name = _sanitize_tool_name(payload.get("name") or "")
                 args = payload.get("arguments", {})
                 if name in known_names:
                     arguments = (
@@ -718,7 +879,7 @@ def _recover_hermes_tool_calls(content: str) -> list[dict]:
 
         # Shape 2: <function=NAME>...<parameter=KEY>VALUE</parameter>...
         fn_match = _HERMES_FN_RE.search(block)
-        name = fn_match.group(1) if fn_match else None
+        name = _sanitize_tool_name(fn_match.group(1)) if fn_match else None
 
         # Shape 2b (malformed, observed with qwen3-coder): the function
         # name is hidden in the FIRST <parameter=A=B> header. Either
@@ -918,9 +1079,47 @@ _LEAK_CLOSE_TAGS = ["</think>", "</thinking>", "</seed:think>", "</tool_call>", 
 
 def _filter_leaks(text: str) -> str:
     """Remove complete reasoning/protocol blocks and bare tags."""
+    # Safety net for reasoning models that stream chain-of-thought in `content`
+    # ending in a dangling close tag (no matching open) — e.g. step-3.7-flash.
+    # If a reasoning-close appears with no opening tag before it, drop
+    # everything up to and including the LAST such close (it was all reasoning).
+    if text:
+        last_close = None
+        for mm in _REASONING_CLOSE_RE.finditer(text):
+            last_close = mm
+        if last_close is not None:
+            head = text[:last_close.start()].lower()
+            if not any(op in head for op in ("<think", "<thinking", "<seed:think",
+                                             "<reasoning", "<analysis", "<reflect")):
+                text = text[last_close.end():].lstrip("\n")
     for pat in _LEAK_PATTERNS:
         text = pat.sub("", text)
     return text
+
+
+# A valid tool/function name is a bare identifier. Models that speak the
+# OpenAI Harmony channel protocol (gpt-oss family) sometimes bleed channel
+# markers into the function-name field, e.g. ``read_file<|channel|>json``.
+# Title-casing such a name later produces the user-visible garbage
+# ``Read File<|Channel|>Json`` and the tool-registry lookup fails. We strip
+# any ``<|...|>`` special token and keep the first identifier-shaped token.
+_TOOL_NAME_ID_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _sanitize_tool_name(name: str) -> str:
+    """Return a clean tool name, stripping Harmony/Llama special tokens.
+
+    ``read_file<|channel|>json`` -> ``read_file``
+    ``  write_file `` -> ``write_file``
+    Returns "" for input that contains no identifier.
+    """
+    if not name:
+        return ""
+    # Remove well-formed <|...|> tokens, then any dangling token delimiters.
+    cleaned = re.sub(r"<\|[^|>]*\|>", " ", name)
+    cleaned = cleaned.replace("<|", " ").replace("|>", " ")
+    m = _TOOL_NAME_ID_RE.search(cleaned)
+    return m.group(0) if m else cleaned.strip()
 
 
 def _strip_surrogates(text: str) -> str:
@@ -961,7 +1160,7 @@ def _sanitize_messages(messages: list) -> list:
     return out
 
 
-def ask_llm_stream(messages, tools=None, *, routing_hints=None):
+def ask_llm_stream(messages, tools=None, *, routing_hints=None, task_complexity: str = ""):
     # Signal "waiting for model" — the renderer paints a spinner that
     # auto-cancels as soon as the first reasoning/content/tool_call
     # chunk arrives.
@@ -982,7 +1181,10 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
         routing_hints = RouteHints(
             payload_chars=chars,
             has_tool_specs=bool(tools),
+            task_complexity=task_complexity,
         )
+    elif task_complexity and not routing_hints.task_complexity:
+        routing_hints.task_complexity = task_complexity
     selected_model = pick_main_model(routing_hints)
 
     # Override client/model from model_config if available
@@ -1028,13 +1230,18 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
                 max_tokens=_max_tokens,
                 stream=True,
                 stream_options={"include_usage": True},
-                stop=_STOP_SEQUENCES,
+                stop=_STOP_SEQUENCES[:4],  # OpenAI/Groq cap `stop` at 4 items
             )
             break  # success
         except KeyboardInterrupt:
             raise
         except APIStatusError as e:
             kind = _classify_400(e)
+            try:
+                from agent.model import telemetry as _telr
+                _telr.incr("retry")
+            except Exception:
+                pass
             if kind == "max_tokens":
                 # Model's output window is smaller than we requested.
                 # Extract the real limit; fall back to halving if not parseable.
@@ -1051,6 +1258,11 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             if kind == "tools_unsupported":
                 # Model doesn't support structured tool schemas.
                 # Switch to text-mode for this model permanently and retry.
+                try:
+                    from agent.model import telemetry as _telf
+                    _telf.incr("fallback_activated")
+                except Exception:
+                    pass
                 _model_text_tool_cache.add(selected_model)
                 ui.muted(f"(tools schema rejected by {selected_model} — switching to text-mode)")
                 if request_tools is not None:
@@ -1084,6 +1296,26 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
                     "content": None,
                     "tool_calls": None,
                     "finish_reason": "context_overflow",
+                    "usage": None,
+                    "interrupted": True,
+                }
+            if kind == "payload_too_large":
+                # Provider token-per-minute / request-size cap exceeded. The
+                # tool-schema payload is fixed, so retrying won't help — fail
+                # fast with guidance instead of a 60s retry storm.
+                ui.llm_error(
+                    label="ask_llm_stream",
+                    message=f"{selected_model}: provider token/size limit exceeded",
+                    hint=(
+                        "The request (tool schemas + context) is larger than this "
+                        "provider tier allows. Use a higher-tier key or a provider "
+                        "with larger per-minute limits."
+                    ),
+                )
+                return {
+                    "content": None,
+                    "tool_calls": None,
+                    "finish_reason": "payload_too_large",
                     "usage": None,
                     "interrupted": True,
                 }
@@ -1144,14 +1376,63 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
     _think_depth = 0
     _content_started = False
     _pre_tag_buf = ""
+    _stream_open = time.monotonic()
+    # TTFT (time-to-first-token) guard. Default OFF (0) so slow reasoning
+    # models are never prematurely killed — the provider's own request timeout
+    # is the backstop against an infinitely-hung connection. Set
+    # KRYTH_TTFT_TIMEOUT to a positive number of seconds to re-enable.
+    _ttft_timeout = float(getenv("KRYTH_TTFT_TIMEOUT", "0"))
     # Counts tool-call chunks — drives the live "Generating…" spinner so
     # large file writes don't look frozen.  Fires every 10 chunks (not 30)
     # and surfaces the tool name once we can parse it.
     _tool_gen_chunks = 0
     _gen_label = "Generating…"
 
+    # Runtime v2 adapter seam — resolved once per stream (default OFF).
+    _adapter_use = _adapter_stream_enabled()
+    _adapter = _get_adapter(selected_model) if _adapter_use else None
+    if _adapter is not None:
+        try:
+            _adapter.reset()  # clear per-stream state on the cached adapter
+        except Exception:
+            pass
+
+    # Burn-in telemetry — pure in-memory counters, never alters output.
+    from agent.model import telemetry as _tel
+    _tel.incr("adapter_used" if _adapter_use else "legacy_used")
+    _tel_provider = getattr(getattr(_adapter, "provider", None), "value", "") or ""
+    _tel_ttft_done = False
+    _tel_event_order: list[str] = []
+
     try:
         for chunk in stream:
+            # TTFT guard: if no output at all after timeout, bail out.
+            # Disabled when _ttft_timeout <= 0 (the default) so slow models
+            # are allowed to take their time to first token.
+            if (
+                _ttft_timeout > 0
+                and not saw_content
+                and not saw_reasoning
+                and not tool_calls_accum
+                and time.monotonic() - _stream_open > _ttft_timeout
+            ):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                ui.llm_error(
+                    label="ask_llm_stream",
+                    message=f"{selected_model} TTFT exceeded {_ttft_timeout:.0f}s — model too slow",
+                    hint="Try /config to switch to a faster model, or set KRYTH_TTFT_TIMEOUT.",
+                )
+                return {
+                    "content": None,
+                    "tool_calls": None,
+                    "finish_reason": "timeout",
+                    "usage": None,
+                    "interrupted": True,
+                }
+
             if getattr(chunk, "usage", None):
                 usage = chunk.usage
 
@@ -1159,6 +1440,62 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
                 continue
             choice = chunk.choices[0]
             delta = choice.delta
+
+            # ── Runtime v2 adapter seam (flagged) ────────────────────────────
+            # Normalize this chunk through the provider-agnostic ModelAdapter,
+            # then project the normalized result back onto the same locals the
+            # rest of the loop already consumes (reasoning_piece, delta.content,
+            # delta.tool_calls, finish_reason, usage). The loop's orchestration
+            # is untouched. Default OFF → the manual parsing below runs as-is.
+            if _adapter_use:
+                try:
+                    _norm = _adapter.normalize_chunk(chunk)  # list[NormalizedChunk]
+                except Exception:
+                    _norm = []
+                    _tel.incr("parser_error")
+                _txt, _rsn, _tool_deltas = "", "", []
+                for _nc in _norm:
+                    ct = getattr(_nc, "chunk_type", None)
+                    ctv = getattr(ct, "value", ct)
+                    _tel_event_order.append(str(ctv))
+                    if ctv == "text":
+                        _txt += _nc.text or ""
+                    elif ctv == "reasoning":
+                        _rsn += (_nc.reasoning or _nc.text or "")
+                    elif ctv == "tool_call":
+                        _tool_deltas.append(_nc)
+                        _tel.incr("tool_normalization")
+                    elif ctv == "usage":
+                        if _nc.usage_in or _nc.usage_out:
+                            usage = types.SimpleNamespace(
+                                prompt_tokens=_nc.usage_in,
+                                completion_tokens=_nc.usage_out,
+                                total_tokens=(_nc.usage_in + _nc.usage_out),
+                            )
+                # A chunk that carried visible CONTENT but normalized to
+                # nothing. (Tool-call deltas are legitimately buffered by the
+                # normalizer until finish_reason=="tool_calls", so they are NOT
+                # malformed when a single chunk yields no emission.)
+                if not _norm and getattr(getattr(choice, "delta", None), "content", None):
+                    _tel.incr("malformed_chunk")
+                # Re-project onto delta so downstream code is identical.
+                # tool_calls is always a list (never None) to prevent DeltaMessage
+                # validation failures when providers omit the field (BUG 1).
+                _tc_list = _adapter_tool_deltas_to_openai(_tool_deltas)
+                delta = types.SimpleNamespace(
+                    content=_txt or None,
+                    reasoning_content=_rsn or None,
+                    tool_calls=_tc_list if _tc_list else [],
+                )
+
+            # TTFT: first observable output (content / reasoning / tool delta).
+            if not _tel_ttft_done and (
+                getattr(delta, "content", None)
+                or getattr(delta, "reasoning_content", None)
+                or getattr(delta, "tool_calls", None)
+            ):
+                _tel_ttft_done = True
+                _tel.observe_ttft(_tel_provider, time.monotonic() - _stream_open)
 
             # --- Separate reasoning field (OpenAI o1, DeepSeek-R1 API, etc.) ---
             reasoning_piece = (
@@ -1213,8 +1550,28 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
                 # anything they write beforehand is their implicit reasoning chain.
                 if not _content_started:
                     _pre_tag_buf += raw_piece
+                    # A dangling reasoning-close (</think> with no open) means
+                    # everything before it was chain-of-thought streamed in the
+                    # content channel — route it to reasoning, keep only the
+                    # text after the close as the visible answer.
+                    mclose = _REASONING_CLOSE_RE.search(_pre_tag_buf)
                     m = _PROTOCOL_BOUNDARY_RE.search(_pre_tag_buf)
-                    if m:
+                    if mclose and (m is None or mclose.start() <= m.start()):
+                        pre = _pre_tag_buf[:mclose.start()]
+                        rest = _pre_tag_buf[mclose.end():]
+                        _pre_tag_buf = ""
+                        _content_started = True
+                        if pre.strip():
+                            if _reasoning_start is None:
+                                _reasoning_start = time.monotonic()
+                            elapsed = time.monotonic() - _reasoning_start
+                            ui.llm_reasoning_chunk(pre, elapsed=elapsed)
+                            reasoning_chunks.append(pre)
+                            saw_reasoning = True
+                        raw_piece = rest.lstrip("\n")  # fall through as content
+                        if not raw_piece:
+                            continue
+                    elif m:
                         # Found the boundary — everything before it is reasoning.
                         pre = _pre_tag_buf[:m.start()]
                         rest = _pre_tag_buf[m.start():]
@@ -1267,9 +1624,16 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
                         pass
                     break
 
-            if getattr(delta, "tool_calls", None):
-                for dc in delta.tool_calls:
-                    _merge_tool_call_delta(tool_calls_accum, dc)
+            # Defensive normalization: tool_calls=None / missing / non-list
+            # must never crash orchestration — normalize to [] in all cases.
+            _raw_tcs = getattr(delta, "tool_calls", None)
+            _safe_tcs: list = _raw_tcs if isinstance(_raw_tcs, list) else []
+            if _safe_tcs:
+                for dc in _safe_tcs:
+                    try:
+                        _merge_tool_call_delta(tool_calls_accum, dc)
+                    except Exception:
+                        pass  # malformed delta — skip silently, never crash
                 # Show a live spinner while tool arguments stream in
                 # (large file writes produce many silent chunks with no content).
                 if not saw_content and not saw_reasoning:
@@ -1294,6 +1658,9 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
 
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
+        # Stream loop finished cleanly (no break/exception).
+        _tel.incr("stream_completion")
+        _tel.record_event_order(_tel_event_order)
     except KeyboardInterrupt:
         try:
             stream.close()
@@ -1348,9 +1715,19 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
             ui.llm_reasoning_end()
         else:
             ui.llm_content_end(render_markdown=False)
-        partial_calls = [
-            tool_calls_accum[k] for k in sorted(tool_calls_accum.keys())
-        ]
+        partial_calls = []
+        for _k in sorted(tool_calls_accum.keys()):
+            _tc = tool_calls_accum[_k]
+            if not isinstance(_tc, dict):
+                continue
+            _fn = _tc.get("function") or {}
+            if not isinstance(_fn, dict):
+                _fn = {}
+            _name = _fn.get("name") or ""
+            if _name:
+                _fn["name"] = _sanitize_tool_name(_name)
+            _tc["function"] = _fn
+            partial_calls.append(_tc)
         raw_partial = "".join(content_chunks)
 
         # Recover text-format tool calls (Hermes/Qwen or XML) BEFORE filtering
@@ -1415,9 +1792,39 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None):
     else:
         ui.llm_content_end(render_markdown=False)
 
-    tool_calls = [
+    # Assemble tool calls — normalize every entry defensively so invalid
+    # types never reach the dispatcher.  Converts non-dict entries to []
+    # (dropped below) and fixes missing/non-string names.
+    _raw_accum_calls = [
         tool_calls_accum[k] for k in sorted(tool_calls_accum.keys())
     ]
+    tool_calls = []
+    for _tc in _raw_accum_calls:
+        if not isinstance(_tc, dict):
+            continue  # invalid type — drop silently
+        _fn = _tc.get("function")
+        if not isinstance(_fn, dict):
+            _tc["function"] = {"name": "", "arguments": "{}"}
+            _fn = _tc["function"]
+        if not isinstance(_fn.get("name"), str):
+            _fn["name"] = ""
+        if not isinstance(_fn.get("arguments"), str):
+            try:
+                _fn["arguments"] = json.dumps(_fn.get("arguments") or {})
+            except Exception:
+                _fn["arguments"] = "{}"
+        # Sanitize function names assembled from streaming deltas — Harmony/gpt-oss
+        # models can bleed channel tokens into the name field.
+        if _fn["name"]:
+            _clean = _sanitize_tool_name(_fn["name"])
+            if _clean != _fn["name"]:
+                try:
+                    from agent.model import telemetry as _tel2
+                    _tel2.incr("harmony_sanitization")
+                except Exception:
+                    pass
+            _fn["name"] = _clean
+        tool_calls.append(_tc)
 
     usage_dict = None
     if usage is not None:
@@ -1582,7 +1989,7 @@ def ask_planner(user_input):
                 {"role": "user", "content": user_input},
             ],
             temperature=0,
-            max_tokens=8192,
+            max_tokens=800,
         )
     except KeyboardInterrupt:
         raise

@@ -76,13 +76,13 @@ Your job:
 Keep the fix minimal and targeted."""
 
     repair_commands_used: list = []
+    initial_error = original_error
+    last_error = original_error
 
     for attempt in range(1, MAX_RETRIES + 1):
         parent = get_session()
         nested = _build_nested(f"Repair({role})", repair_prompt, parent.depth)
-        nested.system_prompt = repair_prompt
         nested.messages = [
-            {"role": "system", "content": repair_prompt},
             {"role": "user", "content": f"Attempt {attempt}: Fix the failure and report results."},
         ]
 
@@ -90,26 +90,25 @@ Keep the fix minimal and targeted."""
         try:
             result = run_inner_loop(nested, max_turns, verbose_usage=False)
             content = getattr(result, "content", "") or ""
-            if content and "REPAIR_COMPLETE" in content:
-                # Record successful repair for future runs
-                _learn_repair(original_error, repair_commands_used, True, project_root)
+            sentinel = f"REPAIR_COMPLETE: {agent_id}"
+            if content and sentinel in content:
+                _learn_repair(initial_error, repair_commands_used, True, project_root)
                 return RepairResult(success=True, output=content, attempts=attempt)
         except Exception as exc:
-            original_error = str(exc)
+            last_error = str(exc)
         finally:
             pop_session(token)
 
-    _learn_repair(original_error, repair_commands_used, False, project_root)
+    _learn_repair(initial_error, repair_commands_used, False, project_root)
     return RepairResult(
         success=False,
         output="",
         attempts=MAX_RETRIES,
-        error=f"All {MAX_RETRIES} repair attempts failed. Original error: {original_error}",
+        error=f"All {MAX_RETRIES} repair attempts failed. Original error: {initial_error}",
     )
 
 
 def _extract_error_type(error_message: str) -> str:
-    """Extract a short error type string from an error message."""
     import re
     # Python exception names
     m = re.search(r"\b(\w+Error|\w+Exception|\w+Warning)\b", error_message)

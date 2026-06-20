@@ -1,0 +1,9 @@
+id: create_flask_app
+description: "Create a minimal Flask app with a /hello route that returns JSON {message: Hello}"
+category: creation
+expected_files:
+  - app.py
+validation:
+  - python -c "import ast; ast.parse(open('app.py').read())"
+timeout_s: 120
+tags: [medium, python, flask, api]

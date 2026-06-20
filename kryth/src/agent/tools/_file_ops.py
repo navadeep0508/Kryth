@@ -487,7 +487,14 @@ def write_file(path, content):
 
     _invalidate_indexes(path)
 
-    msg = f"File written: {path} ({len(content)} chars)"
+    # Post-execution validation: confirm the file actually landed on disk with
+    # the expected size, so the result message never claims success blindly.
+    try:
+        written = os.path.getsize(path)
+    except OSError as e:
+        return err("EXEC_FAILED", f"write reported ok but {path} is not on disk", str(e))
+
+    msg = f"✓ File written: {path} ({len(content)} chars, {written} bytes on disk)"
     msg += _length_advisory(path, len(content))
     msg += _validate_content(path, content)
     return msg
@@ -505,7 +512,10 @@ def delete_file(path):
     except Exception as e:
         return err("EXEC_FAILED", f"could not delete {path}", str(e))
     _invalidate_indexes(path)
-    return f"Deleted: {path}"
+    # Post-execution validation: confirm the file is actually gone.
+    if os.path.exists(path):
+        return err("EXEC_FAILED", f"delete reported ok but {path} still exists")
+    return f"✓ Deleted: {path}"
 
 
 def list_files(directory="."):
