@@ -1077,6 +1077,20 @@ _LEAK_OPEN_TAGS = ["<think>", "<thinking>", "<seed:think>", "<tool_call>", "<see
 _LEAK_CLOSE_TAGS = ["</think>", "</thinking>", "</seed:think>", "</tool_call>", "</seed:tool_call>", "</function>"]
 
 
+_API_KEY_PATTERNS = [
+    re.compile(r"nvapi-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"sk-proj-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"AKIA[A-Za-z0-9]{16}"),
+    re.compile(r"AIza[A-Za-z0-9_-]{35}"),
+]
+
+def _redact_api_keys(text: str) -> str:
+    for pat in _API_KEY_PATTERNS:
+        text = pat.sub("[REDACTED_API_KEY]", text)
+    return text
+
+
 def _filter_leaks(text: str) -> str:
     """Remove complete reasoning/protocol blocks and bare tags."""
     # Safety net for reasoning models that stream chain-of-thought in `content`
@@ -1094,6 +1108,7 @@ def _filter_leaks(text: str) -> str:
                 text = text[last_close.end():].lstrip("\n")
     for pat in _LEAK_PATTERNS:
         text = pat.sub("", text)
+    text = _redact_api_keys(text)
     return text
 
 

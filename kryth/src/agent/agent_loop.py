@@ -1344,18 +1344,35 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         # tools (write_file, run_command, edit_file) so the model answers
         # from context. Prevents "what is incomplete?" → pip install → python.
         _user_msg = ""
-        for _m in session.messages:
+        for _m in reversed(session.messages):
             if _m.get("role") == "user" and isinstance(_m.get("content"), str):
                 _user_msg = _m["content"]
                 break
         _question_signals = (
             "what ", "what's", "how ", "how's", "why ", "why's",
-            "where ", "when ", "who ", "which ", "is ", "are ",
-            "can ", "does ", "do ", "will ", "would ", "should ",
-            "incomplete", "missing", "wrong", "broken", "issues",
-            "explain", "summar", "describe", "tell me", "list ",
+            "where ", "when ", "who ", "which ",
+            "is it ", "are there ", "are the",
+            "can you", "does it", "do i ", "do you",
+            "will it", "would it", "should i",
+            "incomplete", "missing", "explain", "summar",
+            "describe", "tell me", "list ",
         )
-        _is_question = any(s in _user_msg.lower() for s in _question_signals)
+        _exec_signals = (
+            "modify", "fix", "change", "update", "create", "write",
+            "build", "add", "remove", "delete", "rename", "move",
+            "implement", "refactor", "install", "run", "start",
+            "deploy", "migrate", "replace", "edit", "patch",
+            "do it", "do all", "make it", "set up", "configure",
+        )
+        _user_lower = _user_msg.lower().strip()
+        _has_exec_intent = any(s in _user_lower for s in _exec_signals)
+        _is_question = (
+            not _has_exec_intent
+            and (
+                any(s in _user_lower for s in _question_signals)
+                or _user_lower.endswith("?")
+            )
+        )
         if _is_question:
             _has_reads = any(
                 m.get("role") == "tool" and m.get("name") in ("read_file", "grep")
