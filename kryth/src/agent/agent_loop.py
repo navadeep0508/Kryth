@@ -332,10 +332,17 @@ def dispatch_tool_call(session, call):
             "const ", "let ", "var ", "function ", "=>",
             "async ", "await ", "import ", "export ",
             "```", "#!/", "<!--", "<?php",
+            "def ", "class ", "return ", "print(",
+            "if __name", "raise ",
         )
+        _shell_prefix_indicators = ("from ",)
         _has_nonsense = any(kw in _cmd for kw in _nonsense_indicators)
+        _has_shell_prefix = (
+            any(kw in _cmd for kw in _shell_prefix_indicators)
+            and "\n" in _cmd
+        )
         _has_non_ascii = bool(re.search(r"[^\x00-\x7F\s]", _cmd[:40]))
-        if _has_nonsense or _has_non_ascii:
+        if _has_nonsense or _has_shell_prefix or _has_non_ascii:
             _block_msg = (
                 f"[COMMAND BLOCKED — not a valid shell command]\n"
                 f"The command contains code/markdown syntax, not shell. "
@@ -1259,7 +1266,7 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             if _total_tool_calls == 0:
                 return LoopResult(status="done", content=content, turns_used=turn_count, finish_reason="completed")
 
-            if _consecutive_no_tool_turns <= 2 and _total_tool_calls > 0:
+            if _consecutive_no_tool_turns <= 1 and _total_tool_calls > 0:
                 _files_written = sum(
                     1 for m in session.messages
                     if m.get("role") == "tool" and m.get("name") == "write_file"
