@@ -119,29 +119,32 @@ For more information, visit: https://kryth.vercel.app/
     except Exception:
         pass
 
-    # 4. If no NVIDIA key set, prompt once — everything else defaults.
-    if not os.environ.get("NVIDIA_API_KEY", "").strip():
+    # 4. If no API key set, prompt once.
+    if not os.environ.get("API_KEY", "").strip() and not os.environ.get("NVIDIA_API_KEY", "").strip():
         try:
             from kryth.config import _load, _save
             cfg = _load()
-            if not cfg.get("nvidia_api_key", "").strip():
+            if not cfg.get("api_key", "").strip():
                 print("\n  Welcome to KRYTH!\n")
-                print("  KRYTH runs on NVIDIA NIM models (main · planner · summarizer · vision).")
                 print("  Get a free API key at: https://build.nvidia.com\n")
-                print("  NVIDIA API key: ", end="", flush=True)
+                print("  API key: ", end="", flush=True)
                 try:
-                    nvidia_key = input().strip()
+                    api_key = input().strip()
                 except (EOFError, KeyboardInterrupt):
-                    nvidia_key = ""
-                if nvidia_key:
-                    cfg["nvidia_api_key"] = nvidia_key
+                    api_key = ""
+                if api_key:
+                    cfg["api_key"] = api_key
                     _save(cfg)
-                    os.environ["NVIDIA_API_KEY"] = nvidia_key
+                    os.environ["API_KEY"] = api_key
+                    os.environ["NVIDIA_API_KEY"] = api_key
+                    os.environ["OPENAI_API_KEY"] = api_key
                     print("  API key saved. You're ready to go!\n")
                 else:
                     print("  No key entered — set it anytime with /config\n")
             else:
-                os.environ["NVIDIA_API_KEY"] = cfg["nvidia_api_key"]
+                os.environ["API_KEY"] = cfg["api_key"]
+                os.environ["NVIDIA_API_KEY"] = cfg["api_key"]
+                os.environ["OPENAI_API_KEY"] = cfg["api_key"]
         except Exception:
             pass
 

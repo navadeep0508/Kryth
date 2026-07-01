@@ -8,7 +8,7 @@ flows through ``agent.ui``.
 from __future__ import annotations
 
 from agent import ui
-from agent.agent_loop import run_agent
+from agent.runtime.adapter import run_agent
 from agent.session import get_session, reset_session
 from agent.skills import list_skills, parse_slash
 from agent.ui.input import PromptUI
@@ -356,7 +356,7 @@ def _cmd_log(args: str = "") -> None:
         title_align="left",
         subtitle=f"[muted]{path}[/muted]",
         subtitle_align="right",
-        border_style="divider",
+        border_style="bright_black",
         padding=(0, 1),
         expand=False,
     )
@@ -646,7 +646,7 @@ def _render_session_list(metas) -> None:
         title_style="muted",
         show_header=True,
         header_style="muted",
-        border_style="divider",
+        border_style="bright_black",
         expand=False,
     )
     table.add_column("id", style="accent", no_wrap=True)
@@ -740,7 +740,7 @@ def _cmd_memory(args: str = "") -> None:
             title_style="muted",
             show_header=True,
             header_style="muted",
-            border_style="divider",
+            border_style="bright_black",
             expand=False,
         )
         table.add_column("scope", style="accent", no_wrap=True)
@@ -774,7 +774,7 @@ def _cmd_memory(args: str = "") -> None:
                     layer.content.strip() or "(empty)",
                 title=f"[accent]{layer.scope}[/accent]  [muted]{layer.path}[/muted]",
                 title_align="left",
-                border_style="divider",
+                border_style="bright_black",
                 padding=(0, 1),
                 expand=False,
             ))
@@ -890,7 +890,7 @@ def _cmd_profile(args: str = "") -> None:
             title_style="muted",
             show_header=True,
             header_style="muted",
-            border_style="divider",
+            border_style="bright_black",
             expand=False,
         )
         table.add_column("name", style="accent", no_wrap=True)
@@ -941,7 +941,7 @@ def _cmd_profile(args: str = "") -> None:
             title=f"[accent]profile · {p.name}[/accent]  "
                   f"[muted]{p.description}[/muted]",
             title_align="left",
-            border_style="divider",
+            border_style="bright_black",
             padding=(0, 1),
             expand=False,
         ))
@@ -1120,7 +1120,7 @@ def _cmd_bridge(args: str = "") -> None:
             title_style="muted",
             show_header=True,
             header_style="muted",
-            border_style="divider",
+            border_style="bright_black",
             expand=False,
         )
         table.add_column("provider", style="accent", no_wrap=True)
@@ -1293,7 +1293,7 @@ def _run_orchestrated(task: str, mode: str) -> None:
         ui.muted(f"  Example: /{mode} build a SaaS app with auth, billing, and dashboard")
         return
 
-    from agent.agent_loop import run_agent, get_session
+    from agent.session import get_session
     s = get_session()
     prev_mode = getattr(s, "exec_mode", "direct")
     s.exec_mode = mode
@@ -1372,20 +1372,12 @@ def _cmd_audit(_args: str = "") -> None:
     """
     from agent.session import get_session as _gs
     from agent.tools import TOOL_SPECS
-    from agent.task_classifier import classify_task
-
     s = _gs()
 
     # Determine complexity from the most recent user message for budget display
     _complexity = "medium"
     for m in reversed(s.messages):
         if m.get("role") == "user":
-            try:
-                p = classify_task(str(m.get("content", "")))
-                if p:
-                    _complexity = getattr(p, "complexity", "medium")
-            except Exception:
-                pass
             break
 
     # Curate tools as the loop would for this complexity
@@ -1513,7 +1505,10 @@ def main(initial_prompt: str = "") -> None:
 
     # Banner + first-time hint.
     from agent.llm import BASE_URL, MAIN_MODEL
+    from agent.env import getenv
+    _runtime = "V2" if getenv("USE_RUNTIME_V2", "0") in ("1", "true", "yes") else "V1"
     ui.banner(model=MAIN_MODEL, base_url=BASE_URL, skill_count=len(list_skills()))
+    ui.muted(f"[KRYTH] Runtime = {_runtime}")
 
     # Pick initial profile from AICODER_PROFILE (or legacy
     # AICODER_ASSUME_YES -> yolo). Set BEFORE offering /resume so the

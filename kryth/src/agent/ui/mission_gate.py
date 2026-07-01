@@ -245,11 +245,8 @@ def plan_review_panel(project_plan) -> None:
     Shows: project name, goal, tech stack, modules with dependencies,
     estimated files, recommended mode.
     """
-    try:
-        from agent.orchestration.project_planner import render_plan_panel
-        render_plan_panel(project_plan)
-    except Exception:
-        pass
+    # Orchestration project planner removed — display basic info only
+    pass
 
     try:
         console.print(Text(

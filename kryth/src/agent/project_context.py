@@ -102,17 +102,21 @@ def _user_memory_dir() -> Path:
 
 
 def project_root(start: str | Path = ".") -> Path:
-    """Heuristic project root: nearest ancestor of ``start`` that
-    contains one of ``_PROJECT_ROOT_MARKERS`` or a memory file. Falls
-    back to ``start`` itself when no marker is reachable."""
+    """Heuristic project root. Walks up from ``start``, returns the
+    highest ancestor with a project marker. If any ancestor has a
+    ``.git`` directory, returns that ancestor immediately as the
+    definitive root. Falls back to ``start`` itself."""
     start_path = Path(start).resolve()
     cur = start_path
+    best = start_path
     while True:
         if _is_project_root(cur):
-            return cur
+            if (cur / ".git").exists():
+                return cur  # .git is the definitive root
+            best = cur  # Remember best non-.git root
         parent = cur.parent
         if parent == cur:
-            return start_path
+            return best
         cur = parent
 
 

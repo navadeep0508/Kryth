@@ -1,251 +1,335 @@
-import React, { memo, lazy, Suspense, useMemo } from "react";
-import {
-  MessageSquare, FolderOpen, Search, Terminal, FileText, Plus, Clock, File,
-} from "lucide-react";
-import Fuse from "fuse.js";
+import { memo, Suspense, useState, useEffect, useCallback } from "react";
+import React from "react";
+import { MessageSquare, FolderOpen, Plug, Brain, Bot, Settings, Plus, Clock, Loader2, FolderPlus, Globe, Search, ChevronRight, ChevronDown, FileCode, Terminal as TerminalIcon, GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useUIStore, type SideActivity } from "@/store/uiStore";
-import { useChatStore } from "@/store/chatStore";
+import { bridge } from "@/lib/krythBridge";
+import { useUIStore, type SideTab } from "@/store/uiStore";
+import { useWorkspaceStore } from "@/store/workspaceStore";
 import { useProjectStore } from "@/store/projectStore";
-import { useEditorStore } from "@/store/editorStore";
-import { bridge, request } from "@/lib/krythBridge";
 
-const FileExplorer = lazy(() => import("@/features/explorer/FileExplorer"));
+const FileExplorer = React.lazy(() => import("@/features/explorer/FileExplorer"));
 
-// ── Activity definitions ──────────────────────────────────────────────────────
-
-const ACTIVITIES: { id: SideActivity; icon: React.ReactNode; label: string }[] = [
-  { id: "chat",     icon: <MessageSquare size={16} />, label: "Chats" },
-  { id: "explorer", icon: <FolderOpen size={16} />,    label: "Explorer" },
-  { id: "search",   icon: <Search size={16} />,        label: "Search" },
+const TABS: { id: SideTab; icon: React.ElementType; label: string }[] = [
+  { id: "chats",  icon: MessageSquare, label: "Sessions" },
+  { id: "files",  icon: FolderOpen,    label: "Files" },
+  { id: "tools",  icon: Plug,          label: "Tools" },
+  { id: "memory", icon: Brain,         label: "Memory" },
+  { id: "agents", icon: Bot,           label: "Agents" },
+  { id: "browser",icon: Globe,         label: "Browser" },
 ];
 
-// ── Root ──────────────────────────────────────────────────────────────────────
-
 export const Sidebar = memo(function Sidebar() {
-  const { sideActivity, toggleSideActivity, openDrawer } = useUIStore();
+  const { sideTab, setSideTab, setCenterView, centerView } = useUIStore();
 
   return (
-    <div className="flex h-full shrink-0">
-      {/* Activity bar — always 44px */}
-      <div className="w-11 flex flex-col items-center py-1.5 gap-0.5 border-r border-[rgba(255,255,255,0.05)] bg-surface shrink-0">
-        {ACTIVITIES.map((a) => (
-          <ActivityBtn
-            key={a.id}
-            label={a.label}
-            active={sideActivity === a.id}
-            onClick={() => toggleSideActivity(a.id)}
-          >
-            {a.icon}
-          </ActivityBtn>
-        ))}
-
+    <div className="flex h-full w-full bg-surface">
+      {/* Icon rail */}
+      <div className="w-9 flex flex-col items-center py-2 gap-0.5 border-r border-border shrink-0">
+        {TABS.map((tab) => {
+          const Icon = tab.icon;
+          const active = sideTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setSideTab(tab.id)}
+              className={cn(
+                "relative w-7 h-7 flex items-center justify-center transition-colors duration-100",
+                active
+                  ? "text-text bg-panel"
+                  : "text-dim hover:text-muted hover:bg-panel-hover"
+              )}
+              title={tab.label}
+            >
+              <Icon size={13} />
+            </button>
+          );
+        })}
         <div className="flex-1" />
-
-        <ActivityBtn label="Terminal" active={false} onClick={() => openDrawer("terminal")}>
-          <Terminal size={16} />
-        </ActivityBtn>
-        <ActivityBtn label="Logs" active={false} onClick={() => openDrawer("logs")}>
-          <FileText size={16} />
-        </ActivityBtn>
+        <button
+          onClick={() => setCenterView(centerView === "settings" ? "chat" : "settings")}
+          className={cn(
+            "w-7 h-7 flex items-center justify-center transition-colors duration-100",
+            centerView === "settings" ? "text-text bg-panel" : "text-dim hover:text-muted hover:bg-panel-hover"
+          )}
+          title="Settings"
+        >
+          <Settings size={13} />
+        </button>
       </div>
 
-      {/* Side panel — 220px collapsible */}
-      <div
-        className={cn(
-          "flex flex-col border-r border-[rgba(255,255,255,0.05)] bg-surface overflow-hidden",
-          "transition-[width] duration-150 ease-out",
-          sideActivity ? "w-[220px]" : "w-0"
-        )}
-      >
-        <div className="flex flex-col h-full min-w-[220px]">
-          {sideActivity === "chat"     && <ChatPanel />}
-          {sideActivity === "explorer" && <ExplorerPanel />}
-          {sideActivity === "search"   && <SearchPanel />}
-        </div>
+      {/* Panel content */}
+      <div className="flex-1 flex flex-col overflow-hidden text-xs">
+        {sideTab === "chats" && <ChatsPanel />}
+        {sideTab === "files" && <FilesPanel />}
+        {sideTab === "tools" && <ToolsPanel />}
+        {sideTab === "memory" && <MemoryPanel />}
+        {sideTab === "agents" && <AgentsPanel />}
+        {sideTab === "browser" && <BrowserPanel />}
       </div>
     </div>
   );
 });
 
-// ── Activity button ───────────────────────────────────────────────────────────
-
-const ActivityBtn = memo(function ActivityBtn({
-  children, label, active, onClick,
-}: {
-  children: React.ReactNode; label: string; active: boolean; onClick: () => void;
-}) {
+/* ── Section header ──────────────────────────────────────────── */
+function SectionHeader({ title, count, action }: { title: string; count?: number; action?: { icon: React.ElementType; onClick: () => void; title: string } }) {
   return (
-    <button
-      onClick={onClick}
-      title={label}
-      className={cn(
-        "relative w-9 h-9 flex items-center justify-center rounded-lg transition-colors duration-100",
-        active ? "text-text bg-[rgba(255,255,255,0.06)]" : "text-subtle hover:text-muted hover:bg-[rgba(255,255,255,0.04)]"
+    <div className="flex items-center h-7 px-2 border-b border-border shrink-0">
+      <span className="text-[10px] font-semibold text-dim uppercase tracking-wider">{title}</span>
+      {count != null && <span className="ml-1.5 text-[10px] text-faint font-mono">{count}</span>}
+      <div className="flex-1" />
+      {action && (
+        <button
+          onClick={action.onClick}
+          className="p-0.5 text-dim hover:text-muted transition-colors"
+          title={action.title}
+        >
+          <action.icon size={11} />
+        </button>
       )}
-    >
-      {active && (
-        <span className="absolute left-0 top-2.5 bottom-2.5 w-0.5 -ml-1 rounded-r-full bg-accent" />
-      )}
-      {children}
-    </button>
-  );
-});
-
-// ── Panel header ─────────────────────────────────────────────────────────────
-
-function PanelHeader({ label }: { label: string }) {
-  return (
-    <div className="h-8 flex items-center px-3 shrink-0">
-      <span className="text-[10px] font-semibold text-subtle uppercase tracking-widest">{label}</span>
     </div>
   );
 }
 
-// ── Chat panel ────────────────────────────────────────────────────────────────
+/* ── Chats panel ────────────────────────────────────────────── */
+interface Session { id: string; project_path: string; updated_at: string }
 
-interface RecentSession { id: string; project_path: string; updated_at: string; }
+function relativeTime(dateStr: string): string {
+  const diffMs = Date.now() - new Date(dateStr).getTime();
+  if (diffMs < 0) return "now";
+  const s = Math.floor(diffMs / 1000);
+  if (s < 60) return "now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
 
-function ChatPanel() {
-  const clearMessages   = useChatStore((s) => s.clearMessages);
-  const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
-  const [sessions, setSessions] = React.useState<RecentSession[]>([]);
+function projectName(p: string): string {
+  return p.replace(/\\/g, "/").split("/").filter(Boolean).pop() || p;
+}
 
-  React.useEffect(() => {
-    request<{ sessions: RecentSession[] }>("GET", "/api/sessions")
-      .catch(() => ({ sessions: [] as RecentSession[] }))
-      .then((r) => setSessions(r.sessions?.slice(0, 15) ?? []));
+function ChatsPanel() {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const fetchSessions = useCallback(async () => {
+    setLoading(true); setError(null);
+    try { const d = await bridge.getSessions(); setSessions(d.sessions); }
+    catch (e) { setError(e instanceof Error ? e.message : "Failed"); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchSessions(); }, [fetchSessions]);
+
+  const handleNew = () => useWorkspaceStore.getState().clearAll();
+  const handleClick = useCallback(async (session: Session) => {
+    const store = useWorkspaceStore.getState();
+    store.clearAll();
+    try {
+      const { events } = await bridge.getSessionHistory(session.id);
+      if (events?.length) {
+        const tid = store.startTurn();
+        for (const e of events) store.pushEvent(tid, e as any);
+        store.endTurn(tid, "done");
+      }
+      if (session.project_path) {
+        store.setCwd(session.project_path);
+        useProjectStore.getState().openFolder(session.project_path);
+      }
+    } catch { /* skip */ }
   }, []);
 
   return (
     <>
-      <PanelHeader label="Chats" />
-      <div className="px-2 pb-1">
+      <SectionHeader title="Sessions" count={sessions.length} action={{ icon: Plus, onClick: handleNew, title: "New session" }} />
+      <div className="flex-1 overflow-y-auto">
         <button
-          onClick={() => { clearMessages(); setWorkspaceTab("chat"); }}
-          className="w-full flex items-center gap-2 px-2 h-7 rounded-md border border-dashed border-[rgba(255,255,255,0.08)] hover:border-[rgba(255,255,255,0.14)] hover:bg-[rgba(255,255,255,0.03)] transition-all duration-100 text-xs text-subtle hover:text-muted"
+          onClick={handleNew}
+          className="w-full flex items-center gap-1.5 px-2 py-1.5 text-dim hover:text-muted hover:bg-panel-hover transition-colors border-b border-border"
         >
           <Plus size={11} />
-          New chat
+          <span className="text-[11px]">New session</span>
         </button>
+        {loading && <div className="flex justify-center py-4"><Loader2 size={12} className="animate-spin text-dim" /></div>}
+        {!loading && error && <p className="text-[11px] text-danger px-2 py-2">{error}</p>}
+        {!loading && !error && sessions.length === 0 && <p className="text-[11px] text-dim px-2 py-3">No sessions yet</p>}
+        {!loading && !error && sessions.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => handleClick(s)}
+            className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-panel-hover transition-colors text-left group border-b border-border/50"
+          >
+            <MessageSquare size={10} className="text-dim shrink-0" />
+            <span className="flex-1 text-[11px] text-muted group-hover:text-text truncate">{projectName(s.project_path)}</span>
+            <span className="text-[9px] text-faint shrink-0">{relativeTime(s.updated_at)}</span>
+          </button>
+        ))}
       </div>
-
-      <nav className="flex-1 overflow-y-auto px-2 pb-2 space-y-px">
-        {sessions.length > 0 && (
-          <>
-            <div className="flex items-center gap-1.5 px-2 py-1 mt-1">
-              <Clock size={9} className="text-subtle" />
-              <span className="text-[9px] font-medium text-subtle uppercase tracking-widest">Recent</span>
-            </div>
-            {sessions.map((s) => <SessionRow key={s.id} session={s} />)}
-          </>
-        )}
-      </nav>
     </>
   );
 }
 
-function SessionRow({ session }: { session: RecentSession }) {
-  const name = session.project_path
-    ? session.project_path.replace(/\\/g, "/").split("/").pop() ?? "Chat"
-    : "Chat";
-
-  const rel = React.useMemo(() => {
-    const diff = Date.now() - new Date(session.updated_at).getTime();
-    if (diff < 60_000)     return "now";
-    if (diff < 3_600_000)  return `${Math.floor(diff / 60_000)}m`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
-    return `${Math.floor(diff / 86_400_000)}d`;
-  }, [session.updated_at]);
-
-  return (
-    <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-100 group text-left">
-      <MessageSquare size={11} className="text-subtle shrink-0" />
-      <span className="flex-1 text-xs text-muted group-hover:text-text truncate">{name}</span>
-      <span className="text-[9px] text-subtle/50 shrink-0">{rel}</span>
-    </button>
-  );
-}
-
-// ── Explorer panel ────────────────────────────────────────────────────────────
-
-function ExplorerPanel() {
-  return (
-    <Suspense fallback={<PanelLoading />}>
-      <FileExplorer />
-    </Suspense>
-  );
-}
-
-// ── Search panel ──────────────────────────────────────────────────────────────
-
-function SearchPanel() {
-  const [query, setQuery]   = React.useState("");
-  const flatNodes           = useProjectStore((s) => s.flatNodes);
-  const openTab             = useEditorStore((s) => s.openTab);
-  const setWorkspaceTab     = useUIStore((s) => s.setWorkspaceTab);
-
-  const files = useMemo(
-    () => flatNodes.filter((n) => !n.is_dir).map((n) => ({ path: n.path, name: n.name })),
-    [flatNodes]
-  );
-
-  const fuse = useMemo(() => new Fuse(files, { keys: ["name", "path"], threshold: 0.4 }), [files]);
-
-  const results = useMemo(
-    () => query.trim() ? fuse.search(query).slice(0, 15).map((r) => r.item) : files.slice(0, 15),
-    [query, fuse, files]
-  );
-
-  const openFile = React.useCallback(async (f: { path: string; name: string }) => {
-    try {
-      const content = await bridge.readFile(f.path);
-      openTab({ path: f.path, filename: f.name, content, language: "" });
-    } catch {
-      openTab({ path: f.path, filename: f.name, content: "", language: "" });
+/* ── Files panel ────────────────────────────────────────────── */
+async function handleOpenFolder() {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const path = await invoke<string | null>("open_folder_dialog");
+    if (path) {
+      await useProjectStore.getState().openFolder(path);
+      useWorkspaceStore.getState().setCwd(path);
     }
-    setWorkspaceTab("editor");
-  }, [openTab, setWorkspaceTab]);
+  } catch { console.warn("[KRYTH] Tauri invoke unavailable"); }
+}
+
+function FilesPanel() {
+  return (
+    <>
+      <SectionHeader title="Files" action={{ icon: FolderPlus, onClick: handleOpenFolder, title: "Open folder" }} />
+      <div className="flex-1 overflow-hidden">
+        <Suspense fallback={<div className="flex justify-center py-4"><Loader2 size={12} className="animate-spin text-dim" /></div>}>
+          <FileExplorer />
+        </Suspense>
+      </div>
+    </>
+  );
+}
+
+/* ── Browser panel ──────────────────────────────────────────── */
+function BrowserPanel() {
+  return (
+    <div className="flex-1 flex items-center justify-center text-dim text-[11px]">
+      Browser panel
+    </div>
+  );
+}
+
+/* ── Tools panel ────────────────────────────────────────────── */
+interface ToolInfo { name: string; description: string; source: "builtin" | "mcp" }
+
+function ToolsPanel() {
+  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const fetchTools = useCallback(async () => {
+    setLoading(true); setError(null);
+    try { const d = await bridge.getTools(); setTools(d.tools); }
+    catch (e) { setError(e instanceof Error ? e.message : "Failed"); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { fetchTools(); }, [fetchTools]);
+
+  const builtin = tools.filter((t) => t.source === "builtin");
+  const mcp = tools.filter((t) => t.source === "mcp");
 
   return (
     <>
-      <PanelHeader label="Search" />
-      <div className="px-2 pb-1">
-        <input
-          type="text"
-          value={query}
-          autoFocus
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search files…"
-          className="w-full h-7 px-2.5 text-xs bg-surface2 border border-[rgba(255,255,255,0.08)] rounded-md text-text placeholder:text-subtle outline-none focus:border-[rgba(255,255,255,0.16)] transition-colors duration-100"
-          style={{ userSelect: "text" }}
-        />
-      </div>
+      <SectionHeader title="Tools" count={tools.length} />
       <div className="flex-1 overflow-y-auto">
-        {files.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-subtle">Open a folder to search</p>
-        ) : results.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-subtle">No files match</p>
+        {loading && <div className="flex justify-center py-4"><Loader2 size={12} className="animate-spin text-dim" /></div>}
+        {!loading && error && <p className="text-[11px] text-danger px-2 py-2">{error}</p>}
+        {!loading && !error && tools.length === 0 && <p className="text-[11px] text-dim px-2 py-3">No tools</p>}
+        {builtin.length > 0 && (
+          <div className="mb-2">
+            <div className="px-2 py-1 text-[9px] text-faint uppercase tracking-wider font-medium">Built-in ({builtin.length})</div>
+            {builtin.map((t) => (
+              <div key={t.name} className="px-2 py-1 hover:bg-panel-hover">
+                <div className="text-[11px] text-text font-medium">{t.name}</div>
+                <div className="text-[10px] text-dim truncate">{t.description}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        {mcp.length > 0 && (
+          <div>
+            <div className="px-2 py-1 text-[9px] text-faint uppercase tracking-wider font-medium">MCP ({mcp.length})</div>
+            {mcp.map((t) => (
+              <div key={t.name} className="px-2 py-1 hover:bg-panel-hover">
+                <div className="text-[11px] text-text font-medium">{t.name}</div>
+                <div className="text-[10px] text-dim truncate">{t.description}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ── Memory panel ───────────────────────────────────────────── */
+interface MemoryEntry { id: string; content: string; source: string; ts: string }
+
+function MemoryPanel() {
+  const [entries, setEntries] = useState<MemoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const fetchMemory = useCallback(async () => {
+    setLoading(true); setError(null);
+    try { const d = await bridge.getMemory(); setEntries(d.entries); }
+    catch (e) { setError(e instanceof Error ? e.message : "Failed"); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { fetchMemory(); }, [fetchMemory]);
+  const handleDelete = useCallback(async (id: string) => {
+    try { await bridge.deleteMemory(id); setEntries((p) => p.filter((e) => e.id !== id)); }
+    catch { /* ignore */ }
+  }, []);
+
+  return (
+    <>
+      <SectionHeader title="Memory" count={entries.length} />
+      <div className="flex-1 overflow-y-auto">
+        {loading && <div className="flex justify-center py-4"><Loader2 size={12} className="animate-spin text-dim" /></div>}
+        {!loading && error && <p className="text-[11px] text-danger px-2 py-2">{error}</p>}
+        {!loading && !error && entries.length === 0 && <p className="text-[11px] text-dim px-2 py-3">No memory entries</p>}
+        {entries.map((e) => (
+          <div key={e.id} className="group px-2 py-1.5 hover:bg-panel-hover border-b border-border/50">
+            <div className="flex items-center gap-1">
+              <Brain size={9} className="text-dim shrink-0" />
+              <span className="text-[9px] text-faint uppercase tracking-wider flex-1">{e.source}</span>
+              <button onClick={() => handleDelete(e.id)} className="opacity-0 group-hover:opacity-100 text-[9px] text-dim hover:text-danger">x</button>
+            </div>
+            <p className="text-[10px] text-muted leading-relaxed mt-0.5">{e.content}</p>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ── Agents panel ───────────────────────────────────────────── */
+import type { AgentEvent } from "@/store/workspaceStore";
+
+function AgentsPanel() {
+  const { turns, activeTurnId } = useWorkspaceStore();
+  const activeTurn = turns.find((t) => t.id === activeTurnId);
+  const agentEvents = (activeTurn?.events.filter((e): e is AgentEvent => e.type === "agent_update")) ?? [];
+
+  return (
+    <>
+      <SectionHeader title="Agents" count={agentEvents.length} />
+      <div className="flex-1 overflow-y-auto">
+        {agentEvents.length === 0 ? (
+          <p className="text-[11px] text-dim px-2 py-3">No active agents</p>
         ) : (
-          results.map((f) => (
-            <button
-              key={f.path}
-              onClick={() => openFile(f)}
-              className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-100 text-left group"
-            >
-              <File size={10} className="text-subtle shrink-0" />
-              <span className="text-xs text-muted group-hover:text-text truncate">{f.name}</span>
-              <span className="text-[9px] text-subtle/50 truncate ml-auto shrink-0">
-                {f.path.split(/[\\/]/).slice(-2, -1)[0]}
-              </span>
-            </button>
+          agentEvents.map((evt) => (
+            <div key={evt.id} className="px-2 py-1.5 border-b border-border/50">
+              <div className="flex items-center gap-1.5">
+                <Bot size={10} className={cn("shrink-0", evt.status === "running" ? "text-accent" : "text-dim")} />
+                <span className="text-[11px] text-text font-medium truncate flex-1">{evt.name}</span>
+                <span className={cn(
+                  "text-[9px] px-1",
+                  evt.status === "running" && "text-accent",
+                  evt.status === "success" && "text-success",
+                  evt.status === "failed" && "text-danger",
+                  evt.status === "queued" && "text-warning",
+                )}>{evt.status}</span>
+              </div>
+              <p className="text-[10px] text-dim truncate mt-0.5">{evt.task}</p>
+            </div>
           ))
         )}
       </div>
     </>
   );
-}
-
-function PanelLoading() {
-  return <div className="flex-1 flex items-center justify-center text-subtle text-xs">Loading…</div>;
 }

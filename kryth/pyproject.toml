@@ -46,6 +46,7 @@ dependencies = [
   "rich>=13.0.0",
   "textual>=0.47.0",
   "python-dotenv>=1.0.0",
+  "graphifyy>=0.8.0",
 ]
 
 [project.optional-dependencies]
@@ -61,6 +62,22 @@ bridge = [
 memory = [
   "graphifyy>=0.1.0",
   "watchdog>=4.0.0",
+]
+# Cognitive memory stack — full 6-layer architecture
+cognitive = [
+  "graphifyy>=0.8.0",
+  "qdrant-client>=1.7.0",
+  "redis>=5.0.0",
+  "sentence-transformers>=2.0.0",
+]
+# Full mode (Neo4j + Graphiti for server/cloud deployments)
+cognitive-full = [
+  "graphifyy>=0.8.0",
+  "qdrant-client>=1.7.0",
+  "redis>=5.0.0",
+  "sentence-transformers>=2.0.0",
+  "neo4j>=5.0.0",
+  "graphiti-core>=0.3.0",
 ]
 vector = [
   "chromadb>=0.4.0",
@@ -107,6 +124,9 @@ all = [
 
 kryth = "kryth.main:main"
 kryth-cli = "kryth.main:main"
+
+[tool.pytest.ini_options]
+addopts = "--ignore=tools"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -152,12 +152,7 @@ class ProductPlanner:
 # ---------------------------------------------------------------------------
 
 def _analyze_repo_safe(root: str) -> dict:
-    try:
-        from agent.orchestration.repo_intelligence import analyze_repo
-        profile = analyze_repo(root)
-        return profile.__dict__ if hasattr(profile, "__dict__") else {}
-    except Exception:
-        return {}
+    return {}
 
 
 def _select_template(goal: str, repo: dict) -> list[dict]:

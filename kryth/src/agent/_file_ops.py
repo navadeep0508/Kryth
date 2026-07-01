@@ -1,18 +1,22 @@
-"""File operations: read, write, edit, multi_edit, delete, list.
+"""DEPRECATED — file operations have moved to ``agent.tools._file_ops``.
 
-All writes go through ``_atomic_write`` (write-temp → fsync → rename)
-so a crash mid-write doesn't corrupt the target file. All errors flow
-through the ``[ERROR <CODE>] ...`` convention in ``_results`` so the
-model can reliably distinguish failure from a payload.
+This module was a stale duplicate — unused, unimported, and out of sync.
+All actual implementations live in ``agent/tools/_file_ops.py``.
+
+Retained as a backward-compatibility shim so any stray imports don't break.
+Remove once all consumers have migrated to ``agent.tools._file_ops``.
 """
 
-from __future__ import annotations
-
-import ast
-import difflib
-import json
-import os
-import tempfile
+from agent.tools._file_ops import (  # noqa: F401
+    DEFAULT_READ_LIMIT,
+    delete_file,
+    edit_file,
+    list_files,
+    multi_edit,
+    read_file,
+    rollback_file,
+    write_file,
+)
 
 from agent import ui
 from agent.context import IGNORE_DIRS

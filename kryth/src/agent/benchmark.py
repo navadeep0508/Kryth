@@ -297,15 +297,7 @@ def _score_retrieval() -> tuple[float, str]:
     except Exception:
         pass
 
-    # Parallel retrieval (+0.125)
-    try:
-        from agent.retrieval.parallel_retriever import ParallelRetriever
-        from agent.retrieval import config as _rcfg5
-        if _rcfg5.ENABLE_PARALLEL_RETRIEVAL:
-            score += 0.125
-            notes.append("parallel")
-    except Exception:
-        pass
+
 
     # Adaptive routing (+0.125)
     try:

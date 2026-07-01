@@ -1,4 +1,4 @@
-"""Team Controller — monitors worker utilisation and decides spawn/retire."""
+"""Team Controller — monitors worker utilisation and decides spawn."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from agent.executive.executive_state import (
 
 logger = logging.getLogger(__name__)
 
-_MIN_PARALLEL_EFFICIENCY = 0.40   # retire if below this
+
 _MAX_IDLE_RATIO          = 0.60   # spawn if idle > 60% of total
 _SPAWN_THRESHOLD_PENDING = 5      # spawn extra workers if >5 pending actions
 
@@ -37,19 +37,6 @@ class TeamController:
             )
             return ExecutiveDecision.SPAWN
 
-        # Low parallel efficiency → retire idle workers
-        if (team.parallel_efficiency_pct < _MIN_PARALLEL_EFFICIENCY * 100
-                and idle_ratio > _MAX_IDLE_RATIO):
-            logger.info(
-                "TeamController: efficiency %.0f%%, idle %.0f%% — RETIRE",
-                team.parallel_efficiency_pct, idle_ratio * 100,
-            )
-            state.annotations["team_retire"] = (
-                f"efficiency {team.parallel_efficiency_pct:.0f}%, "
-                f"idle {idle_ratio:.0%}"
-            )
-            return ExecutiveDecision.RETIRE
-
         return ExecutiveDecision.CONTINUE
 
     def update(self, state: ExecutiveState, **kwargs) -> None:
@@ -57,7 +44,5 @@ class TeamController:
         t.active_workers           = kwargs.get("active_workers", t.active_workers)
         t.idle_workers             = kwargs.get("idle_workers",   t.idle_workers)
         t.busy_workers             = kwargs.get("busy_workers",   t.busy_workers)
-        t.parallel_peak            = max(t.parallel_peak, t.active_workers)
-        t.parallel_efficiency_pct  = kwargs.get(
-            "parallel_efficiency_pct", t.parallel_efficiency_pct
-        )
+        t.parallel_peak            = 0
+        t.parallel_efficiency_pct  = 0.0

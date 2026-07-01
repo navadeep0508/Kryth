@@ -1,6 +1,5 @@
 """Dynamic Agent Builder — creates agents based on actual work components.
 
-This replaces the preset-based parallel_builder with a task-driven approach.
 Agents are created dynamically based on the specific components identified
 in the task analysis, not from fixed presets.
 """
@@ -11,12 +10,11 @@ import time
 import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent import ui
-from agent.ui.streaming import set_parallel_mode
+
 from agent.task_analyzer import TaskAnalysis, WorkComponent
-from agent.execution_strategy import AgentConfig, StrategyDecision
+from agent.execution_strategy import StrategyDecision
 
 
 @dataclass
@@ -134,8 +132,6 @@ def run_dynamic_build(
         return _run_single_agent(spec, max_turns_per_agent)
     elif strategy.strategy == "sequential":
         return _run_sequential(spec, max_turns_per_agent, on_progress)
-    elif strategy.strategy == "parallel":
-        return _run_parallel(spec, max_turns_per_agent, on_progress)
     else:
         ui.error(f"Unknown strategy: {strategy.strategy}")
         return None
@@ -219,65 +215,6 @@ def _run_sequential(
     return final
 
 
-def _run_parallel(
-    spec: DynamicBuildSpec,
-    max_turns: int,
-    on_progress: Optional[Callable[[str, str], None]]
-) -> str:
-    """Run agents in parallel using ThreadPoolExecutor."""
-    from agent.execution_strategy import ExecutionStrategyDecider
-    
-    components = spec.components
-    outputs = {}
-    
-    set_parallel_mode(True)
-    progress = _ParallelProgress(components)
-    progress.start()
-    
-    try:
-        # All components are independent, so run all at once
-        def worker(comp: WorkComponent):
-            prompt = _build_agent_prompt(comp, spec.project_context, spec.skill_context)
-            result = _run_agent(comp, prompt, max_turns)
-            return comp.id, result
-        
-        with ThreadPoolExecutor(max_workers=len(components)) as pool:
-            futures = {pool.submit(worker, c): c for c in components}
-            for future in as_completed(futures):
-                comp = futures[future]
-                try:
-                    cid, result = future.result()
-                    outputs[cid] = result
-                    progress.done(cid)
-                    if on_progress:
-                        on_progress(cid, "done")
-                except Exception as exc:
-                    outputs[comp.id] = f"(failed: {exc})"
-                    progress.failed(comp.id)
-        
-        # Add integrator to dashboard
-        with progress._lock:
-            progress._order.append("integrator")
-            progress._statuses["integrator"] = "running"
-            progress._names["integrator"] = "Integrator"
-            progress._refresh()
-        
-        # Run integration
-        ui.info("  Integrating parallel components...")
-        int_prompt = _build_integration_prompt(spec, outputs, spec.user_input)
-        int_component = WorkComponent(
-            id="integrator",
-            name="Integrator",
-            description="Integrate all parallel components"
-        )
-        final = _run_agent(int_component, int_prompt, max_turns)
-        return final
-        
-    finally:
-        set_parallel_mode(False)
-        progress.stop()
-
-
 def _run_agent(component: WorkComponent, prompt: str, max_turns: int) -> str:
     """Run a single agent with the given prompt."""
     from agent.tools._subagent import _build_nested
@@ -299,102 +236,6 @@ def _run_agent(component: WorkComponent, prompt: str, max_turns: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Progress display
-# ---------------------------------------------------------------------------
-
-class _ParallelProgress:
-    """Rich progress display for parallel agents."""
-    
-    def __init__(self, components: List[WorkComponent]):
-        self._components = {c.id: c for c in components}
-        self._order = [c.id for c in components]  # execution order
-        self._statuses: Dict[str, str] = {c.id: "pending" for c in components}
-        self._names: Dict[str, str] = {c.id: c.name for c in components}
-        self._lock = None  # will use threading.Lock if needed
-        self._live = None
-        self._console = ui.get_console()
-    
-    def start(self):
-        from rich.live import Live
-        with self._lock if self._lock else self._dummy_lock():
-            self._live = Live(self._render(), console=self._console,
-                              refresh_per_second=8, transient=False, auto_refresh=True)
-            self._live.start()
-    
-    def stop(self):
-        with self._lock if self._lock else self._dummy_lock():
-            if self._live:
-                self._live.update(self._render())
-                self._live.stop()
-                self._live = None
-    
-    def _refresh(self):
-        if self._live:
-            self._live.update(self._render())
-    
-    def set(self, fid, status):
-        with self._lock if self._lock else self._dummy_lock():
-            self._statuses[fid] = status
-            self._refresh()
-    
-    def done(self, fid):
-        self.set(fid, "done")
-    
-    def failed(self, fid):
-        self.set(fid, "failed")
-    
-    def _render(self):
-        from rich.console import Group
-        from rich.panel import Panel
-        from rich.table import Table
-        from rich.text import Text
-        
-        table = Table(show_header=False, box=None, padding=(0, 1))
-        table.add_column(style="bold white", no_wrap=True, width=20)
-        table.add_column(style="cyan", no_wrap=True, width=12)
-        table.add_column(style="white")
-        
-        for fid in self._order:
-            status = self._statuses.get(fid, "pending")
-            style = {
-                "running": "#E8FF3A bold",
-                "done": "#4ADE80",
-                "failed": "#FF6B6B",
-                "pending": "dim white"
-            }.get(status, "white")
-            
-            table.add_row(
-                self._names.get(fid, fid),
-                Text(status, style=style),
-                ""
-            )
-        
-        done = sum(1 for s in self._statuses.values() if s == "done")
-        running = sum(1 for s in self._statuses.values() if s == "running")
-        total = len(self._statuses)
-        summary = Text()
-        summary.append(f" {done}/{total} done", style="#4ADE80")
-        if running:
-            summary.append(f"  ·  {running} running", style="#E8FF3A bold")
-        
-        return Panel(
-            Group(table, Text(""), summary),
-            title=Text.assemble(("◈", "bold #E8FF3A"), (" Dynamic Agents", "bold white")),
-            title_align="left",
-            border_style="#E8FF3A",
-            padding=(1, 2),
-            expand=False,
-        )
-    
-    def _dummy_lock(self):
-        """Dummy context manager for when threading.Lock is not available."""
-        class Dummy:
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-        return Dummy()
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -410,10 +251,9 @@ def run_dynamic_build_with_approval(
 ) -> Optional[str]:
     """Run dynamic build with user approval if required."""
     
-    # Show plan and get approval if needed
     if strategy.requires_approval:
         ui.info("\n" + "="*60)
-        ui.info("PARALLEL EXECUTION PLAN")
+        ui.info("EXECUTION PLAN")
         ui.info("="*60)
         ui.info(f"Strategy: {strategy.strategy}")
         ui.info(f"Agents: {len(strategy.agents)}")
@@ -423,9 +263,8 @@ def run_dynamic_build_with_approval(
         ui.info(f"Estimated cost: {strategy.estimated_cost:.0f} turn units")
         ui.info("="*60)
         
-        # Ask for approval
-        if not ui.ask_yes_no("Proceed with parallel execution?"):
-            ui.info("Parallel execution cancelled by user.")
+        if not ui.ask_yes_no("Proceed with execution?"):
+            ui.info("Execution cancelled by user.")
             return None
     
     return run_dynamic_build(

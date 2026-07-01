@@ -313,8 +313,14 @@ class MissionConsole:
         # Emit section header on phase change (before any other output)
         self._maybe_emit_section(tool_name)
 
-        # Rich-result tools: silent at start; panel shown on result
+        # Rich-result tools: show action line; panel rendered on result
         if tool_name in _RICH_RESULT:
+            lbl = label(tool_name, args)
+            detail = _extract_detail(tool_name, args)
+            if detail:
+                emit_timeline(f"{lbl}  —  {detail}")
+            else:
+                emit_timeline(lbl)
             return
 
         # Silent tools: nothing at all

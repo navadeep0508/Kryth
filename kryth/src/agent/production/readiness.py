@@ -3,7 +3,7 @@ recommendations (Phase 12).
 
 `readiness_report(...)` synthesizes the production signals — token/context
 reduction, worker utilization, mission throughput, recovery/checkpoint success,
-parallel efficiency, bottleneck stats — into a single Markdown report plus a
+bottleneck stats — into a single Markdown report plus a
 0–100 **Production Readiness Score**.
 
 `top_improvements(...)` is the self-optimization loop's output (Benchmark →
@@ -27,7 +27,6 @@ class ReadinessInputs:
     context_reduction_pct: float = 0.0
     # Scheduling (dependency-aware, Phase 8/10), 0–100.
     worker_utilization_pct: float = 0.0
-    parallel_efficiency_pct: float = 0.0
     idle_reduction_pct: float = 0.0
     # Reliability, 0–1.
     recovery_success_rate: float = 0.0
@@ -44,7 +43,7 @@ class ReadinessInputs:
 # Weighting of each dimension toward the 0–100 readiness score.
 _WEIGHTS = {
     "efficiency": 0.20,     # token + context reduction
-    "utilization": 0.20,    # worker utilization + parallel efficiency
+    "utilization": 0.20,    # worker utilization (sequential queue depth)
     "reliability": 0.25,    # recovery + checkpoint + tool success
     "gates": 0.35,          # contracts + adversarial + suite (the hard gates)
 }
@@ -78,7 +77,7 @@ def _grade(score: float) -> str:
 
 def compute_score(inp: ReadinessInputs) -> ReadinessScore:
     efficiency = (min(100.0, inp.token_reduction_pct) + min(100.0, inp.context_reduction_pct)) / 2
-    utilization = (min(100.0, inp.worker_utilization_pct) + min(100.0, inp.parallel_efficiency_pct)) / 2
+    utilization = min(100.0, inp.worker_utilization_pct)
     reliability = 100 * (inp.recovery_success_rate + inp.checkpoint_success_rate + inp.tool_success_rate) / 3
     gates = 100 * (int(inp.contracts_green) + int(inp.adversarial_pass) + int(inp.suite_pass)) / 3
 
@@ -94,7 +93,7 @@ def compute_score(inp: ReadinessInputs) -> ReadinessScore:
     if inp.recovery_success_rate < 0.8:
         risks.append(f"Recovery success {inp.recovery_success_rate:.0%} < 80% — crash resilience unproven.")
     if inp.worker_utilization_pct < 60:
-        limitations.append(f"Worker utilization {inp.worker_utilization_pct:.0f}% — parallel headroom unused.")
+        limitations.append(f"Worker utilization {inp.worker_utilization_pct:.0f}% — sequential queue headroom unused.")
     if inp.mission_throughput == 0:
         limitations.append("Mission throughput not measured under sustained load (no long-run soak).")
 
@@ -109,7 +108,7 @@ def readiness_report(inp: ReadinessInputs, *, title: str = "KRYTH Production Rea
         f"**Production Readiness Score: {s.score:.1f}/100 — {s.grade}**", "",
         "## Dimension scores",
         f"- Efficiency (token/context reduction): {s.dimensions['efficiency']}/100",
-        f"- Utilization (workers/parallel): {s.dimensions['utilization']}/100",
+        f"- Utilization (sequential workers): {s.dimensions['utilization']}/100",
         f"- Reliability (recovery/checkpoint/tool): {s.dimensions['reliability']}/100",
         f"- Quality gates (contracts/adversarial/suite): {s.dimensions['gates']}/100",
         "",
@@ -117,7 +116,6 @@ def readiness_report(inp: ReadinessInputs, *, title: str = "KRYTH Production Rea
         f"- Token reduction: {inp.token_reduction_pct:.1f}%",
         f"- Context reduction: {inp.context_reduction_pct:.1f}%",
         f"- Worker utilization: {inp.worker_utilization_pct:.1f}%",
-        f"- Parallel efficiency: {inp.parallel_efficiency_pct:.1f}%",
         f"- Idle reduction (dependency-aware): {inp.idle_reduction_pct:.1f}%",
         f"- Recovery success: {inp.recovery_success_rate:.0%}",
         f"- Checkpoint success: {inp.checkpoint_success_rate:.0%}",
@@ -159,10 +157,10 @@ def top_improvements(inp: ReadinessInputs, *, n: int = 5) -> List[Improvement]:
 
     if inp.worker_utilization_pct < 75:
         candidates.append(Improvement(
-            "Enable adaptive parallelism by default",
+            "Enable adaptive sequential queue scaling by default",
             expected_gain_pct=min(40.0, 75 - inp.worker_utilization_pct),
             confidence=0.8, risk="low",
-            rationale="Utilization below target; runtime worker scaling reclaims idle capacity."))
+            rationale="Utilization below target; runtime sequential queue scaling reclaims idle capacity."))
     if inp.token_reduction_pct < 70:
         candidates.append(Improvement(
             "Apply context sharding to all multi-domain missions",

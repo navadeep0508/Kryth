@@ -1,5 +1,4 @@
-"""Search-the-codebase tools: search_code, grep (ripgrep + fallback),
-glob, and semantic_search.
+"""Search-the-codebase tools: search_repo (unified), glob, and legacy engines.
 """
 
 from __future__ import annotations
@@ -47,6 +46,164 @@ def search_code(keyword, directory="."):
             if keyword.lower() in content.lower():
                 matches.append(path)
     return "\n".join(matches)
+
+
+def search_repo(
+    query: str,
+    path: str = ".",
+    mode: str = "auto",
+    max_results: int = 50,
+) -> str:
+    """
+    Unified repository search. Auto-selects the best engine based on query type.
+
+    Args:
+        query: Search query (keyword, symbol name, regex pattern, or natural language)
+        path: Directory to search (default: current directory)
+        mode: "auto" | "keyword" | "symbol" | "regex" | "semantic" | "structural"
+        max_results: Maximum results to return (default: 50)
+
+    Modes:
+        auto       - Classify query and pick best engine (default)
+        keyword    - Fast text search via ripgrep/grep (keyword present in file)
+        symbol     - AST-based symbol lookup (function/class names in Python)
+        regex      - Full regex search via ripgrep with line numbers
+        semantic   - Embedding-based semantic similarity (requires retriever)
+        structural - AST-grep structural patterns (function, class, import, etc.)
+
+    Returns:
+        Formatted results with file paths and context.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return err("BAD_ARGS", "query must be a non-empty string")
+
+    try:
+        max_results = max(1, min(int(max_results), 200))
+    except (TypeError, ValueError):
+        max_results = 50
+
+    valid_modes = ("auto", "keyword", "symbol", "regex", "semantic", "structural")
+    if mode not in valid_modes:
+        return err("BAD_ARGS", f"mode must be one of: {', '.join(valid_modes)}")
+
+    query = query.strip()
+    path = _clamp_to_cwd(path)
+
+    # Auto-classify query
+    if mode == "auto":
+        # Symbol-like: CamelCase, snake_case, no spaces, short
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]{1,50}$", query) and " " not in query:
+            mode = "symbol"
+        # Regex-like: contains regex metacharacters
+        elif re.search(r"[\[\]\(\)\.\*\+\?\^\$\{\}\|\\]", query):
+            mode = "regex"
+        # Semantic-like: natural language with spaces, >2 words
+        elif len(query.split()) >= 3:
+            mode = "semantic"
+        # Default to keyword
+        else:
+            mode = "keyword"
+
+    # Execute based on mode
+    if mode == "keyword":
+        return _search_repo_keyword(query, path, max_results)
+
+    if mode == "symbol":
+        return _search_repo_symbol(query, path, max_results)
+
+    if mode == "regex":
+        return _search_repo_regex(query, path, max_results)
+
+    if mode == "semantic":
+        return _search_repo_semantic(query, path, max_results)
+
+    if mode == "structural":
+        return _search_repo_structural(query, path, max_results)
+
+    return err("BAD_ARGS", f"unknown mode: {mode}")
+
+
+def _search_repo_keyword(query: str, path: str, max_results: int) -> str:
+    """Fast keyword search via ripgrep or grep fallback."""
+    rg = shutil.which("rg")
+    if rg:
+        cmd = [rg, "--no-heading", "-l", "--max-count", str(max_results), "-e", query, path]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
+            )
+            if result.returncode in (0, 1):
+                out = (result.stdout or "").rstrip()
+                return out if out else "(no matches)"
+        except Exception:
+            pass
+
+    # Fallback to Python grep
+    return _grep_python_fallback(query, path, None, "files_with_matches", True, max_results)
+
+
+def _search_repo_symbol(name: str, path: str, max_results: int) -> str:
+    """AST-based symbol lookup (Python) with grep fallback for other languages."""
+    from agent import repo_index
+    hits = repo_index.lookup(name, path)
+    if hits:
+        lines = [f"{p}:{ln}  {kind}  {name}" for p, ln, kind in hits[:max_results]]
+        if len(hits) > max_results:
+            lines.append(f"...({len(hits) - max_results} more)")
+        return "\n".join(lines)
+
+    # Fallback: grep for symbol in all languages
+    pattern = rf"\b{re.escape(name)}\b"
+    return grep(pattern, path=path, output_mode="files_with_matches", max_results=max_results)
+
+
+def _search_repo_regex(pattern: str, path: str, max_results: int) -> str:
+    """Full regex search with line numbers."""
+    return grep(pattern, path=path, output_mode="content", max_results=max_results)
+
+
+def _search_repo_semantic(query: str, path: str, max_results: int) -> str:
+    """Embedding-based semantic search."""
+    from agent import retriever
+    if not retriever.available():
+        return err(
+            "UNSUPPORTED",
+            "semantic retriever unavailable",
+            f"{retriever.status()}. Use mode='keyword' or 'regex' instead.",
+        )
+
+    results = retriever.retrieve_files(query, top_k=max_results, directory=path)
+    if not results:
+        return "(no semantic matches)"
+
+    out = "\n".join(f"{p}\t{score:.3f}" for p, score in results)
+
+    if retriever.truncated():
+        out += (
+            f"\n[note] semantic index capped at {retriever._MAX_FILES} files; "
+            f"try mode='keyword' for full coverage."
+        )
+    return out
+
+
+def _search_repo_structural(pattern: str, path: str, max_results: int) -> str:
+    """AST-grep structural search."""
+    try:
+        from agent.retrieval.ast_search import search as _ast
+        results = _ast(pattern, directory=path)
+    except Exception as exc:
+        return err("EXEC_FAILED", "AST search failed", str(exc))
+
+    if not results:
+        return f"(no structural matches for '{pattern}')"
+
+    lines = [
+        f"{r['path']}:{r.get('line', 0)}  {r.get('kind', '')}  {r.get('text', '')[:80]}"
+        for r in results[:max_results]
+    ]
+    if len(results) > max_results:
+        lines.append(f"...({len(results) - max_results} more)")
+    return "\n".join(lines)
 
 
 def _grep_python_fallback(

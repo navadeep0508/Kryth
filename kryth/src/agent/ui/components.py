@@ -100,7 +100,7 @@ def banner(model: str, base_url: str, skill_count: int, version: str = "1.0") ->
     # Wordmark + subtitle
     console.print(Text.assemble(
         ("  KRYTH", "v3.brand"),
-        ("   AI Runtime v2", "v3.subtitle"),
+        ("   AI Runtime v1", "v3.subtitle"),
         (f"   ·   v{_xver}", "v3.subtitle"),
     ))
     console.print()

@@ -79,8 +79,8 @@ class TeamState:
     active_workers: int  = 0
     idle_workers:   int  = 0
     busy_workers:   int  = 0
-    parallel_peak:  int  = 0
-    parallel_efficiency_pct: float = 0.0
+    parallel_peak:  int  = 0      # deprecated: sequential-only execution
+    parallel_efficiency_pct: float = 0.0  # deprecated: always 0.0
 
 
 @dataclass

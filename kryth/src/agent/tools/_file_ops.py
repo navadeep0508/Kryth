@@ -23,6 +23,52 @@ def _clean_path(value) -> str:
     return str(value).strip().strip("\"'")
 
 
+def _resolve_path(path: str) -> str:
+    """Resolve a file path with repo-root and fuzzy fallbacks.
+
+    Tries in order:
+    1. path as-is (already the behavior)
+    2. Repo-root relative
+    3. CWD relative (different from as-is)
+    4. Fuzzy basename match under repo root
+
+    Returns resolved absolute path or original if nothing resolves.
+    """
+    clean = _clean_path(path)
+    abs_clean = os.path.abspath(clean)
+
+    # 1. Try as-is (already absolute or relative to CWD)
+    if os.path.exists(abs_clean):
+        return abs_clean
+
+    # 2. Try repo-root relative
+    try:
+        from agent.project_context import project_root
+        root = str(project_root())
+        candidate = os.path.join(root, clean)
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
+    except Exception:
+        pass
+
+    # 3. Fuzzy basename match under repo root (avoid expensive os.walk on large trees)
+    from agent.context import IGNORE_DIRS
+    basename = os.path.basename(clean)
+    if basename:
+        try:
+            from agent.project_context import project_root
+            root = str(project_root())
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+                for f in filenames:
+                    if f == basename or f.lower() == basename.lower():
+                        return os.path.abspath(os.path.join(dirpath, f))
+        except Exception:
+            pass
+
+    return clean
+
+
 def _invalidate_indexes(*paths: str) -> None:
     """Tell the repo + retriever indexes that ``paths`` changed.
 
@@ -52,7 +98,7 @@ def _checkpoint(path: str) -> None:
         pass
 
 
-DEFAULT_READ_LIMIT = 0  # 0 = no limit; use offset/limit args to paginate large files
+DEFAULT_READ_LIMIT = 2000
 
 # Lazy import for the retrieval file reader — avoids circular imports
 # and keeps the module loadable even if the retrieval package is absent.
@@ -386,7 +432,7 @@ def _extract_pdf_text(path: str) -> str | None:
 
 
 def read_file(path, offset=0, limit=None):
-    path = _clean_path(path)
+    path = _resolve_path(path)
     binary_kind = _looks_binary(path)
     if binary_kind == "pdf":
         pdf_text = _extract_pdf_text(path)
@@ -428,7 +474,7 @@ def read_file(path, offset=0, limit=None):
                         # but we don't load all lines into memory.
                         with open(path, "rb") as _f:
                             total = _f.read().count(b"\n")
-                        raw_lines = fr.read_lines(path, offset, limit if (limit and limit > 0) else None)
+                        raw_lines = fr.read_lines(path, offset, limit if (limit and limit > 0) else DEFAULT_READ_LIMIT)
                         out = []
                         for i, line in enumerate(raw_lines, start=(offset or 0) + 1):
                             out.append(f"{i:6d}\t{line.rstrip(chr(10))}")
@@ -501,7 +547,7 @@ def write_file(path, content):
 
 
 def delete_file(path):
-    path = _clean_path(path)
+    path = _resolve_path(path)
     _checkpoint(path)
     try:
         os.remove(path)
@@ -518,8 +564,10 @@ def delete_file(path):
     return f"✓ Deleted: {path}"
 
 
-def list_files(directory="."):
-    directory = _clean_path(directory or ".")
+def list_files(directory=".", path=None):
+    if path is not None:
+        directory = path
+    directory = _resolve_path(directory or ".")
     if not os.path.exists(directory):
         return err("NOT_FOUND", f"directory not found: {directory}")
     if not os.path.isdir(directory):
@@ -539,7 +587,7 @@ def list_files(directory="."):
 
 
 def edit_file(path, old_text, new_text):
-    path = _clean_path(path)
+    path = _resolve_path(path)
     if not isinstance(old_text, str) or not isinstance(new_text, str):
         return err("BAD_ARGS", "edit_file: old_text and new_text must be strings")
     if old_text == "":
@@ -620,6 +668,7 @@ def rollback_file(path, index: int = 0, list_only: bool = False):
 def multi_edit(path, edits):
     if not isinstance(edits, list) or not edits:
         return err("BAD_ARGS", "multi_edit: edits must be a non-empty list")
+    path = _resolve_path(path)
 
     try:
         with open(path, "r", encoding="utf-8") as f:

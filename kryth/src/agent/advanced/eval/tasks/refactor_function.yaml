@@ -1,0 +1,11 @@
+id: refactor_function
+description: "Refactor the calculate() function in math_utils.py to handle division by zero gracefully"
+category: refactor
+setup:
+  - "printf 'def calculate(a, b, op):\n    if op == \"+\": return a + b\n    if op == \"-\": return a - b\n    if op == \"*\": return a * b\n    if op == \"/\": return a / b\n' > math_utils.py"
+expected_files:
+  - math_utils.py
+validation:
+  - python -c "from math_utils import calculate; assert calculate(1, 0, '/') is None or calculate(1, 0, '/') == 0"
+timeout_s: 120
+tags: [medium, python, refactor, error_handling]

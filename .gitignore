@@ -37,6 +37,7 @@ env/
 .coverage
 htmlcov/
 .tox/
+test_*/
 
 # Environment
 .env
@@ -50,6 +51,28 @@ Thumbs.db
 .ai-coder/
 .kryth/
 .kryth_cli/
+.claude/
+
+# Desktop build artifacts
+desktop/src-tauri/target/
+desktop/node_modules/
+desktop/dist/
+**/node_modules/
+**/target/
+
+# Conversations (browser-use)
+conversations/
+
+# Test outputs
+test_results.json
+test.py
+test_suite.py
+
+# Windows artifacts
+nul
+
+# Graphify output (auto-generated)
+graphify-out/
 
 # Un-ignore frontend src/lib (caught by lib/ Python rule above)
 !desktop/src/lib/

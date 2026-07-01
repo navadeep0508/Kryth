@@ -1,7 +1,7 @@
 """Action Graph — a DAG of Actions derived from a mission.
 
 The planner converts a user mission into an ActionGraph. Independent
-actions are automatically parallelised by the ActionScheduler.
+actions within each layer are executed sequentially by the ActionScheduler.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class ActionGraph:
         return result
 
     def layers(self) -> list[list[Action]]:
-        """Topological layers — each layer can run in parallel."""
+        """Topological layers — actions within each layer run sequentially."""
         completed: set[str] = set()
         layers: list[list[Action]] = []
         remaining = {a.id for a in self.actions.values()}

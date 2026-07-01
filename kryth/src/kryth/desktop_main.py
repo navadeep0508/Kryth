@@ -46,6 +46,23 @@ def main() -> None:
     except ImportError:
         pass
 
+    # Desktop mode: use Ponytail execution profile (minimal, efficient)
+    # unless user explicitly set a different profile
+    import os
+    if not os.environ.get("KRYTH_EXEC_PROFILE"):
+        os.environ["KRYTH_EXEC_PROFILE"] = "ponytail"
+
+    # Desktop mode: use 'auto' permission profile — auto-approves writes/edits
+    # to avoid token-wasting approval pauses on every file write
+    if not os.environ.get("KRYTH_PROFILE"):
+        os.environ["KRYTH_PROFILE"] = "auto"
+
+    # Set timeouts to prevent infinite hangs
+    if not os.environ.get("KRYTH_TTFT_TIMEOUT"):
+        os.environ["KRYTH_TTFT_TIMEOUT"] = "60"  # 60s max wait for first token
+    if not os.environ.get("KRYTH_READ_TIMEOUT"):
+        os.environ["KRYTH_READ_TIMEOUT"] = "60"  # 60s max for API response
+
     from kryth_desktop_runtime import start
     start(host=args.host, port=args.port)
 

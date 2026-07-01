@@ -17,20 +17,22 @@ interface PaletteItem {
 }
 
 const ACTIONS: Omit<PaletteItem, "action">[] = [
-  { id: "chat",      label: "Go to Chat",          icon: MessageSquare, group: "action" },
-  { id: "settings",  label: "Open Settings",        icon: Settings,      group: "action" },
-  { id: "terminal",  label: "Toggle Terminal",      icon: Terminal,      group: "action" },
+  { id: "chat",      label: "Go to Chat",     icon: MessageSquare, group: "action" },
+  { id: "settings",  label: "Open Settings",   icon: Settings,      group: "action" },
+  { id: "terminal",  label: "Toggle Terminal", icon: Terminal,      group: "action" },
 ];
 
 export default memo(function CommandPalette() {
-  const { closePalette, setWorkspaceTab, toggleDrawer } = useUIStore();
-  const flatNodes  = useProjectStore((s) => s.flatNodes);
-  const openTab    = useEditorStore((s) => s.openTab);
+  const closePalette = useUIStore((s) => s.closePalette);
+  const setSideTab = useUIStore((s) => s.setSideTab);
+  const toggleDock = useUIStore((s) => s.toggleDock);
+  const flatNodes = useProjectStore((s) => s.flatNodes);
+  const openTab = useEditorStore((s) => s.openTab);
 
   const [query, setQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const listRef  = useRef<HTMLUListElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -50,11 +52,10 @@ export default memo(function CommandPalette() {
           action: async () => {
             const content = await bridge.readFile(n.path).catch(() => "");
             openTab({ path: n.path, filename: n.name, content, language: "" });
-            setWorkspaceTab("editor");
             closePalette();
           },
         })),
-    [flatNodes, openTab, setWorkspaceTab, closePalette]
+    [flatNodes, openTab, closePalette]
   );
 
   const actionItems: PaletteItem[] = useMemo(
@@ -62,13 +63,13 @@ export default memo(function CommandPalette() {
       ACTIONS.map((a) => ({
         ...a,
         action: () => {
-          if (a.id === "chat")     setWorkspaceTab("chat");
-          if (a.id === "settings") setWorkspaceTab("settings");
-          if (a.id === "terminal") toggleDrawer();
+          if (a.id === "chat") setSideTab("chats");
+          if (a.id === "settings") useUIStore.getState().setCenterView("settings");
+          if (a.id === "terminal") toggleDock();
           closePalette();
         },
       })),
-    [setWorkspaceTab, toggleDrawer, closePalette]
+    [setSideTab, toggleDock, closePalette]
   );
 
   const allItems = useMemo(() => [...actionItems, ...files], [actionItems, files]);
@@ -116,32 +117,32 @@ export default memo(function CommandPalette() {
   return (
     <div className="fixed inset-0 z-[60] flex items-start justify-center pt-20">
       <div
-        className="absolute inset-0 bg-bg/70 backdrop-blur-sm"
+        className="absolute inset-0 bg-bg/80 backdrop-blur-sm"
         onClick={closePalette}
       />
       <div
-        className="relative w-[560px] rounded-2xl border border-border bg-surface shadow-panel animate-slide-up"
+        className="relative w-[560px] rounded-xl border border-border bg-panel shadow-modal animate-slide-down"
         onKeyDown={onKeyDown}
       >
         {/* Search input */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
-          <Search size={15} className="text-muted shrink-0" />
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-border-soft">
+          <Search size={15} className="text-dim shrink-0" />
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search commands and files…"
-            className="flex-1 bg-transparent text-sm text-text placeholder:text-muted outline-none"
+            placeholder="Search commands and files..."
+            className="flex-1 bg-transparent text-sm text-text placeholder:text-dim outline-none"
           />
-          <kbd className="text-[10px] px-1.5 py-0.5 rounded bg-surface2 border border-border font-mono text-muted">
+          <kbd className="text-2xs px-1.5 py-0.5 rounded bg-sidebar border border-border font-mono text-dim">
             Esc
           </kbd>
         </div>
 
         {/* Results */}
-        <ul ref={listRef} className="max-h-80 overflow-y-auto py-2">
+        <ul ref={listRef} className="max-h-80 overflow-y-auto py-1">
           {results.length === 0 && (
-            <li className="px-4 py-6 text-center text-sm text-muted">No results</li>
+            <li className="px-4 py-6 text-center text-sm text-dim">No results</li>
           )}
           {results.map((item, i) => {
             const Icon = item.icon;
@@ -152,26 +153,26 @@ export default memo(function CommandPalette() {
                   onClick={() => selectAndRun(item)}
                   onMouseEnter={() => setSelectedIdx(i)}
                   className={cn(
-                    "w-full flex items-center gap-3 px-4 py-2 text-left transition-colors duration-120",
-                    selected ? "bg-surface2" : "hover:bg-surface2/60"
+                    "w-full flex items-center gap-3 px-4 py-2 text-left transition-colors duration-100",
+                    selected ? "bg-panel-hover" : "hover:bg-panel-hover/50"
                   )}
                 >
-                  <Icon size={14} className={selected ? "text-accent" : "text-muted"} />
+                  <Icon size={14} className={selected ? "text-accent" : "text-dim"} />
                   <div className="flex-1 min-w-0">
                     <span className="text-sm text-text">{item.label}</span>
                     {item.detail && (
-                      <span className="block text-xs text-muted truncate">{item.detail}</span>
+                      <span className="block text-xs text-dim truncate">{item.detail}</span>
                     )}
                   </div>
-                  {selected && <ChevronRight size={13} className="text-muted shrink-0" />}
+                  {selected && <ChevronRight size={12} className="text-dim shrink-0" />}
                 </button>
               </li>
             );
           })}
         </ul>
 
-        {/* Footer hint */}
-        <div className="flex items-center justify-end gap-4 px-4 py-2 border-t border-border">
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-4 px-4 py-2 border-t border-border-soft">
           <Hint keys={["↑", "↓"]} label="navigate" />
           <Hint keys={["↵"]} label="open" />
         </div>
@@ -182,9 +183,9 @@ export default memo(function CommandPalette() {
 
 function Hint({ keys, label }: { keys: string[]; label: string }) {
   return (
-    <span className="flex items-center gap-1 text-[10px] text-muted">
+    <span className="flex items-center gap-1 text-2xs text-dim">
       {keys.map((k) => (
-        <kbd key={k} className="px-1 py-0.5 rounded bg-surface2 border border-border font-mono">
+        <kbd key={k} className="px-1 py-0.5 rounded bg-sidebar border border-border font-mono">
           {k}
         </kbd>
       ))}

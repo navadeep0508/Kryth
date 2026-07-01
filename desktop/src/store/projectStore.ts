@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { FileEntry } from "@/lib/krythBridge";
+import { bridge, type FileEntry } from "@/lib/krythBridge";
 
 export interface TreeNode {
   name: string;
@@ -11,6 +11,8 @@ export interface TreeNode {
   children?: TreeNode[];
   loaded: boolean;
 }
+
+const STORAGE_KEY = "kryth:lastCwd";
 
 interface ProjectState {
   cwd: string;
@@ -26,6 +28,8 @@ interface ProjectState {
   setSearchQuery: (q: string) => void;
   setSearchOpen: (open: boolean) => void;
   addToIndex: (paths: string[]) => void;
+  openFolder: (path: string) => Promise<void>;
+  restoreLastFolder: () => Promise<void>;
 }
 
 function entriesToNodes(entries: FileEntry[], depth: number): TreeNode[] {
@@ -72,7 +76,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   searchOpen: false,
   fileIndex: [],
 
-  setCwd: (cwd) => set({ cwd }),
+  setCwd: (cwd) => {
+    set({ cwd });
+    try { localStorage.setItem(STORAGE_KEY, cwd); } catch { /* noop */ }
+  },
 
   setRoots: (entries) => {
     const roots = entriesToNodes(entries, 0);
@@ -98,4 +105,27 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setSearchOpen: (open) => set({ searchOpen: open }),
   addToIndex: (paths) =>
     set((s) => ({ fileIndex: [...new Set([...s.fileIndex, ...paths])] })),
+
+  openFolder: async (path: string) => {
+    const entries = await bridge.listFiles(path);
+    get().setRoots(entries);
+    get().setCwd(path);
+    // Sync to workspace store so agent runs use this folder
+    const { useWorkspaceStore } = await import("@/store/workspaceStore");
+    useWorkspaceStore.getState().setCwd(path);
+  },
+
+  restoreLastFolder: async () => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        await get().openFolder(saved);
+        // Sync workspace CWD so agent runs use the restored folder
+        const { useWorkspaceStore } = await import("@/store/workspaceStore");
+        useWorkspaceStore.getState().setCwd(saved);
+      }
+    } catch {
+      // Storage unavailable or folder no longer exists
+    }
+  },
 }));

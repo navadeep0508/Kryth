@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import uuid
 from pathlib import Path
@@ -49,9 +50,12 @@ from kryth_desktop_runtime import persistence as db
 
 _CONFIG_KEYS = [
     "KRYTH_BASE_URL", "KRYTH_MAIN_MODEL", "KRYTH_PLANNER_MODEL",
-    "KRYTH_FAST_MODEL", "KRYTH_PROFILE", "KRYTH_EXEC_PROFILE",
-    "KRYTH_NO_PERSIST", "KRYTH_ASSUME_YES", "KRYTH_READ_TIMEOUT",
-    "KRYTH_LOG_DIR",
+    "KRYTH_SUMMARIZER_MODEL", "KRYTH_FAST_MODEL", "KRYTH_PROFILE",
+    "KRYTH_EXEC_PROFILE", "KRYTH_NO_PERSIST", "KRYTH_ASSUME_YES",
+    "KRYTH_READ_TIMEOUT", "KRYTH_LOG_DIR", "KRYTH_VISION_MODEL",
+    "KRYTH_BROWSER_MODEL", "KRYTH_BROWSER_PROVIDER", "KRYTH_TTFT_TIMEOUT",
+    "NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
 ]
 
 # ---------------------------------------------------------------------------
@@ -63,10 +67,20 @@ _approval_lock = threading.Lock()
 
 
 def _install_approval_intercept() -> None:
-    """Monkey-patch agent.io.confirm to route through the desktop bridge."""
+    """Monkey-patch the agent's permission and confirmation systems to route
+    through the desktop WebSocket bridge instead of the CLI's Rich UI.
+
+    Patches:
+    - agent.io.confirm         — simple yes/no confirmations
+    - agent.permissions.ask_user — tool permission (the "Action Approval Required" prompt)
+    - agent.ui.permission_request — the interactive Rich panel (fallback)
+    """
     import agent.io as _io
+    import agent.permissions as _perms
+    import agent.ui as _ui
 
     def _desktop_confirm(message: str, default: bool = False) -> bool:
+        """Route simple confirmations through the desktop approval UI."""
         try:
             from agent.env import getenv_bool
             if getenv_bool("KRYTH_ASSUME_YES"):
@@ -92,7 +106,6 @@ def _install_approval_intercept() -> None:
             "data": {"message": message, "risk": risk, "default": default},
         })
 
-        # Persist to DB
         sid = session_manager.current_session_id()
         db.save_approval(sid or "", message, risk)
 
@@ -102,7 +115,86 @@ def _install_approval_intercept() -> None:
 
         return result["approved"] if granted else default
 
+    def _desktop_ask_user(tool: str, args: dict) -> str:
+        """Route tool permission requests through the desktop approval UI.
+
+        This replaces the CLI's interactive "Action Approval Required" panel.
+        Returns 'allow', 'a' (allow always), or 'deny'.
+        """
+        try:
+            from agent.env import getenv_bool
+            if getenv_bool("KRYTH_ASSUME_YES"):
+                return "allow"
+        except Exception:
+            pass
+
+        # Build human-readable description
+        sig = _perms._args_signature(tool, args)
+        message = f"{tool}: {sig}"
+
+        aid = str(uuid.uuid4())
+        evt = threading.Event()
+        result: dict = {"approved": True}
+
+        with _approval_lock:
+            _pending_approvals[aid] = {"event": evt, "result": result}
+
+        # Determine risk level
+        high_risk_words = ("delete", "remove", "drop", "format", "truncate",
+                           "system32", "rm -rf", "rmdir", "force", "sudo")
+        combined = f"{tool} {sig}".lower()
+        risk = "high" if any(w in combined for w in high_risk_words) else "medium"
+
+        event_router.broadcast_sync({
+            "kind": "approval_request",
+            "id":   aid,
+            "ts":   0.0,
+            "data": {
+                "message": message,
+                "risk": risk,
+                "tool": tool,
+                "default": True,
+            },
+        })
+
+        sid = session_manager.current_session_id()
+        db.save_approval(sid or "", message, risk)
+
+        granted = evt.wait(timeout=120)
+        with _approval_lock:
+            _pending_approvals.pop(aid, None)
+
+        if not granted:
+            return "deny"
+        if not result["approved"]:
+            return "deny"
+        # "allow always" → remember this tool as permanently allowed for session
+        if result.get("always"):
+            try:
+                _perms.remember(tool, args, "allow")
+            except Exception:
+                pass
+            return "allow"
+        return "allow"
+
+    def _desktop_permission_request(tool: str, signature: str) -> str:
+        """Replaces the Rich interactive panel for permission requests."""
+        # This is called by ui.permission_request() which is invoked inside
+        # ask_user. Since we've already patched ask_user, this is a safety net.
+        # Return 'y' (allow once) — the actual gating is in ask_user.
+        return "y"
+
+    # Apply patches
     _io.confirm = _desktop_confirm
+    _perms.ask_user = _desktop_ask_user
+    _ui.permission_request = _desktop_permission_request
+
+    # Also patch the direct import in agent_loop (it uses `from X import Y`)
+    try:
+        import agent.agent_loop as _loop
+        _loop.ask_user = _desktop_ask_user
+    except (ImportError, AttributeError):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +210,7 @@ class RunRequest(BaseModel):
 class ApproveRequest(BaseModel):
     id: str
     approved: bool
+    always: bool = False
 
 
 class ConfigPatchRequest(BaseModel):
@@ -156,7 +249,8 @@ def build_app() -> FastAPI:
     @app.get("/health")
     async def health():
         return {"ok": True, "version": "2.0.0",
-                "agent_running": session_manager.is_running()}
+                "agent_running": session_manager.is_running(),
+                "cwd": session_manager._current_project_path or os.getcwd()}
 
     @app.get("/api/sessions")
     async def sessions():
@@ -175,6 +269,9 @@ def build_app() -> FastAPI:
         if session_manager.is_running():
             raise HTTPException(409, "Agent already running")
         cwd = req.cwd or req.project_path or ""
+        # If no cwd from request, use stored project path
+        if not cwd:
+            cwd = session_manager._current_project_path or ""
         session_manager.start_session(project_path=cwd)
         t = threading.Thread(
             target=session_manager.run_agent,
@@ -196,6 +293,7 @@ def build_app() -> FastAPI:
         if entry is None:
             raise HTTPException(404, "Approval not found")
         entry["result"]["approved"] = req.approved
+        entry["result"]["always"] = req.always
         entry["event"].set()
         db.resolve_approval(req.id, req.approved)
         return {"ok": True}
@@ -213,14 +311,156 @@ def build_app() -> FastAPI:
     async def config_patch(req: ConfigPatchRequest):
         if req.key not in _CONFIG_KEYS:
             raise HTTPException(400, f"Unknown key: {req.key}")
+        
+        # Set env var immediately
+        os.environ[req.key] = req.value
         try:
             from agent.env import setenv
             setenv(req.key, req.value)
         except ImportError:
-            import os
-            os.environ[req.key] = req.value
+            pass
         db.set_setting(req.key, req.value)
+
+        # Also persist to ~/.kryth/config.json so it survives restarts
+        _ENV_TO_CONFIG_KEY = {
+            "API_KEY": "api_key",
+            "NVIDIA_API_KEY": "api_key",
+            "OPENAI_API_KEY": "api_key",
+            "ANTHROPIC_API_KEY": "api_key",
+            "GOOGLE_API_KEY": "api_key",
+            "MODEL": "model",
+            "KRYTH_MAIN_MODEL": "model",
+            "KRYTH_BASE_URL": "base_url",
+        }
+        config_key = _ENV_TO_CONFIG_KEY.get(req.key)
+        if config_key:
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                config_file = _Path.home() / ".kryth" / "config.json"
+                config_file.parent.mkdir(parents=True, exist_ok=True)
+                cfg = {}
+                if config_file.exists():
+                    cfg = _json.loads(config_file.read_text(encoding="utf-8"))
+                cfg[config_key] = req.value
+                config_file.write_text(_json.dumps(cfg, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+        # If a key that affects the LLM client changed, force-reload it
+        _LLM_RELOAD_KEYS = {
+            "KRYTH_BASE_URL", "KRYTH_MAIN_MODEL", "KRYTH_PLANNER_MODEL",
+            "KRYTH_FAST_MODEL", "KRYTH_VISION_MODEL", "KRYTH_SUMMARIZER_MODEL",
+            "OPENAI_API_KEY", "NVIDIA_API_KEY", "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY",
+        }
+        if req.key in _LLM_RELOAD_KEYS:
+            try:
+                from agent.llm import reload_client
+                reload_client()
+            except Exception:
+                pass
+
         return {"ok": True}
+
+    @app.get("/api/models")
+    async def list_models(base_url: str = "", api_key: str = ""):
+        """Fetch available models from an OpenAI-compatible endpoint."""
+        import httpx
+
+        # Use provided or fall back to env
+        if not base_url:
+            base_url = os.environ.get("KRYTH_BASE_URL", "https://api.openai.com/v1")
+        if not api_key:
+            # Try all available keys
+            api_key = (os.environ.get("OPENAI_API_KEY", "") or
+                       os.environ.get("NVIDIA_API_KEY", "") or
+                       os.environ.get("ANTHROPIC_API_KEY", "") or
+                       os.environ.get("GOOGLE_API_KEY", ""))
+
+        # If base URL looks like NVIDIA but we have no key from params, use NVIDIA key
+        if "nvidia" in base_url.lower() and not api_key:
+            api_key = os.environ.get("NVIDIA_API_KEY", "")
+        # Also try NVIDIA key if the provided key doesn't start with expected prefix
+        if "nvidia" in base_url.lower() and api_key and not api_key.startswith("nvapi-"):
+            nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
+            if nvidia_key:
+                api_key = nvidia_key
+
+        base_url = base_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+        # Try multiple endpoint patterns
+        urls_to_try = []
+        if base_url.endswith("/v1"):
+            urls_to_try.append(f"{base_url}/models")
+        elif "/v1" in base_url:
+            urls_to_try.append(f"{base_url}/models")
+        else:
+            urls_to_try.append(f"{base_url}/v1/models")
+            urls_to_try.append(f"{base_url}/models")
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                for models_url in urls_to_try:
+                    try:
+                        resp = await client.get(models_url, headers=headers)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            # Handle various response formats
+                            models_list = (
+                                data.get("data") or
+                                data.get("models") or
+                                data.get("result") or
+                                (data if isinstance(data, list) else [])
+                            )
+                            model_ids = sorted(set(
+                                m.get("id", m.get("name", m.get("model", "")))
+                                for m in models_list
+                                if isinstance(m, dict) and (m.get("id") or m.get("name") or m.get("model"))
+                            ))
+                            if model_ids:
+                                return {"models": model_ids[:200]}
+                    except Exception:
+                        continue
+
+                return {"models": [], "error": "Not Found — this provider may not support /models endpoint. Type model name manually."}
+        except Exception as e:
+            return {"models": [], "error": str(e)[:200]}
+
+    # ── Changes / Revert ─────────────────────────────────────────────────
+
+    @app.get("/api/changes")
+    async def get_changes():
+        """List all files modified in this session (with snapshot available for revert)."""
+        try:
+            from agent.snapshots import list_all_snapshots
+            snapshots = list_all_snapshots()
+            return {"files": snapshots}
+        except ImportError:
+            # Fallback: scan graphify-out or git status
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["git", "diff", "--name-only", "HEAD"],
+                    capture_output=True, text=True, timeout=5
+                )
+                files = [{"path": f, "status": "modified"} for f in result.stdout.strip().split("\n") if f]
+                return {"files": files}
+            except Exception:
+                return {"files": []}
+
+    @app.post("/api/revert")
+    async def revert_file(path: str):
+        """Revert a file to its pre-edit snapshot."""
+        try:
+            from agent.snapshots import restore
+            success, msg = restore(path)
+            if success:
+                return {"ok": True, "message": msg}
+            raise HTTPException(400, msg)
+        except ImportError:
+            raise HTTPException(500, "Snapshots module not available")
 
     @app.get("/api/files")
     async def list_files(path: str = "."):
@@ -295,6 +535,27 @@ def build_app() -> FastAPI:
             pass
         finally:
             event_router.unregister_client(ws)
+
+    # ── WebSocket: browser state stream ──────────────────────────────────
+
+    @app.websocket("/ws/browser")
+    async def ws_browser(ws: WebSocket):
+        await ws.accept()
+        from kryth_desktop_runtime import browser_bridge
+        browser_bridge.set_event_loop(asyncio.get_running_loop())
+        browser_bridge.register_browser_client(ws)
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(ws.receive_text(), timeout=30)
+                    data = json.loads(msg)
+                    await browser_bridge.handle_browser_command(data)
+                except asyncio.TimeoutError:
+                    await ws.send_text(json.dumps({"type": "ping"}))
+        except Exception:
+            pass
+        finally:
+            browser_bridge.unregister_browser_client(ws)
 
     # ── WebSocket: shell PTY ─────────────────────────────────────────────
 

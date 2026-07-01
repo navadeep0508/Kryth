@@ -4,13 +4,12 @@ This module provides a pluggable cost model that estimates the total cost
 (compute, time, resources) for different execution strategies. The model
 adapts based on task characteristics, system resources, and workload.
 
-Cost factors:
+cost factors:
 - Agent startup overhead (initialization, context loading)
 - Context transfer size (tokens passed between agents)
 - Result integration complexity
 - Model latency and throughput
 - System resource constraints (memory, CPU)
-- Parallel coordination overhead
 
 The cost model is configurable and can be extended with custom estimators.
 """
@@ -32,23 +31,21 @@ class CostParameters:
     context_window: int = 128000  # max context size in tokens
     
     # System resources
-    available_memory_mb: float = 8192.0  # available RAM for agents
-    agent_memory_overhead_mb: float = 500.0  # memory per agent
-    max_concurrent_agents: int = 4  # hardware limit on parallel agents
-    
+    available_memory_mb: float = 8192.0 # available RAM for agents
+    agent_memory_overhead_mb: float = 500.0 # memory per agent
+    max_concurrent_agents: int = 1 # only single agent execution
+
     # Workload characteristics
-    avg_file_size_kb: float = 10.0  # average file size created
-    context_per_file_tokens: float = 500.0  # context needed per file in project
-    
+    avg_file_size_kb: float = 10.0 # average file size created
+    context_per_file_tokens: float = 500.0 # context needed per file in project
+
     # Overhead factors
-    agent_startup_cost_turns: float = 10.0  # turns equivalent for agent startup
-    context_transfer_cost_per_agent_turns: float = 3.0  # turns for context passing
-    result_merge_base_cost_turns: float = 15.0  # base cost to merge results
-    coordination_overhead_per_agent_turns: float = 2.0  # parallel coordination per agent
-    
+    agent_startup_cost_turns: float = 10.0 # turns equivalent for agent startup
+    context_transfer_cost_per_agent_turns: float = 3.0 # turns for context passing
+    result_merge_base_cost_turns: float = 15.0 # base cost to merge results
+
     # Adaptive factors
-    parallelism_speedup_factor: float = 0.8  # efficiency of parallel execution (0-1)
-    dependency_sequential_factor: float = 1.0  # no speedup for sequential deps
+    dependency_sequential_factor: float = 1.0 # no speedup for sequential deps
 
 
 class CostEstimator(ABC):
@@ -76,7 +73,7 @@ class CostEstimator(ABC):
     
     @abstractmethod
     def estimate_coordination_cost(self, num_agents: int, has_dependencies: bool) -> float:
-        """Estimate coordination overhead for parallel/sequential execution."""
+        """Estimate coordination overhead for sequential execution."""
         pass
 
 
@@ -125,14 +122,8 @@ class DefaultCostEstimator(CostEstimator):
         if num_agents <= 1:
             return 0.0
         
-        if has_dependencies:
-            # Sequential: coordination is minimal (just waiting)
-            base = num_agents * 2.0  # small overhead per agent
-        else:
-            # Parallel: need synchronization, result collection
-            base = num_agents * self.params.coordination_overhead_per_agent_turns
-        
-        # System resource constraints add overhead
+        base = num_agents * 2.0
+
         if num_agents > self.params.max_concurrent_agents:
             resource_penalty = (num_agents - self.params.max_concurrent_agents) * 5.0
             base += resource_penalty
@@ -185,8 +176,7 @@ class AdaptiveCostModel:
         merged_group = analysis.components
         costs["single"] = self._estimate_cost_for_group(
             merged_group,
-            has_dependencies=False,
-            is_parallel=False
+            has_dependencies=False
         )
         
         # Sequential (respecting dependencies)
@@ -202,20 +192,12 @@ class AdaptiveCostModel:
                 sequential_groups
             )
         
-        # Parallel (only if independent)
-        if analysis.can_parallelize:
-            parallel_groups = [[c] for c in analysis.components]
-            costs["parallel"] = self._estimate_cost_for_groups_parallel(
-                parallel_groups
-            )
-        
         return costs
     
     def _estimate_cost_for_group(
         self,
         components: List[WorkComponent],
-        has_dependencies: bool,
-        is_parallel: bool
+        has_dependencies: bool
     ) -> StrategyCosts:
         """Estimate cost for a group of components executed as one unit."""
         if not components:
@@ -319,86 +301,6 @@ class AdaptiveCostModel:
             coordination_cost=coordination_cost,
             estimated_time_seconds=time_sec,
             estimated_memory_mb=peak_memory,
-            reasoning=reasoning
-        )
-    
-    def _estimate_cost_for_groups_parallel(
-        self,
-        groups: List[List[WorkComponent]]
-    ) -> StrategyCosts:
-        """Estimate cost for parallel execution of groups."""
-        if not groups:
-            return StrategyCosts(
-                total_turns=float('inf'),
-                agent_costs=[],
-                startup_cost=0,
-                context_transfer_cost=0,
-                merge_cost=0,
-                coordination_cost=0,
-                estimated_time_seconds=0,
-                estimated_memory_mb=0,
-                reasoning="No groups"
-            )
-        
-        # All agents start simultaneously
-        num_agents = len(groups)
-        
-        # Startup cost for all agents
-        startup_cost = num_agents * self.estimator.estimate_startup_cost()
-        
-        # Context transfer: coordinator sends initial context to all agents
-        # For parallel, we assume minimal shared context needed
-        initial_context_size = sum(
-            c.estimated_turns * self.params.avg_tokens_per_turn 
-            for group in groups for c in group
-        ) / num_agents  # approximate per-agent context
-        context_transfer_cost = self.estimator.estimate_context_transfer_cost(
-            num_agents, initial_context_size
-        )
-        
-        # Agent costs: each group runs in parallel, time = max(agent_cost)
-        agent_costs = []
-        for group in groups:
-            if not group:
-                continue
-            group_context_size = sum(c.estimated_turns * self.params.avg_tokens_per_turn for c in group)
-            agent_cost = self.estimator.estimate_agent_cost(group[0], group_context_size)
-            agent_costs.append(agent_cost)
-        
-        max_agent_cost = max(agent_costs) if agent_costs else 0
-        
-        # Coordination overhead for parallel
-        coordination_cost = self.estimator.estimate_coordination_cost(num_agents, False)
-        
-        # Merge cost
-        total_work_size = sum(len(g) for g in groups)
-        merge_cost = self.estimator.estimate_merge_cost(num_agents, total_work_size)
-        
-        # Total turns: max agent time + overheads
-        total_turns = max_agent_cost + coordination_cost + merge_cost
-        
-        # Memory: all agents run simultaneously
-        memory_mb = num_agents * self.params.agent_memory_overhead_mb
-        
-        # Time: max agent time + coordination + merge
-        time_sec = (max_agent_cost + coordination_cost + merge_cost) * (self.params.model_latency_ms / 1000)
-        
-        # Speedup calculation
-        sequential_time = sum(agent_costs) * (self.params.model_latency_ms / 1000)
-        speedup = sequential_time / time_sec if time_sec > 0 else 1
-        
-        reasoning = (f"Parallel: {num_agents} agents, max cost {max_agent_cost:.0f}, "
-                    f"speedup {speedup:.1f}x, total {total_turns:.0f} turns")
-        
-        return StrategyCosts(
-            total_turns=total_turns,
-            agent_costs=agent_costs,
-            startup_cost=startup_cost,
-            context_transfer_cost=context_transfer_cost,
-            merge_cost=merge_cost,
-            coordination_cost=coordination_cost,
-            estimated_time_seconds=time_sec,
-            estimated_memory_mb=memory_mb,
             reasoning=reasoning
         )
     

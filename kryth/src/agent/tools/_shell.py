@@ -268,6 +268,11 @@ def run_command(command, timeout=15, run_in_background=False):
             r"vite",
             r"webpack.*--watch",
             r"python -m http\.server",
+            r"python\s+app\.py",
+            r"python\s+main\.py",
+            r"python\s+server\.py",
+            r"python\s+manage\.py\s+runserver",
+            r"gunicorn",
             r"flask run",
             r"uvicorn",
             r"ng serve",
@@ -281,6 +286,10 @@ def run_command(command, timeout=15, run_in_background=False):
             r"ts-node-dev",
             r"webpack-dev-server",
             r"vite dev",
+            r"go run",
+            r"cargo run",
+            r"ruby.*\.rb",
+            r"php -S",
         ]
         import re
         for pattern in long_running_patterns:
@@ -294,7 +303,8 @@ def run_command(command, timeout=15, run_in_background=False):
         return (
             f"Started background task {task_id}\n"
             f"Output file: {out_path}\n"
-            f"Use task_output(task_id='{task_id}') to fetch output."
+            f"Use task_output(task_id='{task_id}') to fetch output.\n"
+            f"Wait 3-5 seconds before checking if it's a server. Then verify with: curl http://localhost:5000 (or the relevant port)"
         )
 
     try:
@@ -330,7 +340,7 @@ def run_command(command, timeout=15, run_in_background=False):
             command=command, output="(timed out)", exit_code=124,
             timeout=int(timeout), note="timeout",
         )
-        return err("TIMEOUT", f"command exceeded {timeout}s timeout")
+        return err("TIMEOUT", f"command exceeded {timeout}s timeout — likely a long-running server. Re-run with run_in_background=true and verify with curl.")
     except Exception as e:
         ui.shell_end(
             command=command, output=str(e), exit_code=1,

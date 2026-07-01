@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import contextvars
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.memory.memory_manager import MemoryManager
 
 
 def estimate_tokens(text: str) -> int:
@@ -41,7 +44,7 @@ class Session:
     # operator's chosen autonomy level.
     profile: str = "default"
     remembered_permissions: dict = field(default_factory=dict)
-    # (tool_name, args_signature) → consecutive denial count. Reset
+    # (tool_name, args_signature) -> consecutive denial count. Reset
     # whenever the same tool runs successfully. Used by the agent loop
     # to escalate after repeated denials so the model isn't stuck in a
     # loop trying the same blocked call.
@@ -51,6 +54,18 @@ class Session:
     # agent teams are used and how approval is obtained.
     # Values: "ASK" | "AUTO" | "SESSION_APPROVED" | "ALWAYS_SINGLE"
     multi_agent_mode: str = "ASK"
+
+    # Read Memory: semantic summaries of explored files
+    read_memory: dict = field(default_factory=dict)  # path -> FileSummary
+
+    # Memory Manager — unified 5-layer memory architecture
+    memory_manager: Optional["MemoryManager"] = None
+
+    def get_memory_manager(self):
+        if self.memory_manager is None:
+            from agent.memory.memory_manager import MemoryManager
+            self.memory_manager = MemoryManager(session_id=id(self))
+        return self.memory_manager
 
     def reset(self) -> None:
         self.messages = []

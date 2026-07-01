@@ -43,7 +43,7 @@ from agent.ui.theme import CORE
 _ANSI_RESET  = "\033[0m"
 _ANSI_BOLD   = "\033[1m"
 _ANSI_DIM    = "\033[2m"
-_ANSI_GOLD   = "\033[38;2;232;255;58m"   # kryth.core  #E8FF3A
+_ANSI_GOLD   = "\033[38;2;223;255;0m"    # kryth.core  #DFFF00 — matches theme ACCENT
 _ANSI_CYAN   = "\033[38;2;100;200;240m"  # thinking    #64C8F0
 _ANSI_VIOLET = "\033[38;2;180;140;255m"  # plan        #B48CFF
 _ANSI_AMBER  = "\033[38;2;255;180;50m"   # warning     #FFB432

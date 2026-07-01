@@ -112,6 +112,7 @@ def check(
     *,
     session=None,
     auto_compress: bool = True,
+    overhead_tokens: int = 0,
 ) -> BudgetResult:
     """Estimate tokens, compare against budget, compress if over budget.
 
@@ -123,7 +124,7 @@ def check(
     budget      = get_budget(complexity)
     tools_tok   = estimate_tools_tokens(tools)
     history_tok = estimate_messages_tokens(messages)
-    estimated   = tools_tok + history_tok
+    estimated   = tools_tok + history_tok + overhead_tokens
     ratio       = estimated / max(budget, 1)
     overflow    = max(0, estimated - budget)
 

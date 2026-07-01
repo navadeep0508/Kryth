@@ -1,13 +1,15 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
   "identifier": "default",
   "description": "Default KRYTH Desktop capability",
   "platforms": ["linux", "macOS", "windows"],
-  "windows": ["main"],
+  "windows": ["main", "browser"],
   "permissions": [
     "core:path:default",
     "core:event:default",
     "core:window:default",
+    "core:window:allow-create",
+    "core:webview:default",
+    "core:webview:allow-create-webview-window",
     "core:app:default",
     "core:resources:default",
     "shell:allow-open",

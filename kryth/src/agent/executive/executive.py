@@ -30,7 +30,7 @@ Usage::
         quality_kwargs={"test_pass_rate": 0.92, "verification_rate": 0.88,
                         "security_score": 0.95, "eval_score": 0.85},
         team_kwargs={"active_workers": 4, "idle_workers": 1, "busy_workers": 3,
-                     "parallel_efficiency_pct": 72.0},
+                      "parallel_efficiency_pct": 0.0},
     )
 
     print(state.recommendation.value)  # "continue"

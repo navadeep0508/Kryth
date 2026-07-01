@@ -1,6 +1,8 @@
 import { memo, useCallback } from "react";
 import MonacoReact from "@monaco-editor/react";
 import { useEditorStore } from "@/store/editorStore";
+import { useToastStore } from "@/store/toastStore";
+import { bridge } from "@/lib/krythBridge";
 import { monacoTheme } from "@/lib/theme";
 import type { editor as MonacoEditor } from "monaco-editor";
 
@@ -11,7 +13,7 @@ interface Props {
   language: string;
 }
 
-export const MonacoEditorView = memo(function MonacoEditorView({ tabId, content, language }: Props) {
+export const MonacoEditorView = memo(function MonacoEditorView({ tabId, path, content, language }: Props) {
   const updateContent = useEditorStore((s) => s.updateContent);
   const markSaved     = useEditorStore((s) => s.markSaved);
 
@@ -21,10 +23,21 @@ export const MonacoEditorView = memo(function MonacoEditorView({ tabId, content,
       monaco.editor.setTheme("kryth-dark");
 
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-        markSaved(tabId);
+        const currentContent = editor.getValue();
+        bridge.writeFile(path, currentContent)
+          .then(() => {
+            markSaved(tabId);
+            useToastStore.getState().addToast("File saved", "success");
+          })
+          .catch((err) => {
+            useToastStore.getState().addToast(
+              `Save failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+              "error"
+            );
+          });
       });
     },
-    [tabId, markSaved]
+    [tabId, path, markSaved]
   );
 
   return (

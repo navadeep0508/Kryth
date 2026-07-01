@@ -140,13 +140,8 @@ def pick_main_model(hints: RouteHints | None = None) -> str:
 
     Rules (least → most permissive):
       * ``explicit_override`` wins unconditionally.
-      * ``task_complexity == "simple"`` → use KRYTH_FAST_MODEL if configured
-        (allows routing trivial tasks to a low-latency provider).
-      * If ``KRYTH_AUTO_ROUTE`` is off, return ``MAIN_MODEL``.
-      * If recent failures > 0, stay on MAIN_MODEL — a struggling turn
-        is the worst time to drop capability.
-      * If payload is small AND tool-call surface is light, use PLANNER_MODEL.
-      * Otherwise MAIN_MODEL.
+      * If ``KRYTH_FAST_MODEL`` is set, use it for simple tasks.
+      * Otherwise return MAIN_MODEL.
     """
     h = hints or RouteHints()
     main_model, planner_model, _ = _configured_models()
@@ -160,16 +155,6 @@ def pick_main_model(hints: RouteHints | None = None) -> str:
         fast_model = getenv("KRYTH_FAST_MODEL", "").strip()
         if fast_model:
             return fast_model
-
-    if not _auto_route_enabled():
-        return main_model
-
-    if h.recent_failures > 0:
-        return main_model
-
-    threshold = _small_threshold()
-    if h.payload_chars and h.payload_chars <= threshold:
-        return planner_model
 
     return main_model
 

@@ -4,7 +4,7 @@ Adds a UAL panel to the live operations center showing:
   - Running actions + executor in use
   - Verification status per action
   - Rollback readiness
-  - Parallel action count
+  - Current layer info
   - Completed / failed counts
 
 Designed to be imported alongside ui/dashboard.py:
@@ -12,6 +12,7 @@ Designed to be imported alongside ui/dashboard.py:
 """
 
 from __future__ import annotations
+
 
 import threading
 import time
@@ -40,8 +41,7 @@ class UALState:
     entries: dict[str, ActionEntry] = field(default_factory=dict)
     completed: int = 0
     failed: int = 0
-    parallel_count: int = 0
-    peak_parallel: int = 0
+    current_layer: int = 0
     mission: str = ""
 
 
@@ -68,8 +68,7 @@ def push_action_event(event: str, **kwargs: Any) -> None:
             _state.entries.clear()
             _state.completed = 0
             _state.failed = 0
-            _state.parallel_count = 0
-            _state.peak_parallel = 0
+            _state.current_layer = 0
             _log.append(f"[UAL] Mission: {_state.mission}")
 
         elif event == "running":
@@ -81,9 +80,7 @@ def push_action_event(event: str, **kwargs: Any) -> None:
                 status="running",
                 rollback_ready=bool(kwargs.get("has_rollback", False)),
             )
-            _state.parallel_count += 1
-            if _state.parallel_count > _state.peak_parallel:
-                _state.peak_parallel = _state.parallel_count
+            _state.current_layer = kwargs.get("layer", _state.current_layer)
             _log.append(
                 f"[{aid}] RUNNING via {kwargs.get('executor','?')}: "
                 f"{kwargs.get('goal','')[:50]}"
@@ -97,7 +94,6 @@ def push_action_event(event: str, **kwargs: Any) -> None:
                 e.verified  = kwargs.get("verified", False)
                 e.duration_ms = kwargs.get("duration_ms", 0.0)
             _state.completed += 1
-            _state.parallel_count = max(0, _state.parallel_count - 1)
             v = "verified" if kwargs.get("verified") else "unverified"
             _log.append(f"[{aid}] SUCCEEDED ({v})")
 

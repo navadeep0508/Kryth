@@ -1,8 +1,7 @@
 """Action Scheduler — executes an ActionGraph using existing KRYTH worker pools.
 
-Parallel execution:
-  - Layers are computed topologically; all actions in one layer run in parallel
-  - Uses ThreadPoolExecutor (same pattern as orchestration/scheduler.py)
+Sequential execution:
+  - Layers are computed topologically; actions within each layer run sequentially
   - Respects ownership locks on affected_paths (via orchestration.ownership)
   - Respects rollback boundaries: a failed action halts its dependent layer
 
@@ -20,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -59,7 +58,6 @@ class ActionScheduler:
         registry: Optional[ActionRegistry] = None,
         memory: Optional[ActionMemory] = None,
         analytics: Optional[ActionAnalytics] = None,
-        max_workers: int = 8,
         on_progress: Optional[ProgressCallback] = None,
     ) -> None:
         self._registry  = registry or get_registry()
@@ -68,13 +66,12 @@ class ActionScheduler:
         self._selector  = ExecutorSelector(self._registry, self._memory)
         self._verifier  = ActionVerifier()
         self._rollback  = RollbackEngine()
-        self._max_workers = max_workers
         self._on_progress = on_progress
 
     # ── Public API ────────────────────────────────────────────────────
 
     def run(self, graph: ActionGraph) -> SchedulerResult:
-        """Execute the ActionGraph layer by layer with parallelism within layers."""
+        """Execute the ActionGraph layer by layer; actions within each layer run sequentially."""
         errors = graph.validate()
         if errors:
             return SchedulerResult(
@@ -136,23 +133,17 @@ class ActionScheduler:
     def _run_layer(self, actions: list[Action]) -> list[tuple[Action, ActionResult]]:
         results: list[tuple[Action, ActionResult]] = []
 
-        with ThreadPoolExecutor(
-            max_workers=min(len(actions), self._max_workers),
-            thread_name_prefix="ual-worker",
-        ) as pool:
-            futures = {pool.submit(self._execute_action, a): a for a in actions}
-            for fut in as_completed(futures):
-                action = futures[fut]
-                try:
-                    result = fut.result()
-                except Exception as exc:
-                    result = ActionResult(
-                        success=False,
-                        error=f"Unexpected scheduler error: {exc}",
-                        executor_used="scheduler",
-                    )
-                    action.mark_failed(result)
-                results.append((action, result))
+        for action in actions:
+            try:
+                result = self._execute_action(action)
+            except Exception as exc:
+                result = ActionResult(
+                    success=False,
+                    error=f"Unexpected scheduler error: {exc}",
+                    executor_used="scheduler",
+                )
+                action.mark_failed(result)
+            results.append((action, result))
 
         return results
 

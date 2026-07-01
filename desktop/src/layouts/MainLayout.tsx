@@ -1,98 +1,74 @@
-import React, { lazy, Suspense, useEffect } from "react";
-import { TopBar } from "./TopBar";
-import { Sidebar } from "./Sidebar";
-import { InspectorPanel } from "./InspectorPanel";
-import { BottomDrawer } from "./BottomDrawer";
+import { lazy, Suspense, memo } from "react";
 import { useUIStore } from "@/store/uiStore";
-import { useApprovalStore } from "@/store/approvalStore";
+import { useEditorStore } from "@/store/editorStore";
+import { AppShell } from "./AppShell";
+import { Sidebar } from "./Sidebar";
+import { PromptInput } from "./PromptInput";
+import { BottomDock } from "./BottomDock";
+import { RightPanel } from "@/components/RightPanel";
+import { TopBar } from "./TopBar";
+import { PinnedPlan } from "@/features/workspace/Workspace";
+import { ApprovalBar } from "@/features/workspace/ApprovalBar";
+import { ToastContainer } from "@/features/toast/ToastContainer";
 
-const ChatPanel      = lazy(() => import("@/features/chat/ChatPanel"));
-const EditorPanel    = lazy(() => import("@/features/editor/EditorPanel"));
-const ApprovalModal  = lazy(() => import("@/features/approvals/ApprovalModal"));
+const Workspace = lazy(() => import("@/features/workspace/Workspace"));
+const EditorPanel = lazy(() => import("@/features/editor/EditorPanel"));
 const CommandPalette = lazy(() => import("@/features/palette/CommandPalette"));
-const SettingsPage   = lazy(() => import("@/features/settings/SettingsPage"));
+const SettingsPage = lazy(() => import("@/features/settings/SettingsPage"));
 
-export function MainLayout() {
-  const { workspaceTab, paletteOpen, setSideActivity } = useUIStore();
-  const hasPending = useApprovalStore((s) => s.pending.length > 0);
+export const MainLayout = memo(function MainLayout() {
+  const { centerView, paletteOpen, dockOpen } = useUIStore();
+  const tabs = useEditorStore((s) => s.tabs);
+  const hasEditor = tabs.length > 0;
 
-  // When switching to editor, open the file explorer in the sidebar
-  useEffect(() => {
-    if (workspaceTab === "editor") setSideActivity("explorer");
-  }, [workspaceTab, setSideActivity]);
+  const centerContent = centerView === "settings" ? (
+    <Suspense fallback={<LoadingState>Loading settings…</LoadingState>}>
+      <SettingsPage />
+    </Suspense>
+  ) : hasEditor ? (
+    <div className="flex flex-col h-full">
+      <div className="flex-1 overflow-hidden">
+        <Suspense fallback={<LoadingState>Loading editor…</LoadingState>}>
+          <EditorPanel />
+        </Suspense>
+      </div>
+    </div>
+  ) : (
+    <div className="flex flex-col h-full">
+      <div className="flex-1 overflow-hidden">
+        <Suspense fallback={<LoadingState>Loading workspace…</LoadingState>}>
+          <Workspace />
+        </Suspense>
+      </div>
+      <PinnedPlan />
+      <ApprovalBar />
+    </div>
+  );
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-bg text-text">
-      <TopBar />
-
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
-
-        {/* Main workspace */}
-        <main className="flex-1 flex overflow-hidden">
-          <WorkspaceFallback>
-            <Suspense fallback={<WorkspaceLoading />}>
-              {workspaceTab === "chat"     && <ChatPanel />}
-              {workspaceTab === "editor"   && <EditorPanel />}
-              {workspaceTab === "settings" && <SettingsPage />}
-            </Suspense>
-          </WorkspaceFallback>
-        </main>
-
-        <InspectorPanel />
-      </div>
-
-      <BottomDrawer />
-
-      {/* Overlays */}
-      {hasPending && (
-        <Suspense fallback={null}>
-          <ApprovalModal />
-        </Suspense>
-      )}
-
+    <>
+      <AppShell
+        topBar={<TopBar />}
+        sidebar={<Sidebar />}
+        center={centerContent}
+        inspector={<RightPanel />}
+        commandBar={<PromptInput />}
+        bottomDock={dockOpen ? <BottomDock /> : null}
+      />
       {paletteOpen && (
         <Suspense fallback={null}>
           <CommandPalette />
         </Suspense>
       )}
-    </div>
+      <ToastContainer />
+    </>
   );
-}
+});
 
-function WorkspaceLoading() {
+function LoadingState({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex-1 flex items-center justify-center text-muted text-sm">
-      Loading…
+    <div className="h-full flex items-center justify-center text-dim text-xs">
+      {children}
     </div>
   );
-}
-
-class WorkspaceFallback extends React.Component<
-  { children: React.ReactNode },
-  { hasError: boolean; error: string }
-> {
-  state = { hasError: false, error: "" };
-
-  static getDerivedStateFromError(e: Error) {
-    return { hasError: true, error: e.message };
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted">
-          <p className="text-sm">Something went wrong in the workspace.</p>
-          <p className="text-xs font-mono text-error">{this.state.error}</p>
-          <button
-            onClick={() => this.setState({ hasError: false, error: "" })}
-            className="text-xs text-accent underline"
-          >
-            Reload panel
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
 }

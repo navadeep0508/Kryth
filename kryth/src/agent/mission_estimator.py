@@ -251,40 +251,14 @@ def _decomposition_label(units: int, density: str) -> str:
 
 
 def estimate(user_input: str, profile=None) -> MissionEstimate:
-    """Estimate mission cost + route DIRECT/DAG/SWARM.
+    """Estimate mission cost + route DIRECT/sequential.
 
-    Delegates to the graph-driven ``orchestration_optimizer`` (work grouped by
-    ownership domain; parallelism from the dependency graph — NOT section count),
-    mapping its ExecutionPlan onto the MissionEstimate shape the UI/gate expect.
-    Falls back to the legacy density model if the optimizer is unavailable.
+    Uses the legacy density model (work grouped by ownership domain;
+    sequential execution only — no parallelism).
     """
     text = user_input or ""
-    try:
-        from agent.orchestration_optimizer import optimize as _optimize
-        plan = _optimize(text)
-        g, c = plan.graph, plan.complexity
-        # sections = frontend work items (shown in the panel as the breakdown)
-        sections = []
-        for a in plan.allocation.agents:
-            if a["domain"] == "frontend":
-                sections = [w for w in a["work_items"] if w != "frontend"]
-        decomposition = ("very_high" if g.parallelism_class == "very_high"
-                         else "high" if g.parallelism_class == "high"
-                         else "medium" if g.total_nodes >= 4 else "low")
-        return MissionEstimate(
-            files=c.file_count, independent_units=max(1, plan.allocation.count),
-            dependency_depth=c.dependency_depth, agents=max(1, plan.allocation.count),
-            tokens=plan.cost.total_tokens, seq_time_s=plan.seq_eta.total_s,
-            dag_time_s=plan.par_eta.total_s, speedup=plan.speedup,
-            recommendation=plan.mode, reason=plan.reasoning,
-            parallel_density=g.parallelism_class, decomposition_potential=decomposition,
-            complexity_score=int(c.score), coordination_cost_s=plan.par_eta.coordination_s,
-            components=list(g.nodes), sections=sections,
-        )
-    except Exception:
-        pass
 
-    # ── Legacy density fallback (kept for resilience) ────────────────────────
+    # ── Legacy density model ────────────────────────
     sig = parallel_density(text)
 
     components = sig.components

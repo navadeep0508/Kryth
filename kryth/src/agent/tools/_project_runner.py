@@ -149,18 +149,8 @@ def run_tests(cwd: str = ".", changed_paths: list | None = None):
 
     # Test cache check — skip when inputs unchanged
     if changed_paths is not None:
-        try:
-            from agent.orchestration.test_cache import should_run_tests, record_test_pass, record_test_fail
-            if not should_run_tests(changed_paths, stack):
-                try:
-                    import sys; _d = sys.modules.get("agent.ui.dashboard")
-                    if _d and _d.get_active():
-                        _d.push_event("intel", message="Test cache hit — skipped unchanged tests")
-                except Exception:
-                    pass
-                return f"(tests skipped — no relevant changes since last pass)"
-        except Exception:
-            pass
+        # Test cache removed with orchestration subsystem
+        pass
         _record_pass = True
     else:
         _record_pass = False
@@ -193,16 +183,6 @@ def run_tests(cwd: str = ".", changed_paths: list | None = None):
         )
 
     body = _tail(out) or _tail(errtext) or "(no output)"
-    # Record result in test cache when caller provided changed_paths
-    if _record_pass and changed_paths is not None:
-        try:
-            from agent.orchestration.test_cache import record_test_pass, record_test_fail
-            if rc == 0:
-                record_test_pass(changed_paths, stack)
-            else:
-                record_test_fail(changed_paths, stack)
-        except Exception:
-            pass
     return f"{headline}\n--- output tail ---\n{body}"
 
 

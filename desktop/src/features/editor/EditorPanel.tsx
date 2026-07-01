@@ -11,10 +11,10 @@ export default memo(function EditorPanel() {
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden bg-bg">
+    <div className="flex flex-col h-full overflow-hidden bg-bg">
       <TabBar />
       {activeTab ? (
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-hidden">
           <Suspense fallback={<EditorLoading />}>
             <MonacoEditorView
               key={activeTab.id}

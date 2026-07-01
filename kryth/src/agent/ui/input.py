@@ -24,8 +24,8 @@ _HISTORY_DIR = home_dir()
 _HISTORY_FILE = _HISTORY_DIR / "history"
 
 # ANSI escape codes — dim gray border, reset
-_DIM   = "\033[2m"
 _RESET = "\033[0m"
+_ACCENT_BORDER = "\033[38;2;42;42;42m"  # #2A2A2A — matches theme DIVIDER
 
 
 def _history() -> FileHistory:
@@ -41,7 +41,7 @@ def _term_width() -> int:
 
 
 def _border() -> str:
-    return _DIM + "─" * _term_width() + _RESET
+    return _ACCENT_BORDER + "─" * _term_width() + _RESET
 
 
 class _SlashCompleter(Completer):
@@ -107,20 +107,17 @@ def _make_bindings() -> KeyBindings:
 # ── Styles ────────────────────────────────────────────────────────────────────
 
 _STYLE = Style.from_dict({
-    # bottom toolbar
-    "bottom-toolbar":            "bg:#111111 #888888",
-    "bottom-toolbar.label":      "bg:#111111 #888888",
-    "bottom-toolbar.model":      "bg:#111111 #FFFFFF bold",
-    "bottom-toolbar.mode":       "bg:#111111 #E8FF3A",
-    "bottom-toolbar.tokens":     "bg:#111111 #888888",
-    "bottom-toolbar.tip":        "bg:#111111 #888888 italic",
-    "bottom-toolbar.sep":        "bg:#111111 #4B4B4B",
-    "bottom-toolbar.profile-info":    "bg:#111111 #4ADE80",
-    "bottom-toolbar.profile-warn":    "bg:#111111 #E8FF3A bold",
-    "bottom-toolbar.profile-danger":  "bg:#111111 #FF5A5A bold",
-    # prompt
-    "prompt.arrow":   "#888888",
-    "continuation":   "#555555",
+    "bottom-toolbar":            "bg:#090909 #8A8A8A",
+    "bottom-toolbar.label":      "bg:#090909 #8A8A8A",
+    "bottom-toolbar.model":      "bg:#090909 #FFFFFF bold",
+    "bottom-toolbar.mode":       "bg:#090909 #DFFF00",
+    "bottom-toolbar.tokens":     "bg:#090909 #8A8A8A",
+    "bottom-toolbar.tip":        "bg:#090909 #8A8A8A italic",
+    "bottom-toolbar.sep":        "bg:#090909 #4B4B4B",
+    "bottom-toolbar.profile-info":    "bg:#090909 #4ADE80",
+    "bottom-toolbar.profile-warn":    "bg:#090909 #DFFF00 bold",
+    "bottom-toolbar.profile-danger":  "bg:#090909 #FF5A5A bold",
+    "prompt.arrow":              "#D7FF10",
 })
 
 

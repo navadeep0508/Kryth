@@ -18,6 +18,7 @@ from rich.text import Text
 
 from agent.ui.console import LOCK, console
 from agent.ui.panels import _print_panel
+from agent.ui.syntax import highlight_block, lexer_for_path
 from agent.ui.theme import CORE, DOT, ERROR, WAITING
 
 
@@ -92,7 +93,7 @@ class _ReadBatcher:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._items: list[tuple[str, int, str, str]] = []  # (path, lines, lang, size)
+        self._items: list[tuple[str, str, int, str, str]] = []  # (path, content, lines, lang, size)
         self._timer: threading.Timer | None = None
 
     def add(self, path: str, content: str) -> None:
@@ -100,7 +101,7 @@ class _ReadBatcher:
         lang  = _lang_for_path(path)
         size  = _size_str(content)
         with self._lock:
-            self._items.append((path, lines, lang, size))
+            self._items.append((path, content, lines, lang, size))
             self._reset_timer()
 
     def flush(self) -> None:
@@ -138,18 +139,49 @@ class _ReadBatcher:
         else:
             _render_read_group(items)
 
+    def force_flush(self) -> list[tuple[str, str, int, str, str]]:
+        """Forced flush for section boundaries. Returns flushed items."""
+        with self._lock:
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+            items = self._items[:]
+            self._items.clear()
+        return items
+
 
 _read_batcher = _ReadBatcher()
 
 
-def _render_single_read(path: str, lines: int, lang: str, size: str) -> None:
+def _render_single_read(path: str, content: str, lines: int, lang: str, size: str) -> None:
     name = os.path.basename(path) or path
-    body = Table.grid(padding=(0, 3), expand=False)
-    body.add_column(no_wrap=True, style="muted", min_width=10)
+    lexer = lexer_for_path(path)
+
+    body = Table.grid(padding=(0, 2), expand=False)
+    body.add_column(no_wrap=True, style="muted", min_width=6)
     body.add_column()
+
     body.add_row(Text("Language", style="muted"), Text(lang, style="title"))
     body.add_row(Text("Lines", style="muted"), Text(f"{lines:,}", style="title"))
     body.add_row(Text("Size", style="muted"), Text(size, style="muted"))
+    body.add_row(Text(""), Text(""))
+
+    if content.strip():
+        raw_lines = content.splitlines()
+        max_lines = 80
+        marker: Text | None = None
+        if len(raw_lines) > max_lines:
+            head_n = max_lines - 16
+            tail_n = 16
+            shown = "\n".join(raw_lines[:head_n] + ["..."] + raw_lines[-tail_n:])
+            marker = Text(f"{len(raw_lines):,} lines total", style="muted")
+        else:
+            shown = content
+        body.add_row(Text(""), highlight_block(shown, lexer))
+        if marker:
+            body.add_row(Text(""), Text(""))
+            body.add_row(Text(""), marker)
+
     with LOCK:
         _print_panel(Panel(
             body,
@@ -162,14 +194,14 @@ def _render_single_read(path: str, lines: int, lang: str, size: str) -> None:
         ))
 
 
-def _render_read_group(items: list[tuple[str, int, str, str]]) -> None:
+def _render_read_group(items: list[tuple[str, str, int, str, str]]) -> None:
     body = Table.grid(padding=(0, 2), expand=False)
     body.add_column(no_wrap=True, min_width=2)
     body.add_column(overflow="fold", min_width=20)
     body.add_column(no_wrap=True, style="muted", min_width=12)
     body.add_column(no_wrap=True, style="muted")
 
-    for path, lines, lang, size in items[:24]:
+    for path, content, lines, lang, size in items[:24]:
         name = _short_path(path)
         body.add_row(
             Text("📖", style=""),

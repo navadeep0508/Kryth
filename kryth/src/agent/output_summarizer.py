@@ -229,6 +229,11 @@ def _detect_output_type(tool_name: str, output: str) -> str:
     return "generic"
 
 
+_READ_EXEMPT_TOOLS = frozenset({
+    "read_file",
+})
+
+
 def summarize(
     tool_name: str,
     raw_output: str,
@@ -237,9 +242,15 @@ def summarize(
 
     Returns (compressed_output, raw_chars, compressed_chars).
     When raw is small, compressed_output == raw_output and chars are equal.
+
+    read_file is exempt — file content is never summarized or truncated here.
     """
     raw_chars = len(raw_output)
     lines = raw_output.count("\n") + 1
+
+    # read_file is exempt: file content passes through verbatim
+    if tool_name in _READ_EXEMPT_TOOLS:
+        return raw_output, raw_chars, raw_chars
 
     # Small: pass through unchanged
     if lines <= _SMALL_LINES and raw_chars <= _SMALL_CHARS:

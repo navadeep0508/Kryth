@@ -8,7 +8,6 @@ Measures and reports:
   hybrid_efficiency       % of missions using >1 executor
   executor_success_rate   per-executor success %
   memory_hit_rate         % of selections informed by history
-  parallel_action_count   actions running simultaneously
 
 Integrates with improvement_lab and benchmark_runner via JSON export.
 """
@@ -17,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
+
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -53,8 +52,6 @@ class ActionAnalytics:
         self._metrics: list[ActionMetric] = []
         self._lock = threading.Lock()
         self._session_start = time.time()
-        self._parallel_peak = 0
-        self._current_parallel = 0
 
     # ── Recording ─────────────────────────────────────────────────────
 
@@ -63,14 +60,10 @@ class ActionAnalytics:
             self._metrics.append(metric)
 
     def action_started(self) -> None:
-        with self._lock:
-            self._current_parallel += 1
-            if self._current_parallel > self._parallel_peak:
-                self._parallel_peak = self._current_parallel
+        pass
 
     def action_finished(self) -> None:
-        with self._lock:
-            self._current_parallel = max(0, self._current_parallel - 1)
+        pass
 
     # ── Aggregation ───────────────────────────────────────────────────
 
@@ -113,7 +106,7 @@ class ActionAnalytics:
             "verification_rate_pct": verified / total * 100,
             "rolled_back_count": rolled_back,
             "memory_hit_rate_pct": memory_hits / total * 100,
-            "parallel_peak": self._parallel_peak,
+            "sequential_action_count": total,
             "hybrid_efficiency_pct": hybrid_efficiency,
             "avg_action_latency_ms": avg([m.action_latency_ms for m in metrics]),
             "avg_executor_latency_ms": avg([m.executor_latency_ms for m in metrics]),
@@ -147,6 +140,6 @@ class ActionAnalytics:
             "ual_rollback_latency_ms":     s.get("avg_rollback_latency_ms", 0.0),
             "ual_success_rate_pct":        s.get("success_rate_pct", 0.0),
             "ual_memory_hit_rate_pct":     s.get("memory_hit_rate_pct", 0.0),
-            "ual_parallel_peak":           float(s.get("parallel_peak", 0)),
+            "ual_sequential_action_count": float(s.get("sequential_action_count", 0)),
             "ual_hybrid_efficiency_pct":   s.get("hybrid_efficiency_pct", 0.0),
         }

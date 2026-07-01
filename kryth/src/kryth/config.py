@@ -1,17 +1,12 @@
-"""KRYTH CLI config - API key + optional per-role model overrides.
+"""KRYTH CLI config — single model.
 
 Storage: ~/.kryth/config.json  (mode 0600)
 
 Keys
 ----
-  nvidia_api_key   -> NVIDIA_API_KEY   (required - all models run on NVIDIA NIM)
-  main_model       -> KRYTH_MAIN_MODEL       (optional override; NIM chain used by default)
-  planner_model    -> KRYTH_PLANNER_MODEL    (optional override)
-  summarizer_model -> KRYTH_SUMMARIZER_MODEL (optional override)
-  vision_model     -> KRYTH_VISION_MODEL     (optional override)
-
-All other settings (base URL, fallback chains, TTFT thresholds) are fixed
-in the NIM router (nim_router/config.py) and never exposed here.
+  api_key  -> API_KEY    (required)
+  model    -> MODEL      (required)
+  base_url -> BASE_URL   (required)
 """
 
 from __future__ import annotations
@@ -19,78 +14,48 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
 from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# Storage
-# ---------------------------------------------------------------------------
 
 CONFIG_DIR  = Path.home() / ".kryth"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-LEGACY_CONFIG_FILE = Path.home() / ".ai-coder" / "config.json"   # legacy path, migrated on first load
 
-# Config key → environment variable (only 5 keys total)
 KEY_TO_ENV: dict[str, str] = {
-    "nvidia_api_key":    "NVIDIA_API_KEY",
-    "main_model":        "KRYTH_MAIN_MODEL",
-    "planner_model":     "KRYTH_PLANNER_MODEL",
-    "summarizer_model":  "KRYTH_SUMMARIZER_MODEL",
-    "vision_model":      "KRYTH_VISION_MODEL",
+    "api_key":  "API_KEY",
+    "model":    "MODEL",
+    "base_url": "BASE_URL",
 }
 
 VALID_KEYS = list(KEY_TO_ENV)
 
-# Defaults: empty model overrides mean NIM router uses its built-in chain
 DEFAULTS: dict[str, str] = {
-    "nvidia_api_key":    "",
-    "main_model":        "",
-    "planner_model":     "",
-    "summarizer_model":  "",
-    "vision_model":      "",
+    "api_key":  "",
+    "model":    "",
+    "base_url": "",
 }
 
 KEY_LABELS: dict[str, str] = {
-    "nvidia_api_key":    "NVIDIA API key",
-    "main_model":        "Main model override",
-    "planner_model":     "Planner model override",
-    "summarizer_model":  "Summarizer model override",
-    "vision_model":      "Vision model override",
+    "api_key":  "API key",
+    "model":    "Model",
+    "base_url": "Base URL",
 }
 
-SENSITIVE = {"nvidia_api_key"}
+SENSITIVE = {"api_key"}
 
-# Legacy env var aliases - applied on load so old configs still work
 LEGACY_ENV: dict[str, str] = {
-    "KRYTH_MAIN_MODEL":       "AICODER_MAIN_MODEL",
-    "KRYTH_PLANNER_MODEL":    "AICODER_PLANNER_MODEL",
-    "KRYTH_SUMMARIZER_MODEL": "AICODER_SUMMARIZER_MODEL",
+    "MODEL": "KRYTH_MAIN_MODEL",
 }
 
 
 def _load() -> dict[str, str]:
     stored: dict[str, str] = {}
-    # Prefer ~/.kryth/config.json; fall back to legacy ~/.ai-coder, then ~/.kryth_cli
-    for candidate in (
-        CONFIG_FILE,
-        LEGACY_CONFIG_FILE,
-        Path.home() / ".kryth_cli" / "config.json",
-    ):
+    for candidate in (CONFIG_FILE,):
         if candidate.exists():
             try:
                 stored = json.loads(candidate.read_text(encoding="utf-8"))
                 break
             except Exception:
                 pass
-
-    # Only keep keys that belong to the new slim schema (DEFAULTS).
-    # Old keys like "model", "base_url", "api_key" are silently dropped —
-    # NIM router uses its own built-in chains when model overrides are empty.
     result = {k: stored.get(k, DEFAULTS[k]) for k in DEFAULTS}
-
-    # Migrate: if a legacy key "nvidia_api_key" exists at top level, keep it.
-    # If only old "api_key" exists and nvidia_api_key is empty, ignore it
-    # (OpenAI keys are not valid for NVIDIA NIM).
     return result
 
 
@@ -110,26 +75,29 @@ def _mask(value: str, key: str) -> str:
 
 
 def apply_to_env(cfg: dict[str, str] | None = None) -> None:
-    """Inject stored config into os.environ (existing env wins - never overwrite)."""
     if cfg is None:
         cfg = _load()
     for key, env_var in KEY_TO_ENV.items():
         value = cfg.get(key, "").strip()
         if value and not os.environ.get(env_var, "").strip():
             os.environ[env_var] = value
-    # The fallback LLM client (llm.py) reads OPENAI_API_KEY and KRYTH_BASE_URL.
-    # Alias them from the NVIDIA key so both the nim_router and fallback paths work.
-    nvidia_key = os.environ.get("NVIDIA_API_KEY", "").strip()
-    if nvidia_key:
-        if not os.environ.get("OPENAI_API_KEY", "").strip():
-            os.environ["OPENAI_API_KEY"] = nvidia_key
-        if not os.environ.get("KRYTH_BASE_URL", "").strip():
-            os.environ["KRYTH_BASE_URL"] = "https://integrate.api.nvidia.com/v1"
-    # Propagate legacy aliases so old code paths still work
-    for new_var, old_var in LEGACY_ENV.items():
-        val = os.environ.get(new_var, "")
-        if val and not os.environ.get(old_var, ""):
-            os.environ[old_var] = val
+
+    # Map single config keys to all legacy env vars so existing code works
+    api_key = cfg.get("api_key", "").strip()
+    if api_key:
+        for legacy in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+            if not os.environ.get(legacy, "").strip():
+                os.environ[legacy] = api_key
+
+    model = cfg.get("model", "").strip()
+    if model:
+        for legacy in ("KRYTH_MAIN_MODEL", "KRYTH_PLANNER_MODEL", "KRYTH_SUMMARIZER_MODEL", "KRYTH_VISION_MODEL"):
+            if not os.environ.get(legacy, "").strip():
+                os.environ[legacy] = model
+
+    base_url = cfg.get("base_url", "").strip()
+    if base_url and not os.environ.get("KRYTH_BASE_URL", "").strip():
+        os.environ["KRYTH_BASE_URL"] = base_url
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +160,7 @@ def open_config_tui(focus_key: str | None = None) -> None:
     """Full-screen arrow-key config editor.
 
     Navigation:
-      â†' / â†"   move between fields
+      →' / ↓"   move between fields
       Enter   edit the selected field inline
       s       save & exit
       q / ESC quit without saving
@@ -214,7 +182,7 @@ def open_config_tui(focus_key: str | None = None) -> None:
         table = Table(
             show_header=True,
             header_style="bold",
-            border_style="divider",
+            border_style="bright_black",
             expand=True,
             show_edge=True,
             padding=(0, 1),
@@ -257,7 +225,7 @@ def open_config_tui(focus_key: str | None = None) -> None:
             table,
             title="[kryth.core]◈[/kryth.core] [title]KRYTH config[/title]",
             subtitle=footer,
-            border_style="divider",
+            border_style="bright_black",
             padding=(0, 0),
         )
 
@@ -303,10 +271,7 @@ def open_config_tui(focus_key: str | None = None) -> None:
             elif key in ("s", "S"):
                 _save(cfg)
                 # Hot-apply to current process
-                for k, env_var in KEY_TO_ENV.items():
-                    v = cfg.get(k, "")
-                    if v:
-                        os.environ[env_var] = v
+                apply_to_env(cfg)
                 saved = True
                 break
 
@@ -324,11 +289,10 @@ def open_config_tui(focus_key: str | None = None) -> None:
 # API-error prompt helper  (called from llm.py after auth/404 errors)
 # ---------------------------------------------------------------------------
 
-# Maps error type names to which config key to focus
 _ERROR_KEY_MAP: dict[str, str] = {
-    "AuthenticationError": "nvidia_api_key",
-    "PermissionDeniedError": "nvidia_api_key",
-    "NotFoundError": "main_model",
+    "AuthenticationError": "api_key",
+    "PermissionDeniedError": "api_key",
+    "NotFoundError": "model",
 }
 
 
@@ -345,8 +309,8 @@ def prompt_config_fix(error_type: str) -> None:
 
     messages = {
         "AuthenticationError": (
-            "[bold red]  401 - NVIDIA API key rejected.[/bold red]\n"
-            "  The key stored in config (or NVIDIA_API_KEY) was not accepted.\n"
+            "[bold red]  401 - API key rejected.[/bold red]\n"
+            "  The key stored in config (or API_KEY / NVIDIA_API_KEY) was not accepted.\n"
         ),
         "PermissionDeniedError": (
             "[bold red]  403 - Permission denied.[/bold red]\n"
@@ -354,7 +318,7 @@ def prompt_config_fix(error_type: str) -> None:
         ),
         "NotFoundError": (
             "[bold red]  404 - Model not found.[/bold red]\n"
-            "  Check the model name override in /config, or leave blank to use the NIM default chain.\n"
+            "  Check the model name in /config, or leave blank to use the default.\n"
         ),
     }
 

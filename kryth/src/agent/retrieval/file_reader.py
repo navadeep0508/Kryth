@@ -197,6 +197,8 @@ def read_lines(
     Uses mmap for files above MMAP_THRESHOLD to avoid loading
     the entire file into memory just to read a slice.
     """
+    if limit is None or limit < 1:
+        limit = 2000
     try:
         size = os.path.getsize(path)
     except OSError:
@@ -220,6 +222,8 @@ def read_lines(
 
 def _read_lines_mmap(path: str, offset: int, limit: int) -> list[str]:
     """Extract a line window from a memory-mapped file."""
+    if limit is None or limit < 1:
+        limit = 2000
     with open(path, "rb") as f:
         size = os.path.getsize(path)
         if size == 0:

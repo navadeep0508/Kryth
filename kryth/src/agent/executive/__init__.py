@@ -35,7 +35,7 @@ Quick start::
         quality_kwargs={"test_pass_rate": 0.95, "verification_rate": 0.90,
                         "security_score": 1.0, "eval_score": 0.88},
         team_kwargs={"active_workers": 4, "idle_workers": 1, "busy_workers": 3,
-                     "parallel_efficiency_pct": 72.0},
+                      "parallel_efficiency_pct": 0.0},
     )
     print(state.recommendation.value)     # "continue"
     print(f"{state.confidence.overall:.0%}")  # "94%"
