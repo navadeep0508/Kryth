@@ -83,40 +83,41 @@ class ScratchpadManager:
         self.state.current_state = "Initialized"
     
     def _detect_intent(self, user_input: str) -> None:
-        """Map user input to execution intent."""
-        lower = user_input.lower()
+        """Map user input to execution intent (word-boundary aware)."""
+        import re as _re
+        words = set(_re.findall(r"[A-Za-z]+", user_input.lower()))
         
         # CHAT is implicit — contained greeting, no exec signals
-        if any(greet in lower for greet in ("hi", "hello", "hey", "alo")):
+        if words & {"hi", "hello", "hey", "alo"}:
             self.current_intent = "CHAT"
             return
         
-        # Intent classifiers
-        if any(word in lower for word in ("run", "start", "launch", "execute")):
+        # Intent classifiers (word set intersection — no false substrings)
+        if words & {"run", "start", "launch", "execute"}:
             self.current_intent = "RUN"
             return
-        if any(word in lower for word in ("build", "create", "make", "app")):
+        if words & {"build", "create", "make", "scaffold"}:
             self.current_intent = "BUILD"
             return
-        if any(word in lower for word in ("modify", "edit", "fix", "change", "update")):
+        if words & {"modify", "edit", "fix", "change", "update"}:
             self.current_intent = "MODIFY"
             return
-        if any(word in lower for word in ("search", "find", "locate", "explore")):
+        if words & {"search", "find", "locate", "explore"}:
             self.current_intent = "SEARCH"
             return
-        if any(word in lower for word in ("read", "examine", "inspect", "understand")):
+        if words & {"read", "examine", "inspect", "understand"}:
             self.current_intent = "READ"
             return
         
         self.current_intent = "READ"  # default
     
-    def update_after_tool(self, tool_name: str, result: str) -> None:
+    def update_after_tool(self, tool_name: str, result: str, args: Optional[dict] = None) -> None:
         """Update state after a tool call completes."""
         if self.state is None:
             return
         
         # Update completed steps
-        step_label = self._format_tool_success(tool_name, result)
+        step_label = self._format_tool_success(tool_name, result, args)
         if step_label:
             self.state.completed_steps.append(step_label)
             # Trim tail to avoid bloating prompt
@@ -129,20 +130,29 @@ class ScratchpadManager:
         # Re-evaluate completion and next action
         self._recompute_state()
     
-    def _format_tool_success(self, tool_name: str, args_or_result: str) -> Optional[str]:
+    def _format_tool_success(self, tool_name: str, args_or_result: str, args: Optional[dict] = None) -> Optional[str]:
         """Humanize tool call for tracking."""
         pattern = self._tool_map.get(tool_name)
-        if pattern:
-            if "path" in args_or_result:
-                # Light extract — assumes JSON-serialized args for run_command
-                try:
-                    import json
-                    args = json.loads(str(args_or_result).split("Args:")[-1].split("|")[0])
-                    return pattern.format(path=args.get("path", ""), command=args.get("command", ""), pattern=args.get("pattern", ""))
-                except json.JSONDecodeError:
-                    return pattern
-            return pattern
-        return None
+        if not pattern:
+            return None
+        if args:
+            try:
+                return pattern.format(
+                    path=args.get("path", "") or "(unknown)",
+                    command=(args.get("command", "") or "")[:60] or "(unknown)",
+                    pattern=args.get("pattern", "") or "(unknown)",
+                )
+            except Exception:
+                pass
+        # Fallback: try to extract from result string
+        if "path" in args_or_result or "Args:" in args_or_result:
+            try:
+                import json
+                extracted = json.loads(str(args_or_result).split("Args:")[-1].split("|")[0])
+                return pattern.format(path=extracted.get("path", ""), command=extracted.get("command", ""), pattern=extracted.get("pattern", ""))
+            except Exception:
+                pass
+        return pattern
     
     def _check_blockers(self, tool_result: str) -> None:
         """Extract blockers from tool result (word heuristic)."""

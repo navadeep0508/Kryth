@@ -1201,6 +1201,38 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             continue
 
         tool_calls = response["tool_calls"] or []
+
+        # Detect user question intent (used in both tool and no-tool paths)
+        _user_msg_q = ""
+        for _m in reversed(session.messages):
+            if _m.get("role") == "user" and isinstance(_m.get("content"), str):
+                _user_msg_q = _m["content"]
+                break
+        _user_lower_q = _user_msg_q.lower().strip()
+        _exec_signals_q = (
+            "modify", "fix", "change", "update", "create", "write",
+            "build", "add", "remove", "delete", "rename", "move",
+            "implement", "refactor", "install", "run", "start",
+            "deploy", "migrate", "replace", "edit", "patch",
+            "do it", "do all", "make it", "set up", "configure",
+        )
+        _question_signals_q = (
+            "what ", "what's", "how ", "how's", "why ", "why's",
+            "where ", "when ", "who ", "which ",
+            "is it ", "are there ", "are the",
+            "can you", "does it", "do i ", "do you",
+            "will it", "would it", "should i",
+            "incomplete", "missing", "explain", "summar",
+            "describe", "tell me", "list ",
+        )
+        _is_question_turn = (
+            not any(s in _user_lower_q for s in _exec_signals_q)
+            and (
+                any(s in _user_lower_q for s in _question_signals_q)
+                or _user_lower_q.endswith("?")
+            )
+        )
+
         if not tool_calls:
             content = response["content"] or ""
 
@@ -1303,8 +1335,27 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                 if _files_written > 0 and _cmds_run == 0:
                     _nudge = f"[sys] {_files_written} file(s) written. Run install+start now."
                 elif _files_written == 0 and _cmds_run == 0:
+                    # Check scratchpad before declaring done (prevents premature
+                    # exit on READ tasks where files_written=0 and cmds_run=0)
+                    try:
+                        if _scratch.state is not None and not _scratch.should_finish() and not _is_question_turn:
+                            _next_action = _scratch.state.next_action
+                            session.append({"role": "user", "content":
+                                f"[scratchpad] Task incomplete. Next action: {_next_action}. Continue."})
+                            continue
+                    except Exception:
+                        pass
                     return LoopResult(status="done", content=content or "", turns_used=turn_count, finish_reason="completed")
                 elif _files_written == 0 and _cmds_blocked > 0 and _cmds_run == 0:
+                    # Check scratchpad before declaring done
+                    try:
+                        if _scratch.state is not None and not _scratch.should_finish() and not _is_question_turn:
+                            _next_action = _scratch.state.next_action
+                            session.append({"role": "user", "content":
+                                f"[scratchpad] Task incomplete. Next action: {_next_action}. Continue."})
+                            continue
+                    except Exception:
+                        pass
                     return LoopResult(status="done", content=content or "", turns_used=turn_count, finish_reason="completed")
                 else:
                     _nudge = "[sys] Run install+start now, or reply with your final answer."
@@ -1332,7 +1383,7 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
 
             # Hook: scratchpad completion check — nudge if task not done
             try:
-                if _scratch.state is not None and not _scratch.should_finish():
+                if _scratch.state is not None and not _scratch.should_finish() and not _is_question_turn:
                     _next_action = _scratch.state.next_action
                     session.append({"role": "user", "content":
                         f"[scratchpad] Task incomplete. Next action: {_next_action}. Continue."})
@@ -1375,41 +1426,11 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         ) and any(
             (tc.get("id") or "").startswith("hermes_") for tc in tool_calls
         )
-        # Question-intent guard: if the user's original message is a question
+        # Question-intent guard: if the user's message is a question
         # and there are already file read results in context, block execution
         # tools (write_file, run_command, edit_file) so the model answers
         # from context. Prevents "what is incomplete?" → pip install → python.
-        _user_msg = ""
-        for _m in reversed(session.messages):
-            if _m.get("role") == "user" and isinstance(_m.get("content"), str):
-                _user_msg = _m["content"]
-                break
-        _question_signals = (
-            "what ", "what's", "how ", "how's", "why ", "why's",
-            "where ", "when ", "who ", "which ",
-            "is it ", "are there ", "are the",
-            "can you", "does it", "do i ", "do you",
-            "will it", "would it", "should i",
-            "incomplete", "missing", "explain", "summar",
-            "describe", "tell me", "list ",
-        )
-        _exec_signals = (
-            "modify", "fix", "change", "update", "create", "write",
-            "build", "add", "remove", "delete", "rename", "move",
-            "implement", "refactor", "install", "run", "start",
-            "deploy", "migrate", "replace", "edit", "patch",
-            "do it", "do all", "make it", "set up", "configure",
-        )
-        _user_lower = _user_msg.lower().strip()
-        _has_exec_intent = any(s in _user_lower for s in _exec_signals)
-        _is_question = (
-            not _has_exec_intent
-            and (
-                any(s in _user_lower for s in _question_signals)
-                or _user_lower.endswith("?")
-            )
-        )
-        if _is_question:
+        if _is_question_turn:
             _has_reads = any(
                 m.get("role") == "tool" and m.get("name") in ("read_file", "grep")
                 for m in session.messages
@@ -1440,12 +1461,18 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         try:
             for _call in tool_calls:
                 _tname = (_call.get("function") or {}).get("name", "")
+                _raw_args = (_call.get("function") or {}).get("arguments", "{}")
+                _parsed = {}
+                try:
+                    _parsed = json.loads(_raw_args) if _raw_args else {}
+                except Exception:
+                    pass
                 _last_tool = next(
                     (m for m in reversed(session.messages) if m.get("role") == "tool"),
                     None,
                 )
                 _result = _last_tool.get("content", "") if _last_tool else ""
-                _scratch.update_after_tool(_tname, _result)
+                _scratch.update_after_tool(_tname, _result, args=_parsed)
         except Exception:
             pass
 
