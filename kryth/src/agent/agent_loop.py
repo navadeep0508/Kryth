@@ -25,7 +25,9 @@ from agent.permissions import ask_user, check_permission
 from agent.project_context import git_status_snapshot, load_context_file
 from agent.prompts import SYSTEM_PROMPT
 from agent.session import get_session
-# from agent.skills import auto_select_skills, compose_skills  # removed: skills auto-injection disabled
+# Runtime scratchpad - execution state tracking
+from agent.runtime.scratchpad import ScratchpadManager, scratchpad_reset, scratch as _scratch
+# from agent.skills import auto_select_skills, compose_skills # removed: skills auto-injection disabled
 
 from agent.tools import (
     READ_ONLY_TOOLS,
@@ -1115,11 +1117,28 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             except Exception:
                 pass
 
+        # Hook: inject scratchpad prompt block before LLM call
+        _scratch_state = None
+        try:
+            _block = _scratch.render_prompt_block()
+            if _block:
+                _scratch_state = len(session.messages)
+                session.messages.append({"role": "system", "content": _block})
+        except Exception:
+            pass
+
         _turn_llm_start = _time.monotonic()
         response = ask_llm_stream(
             session.messages,
             tools=_turn_tools,
         )
+
+        # Remove injected scratchpad block
+        if _scratch_state is not None:
+            try:
+                session.messages.pop(_scratch_state)
+            except Exception:
+                pass
         _turn_llm_end = _time.monotonic()
         _total_planning_s += _turn_llm_end - _turn_llm_start
         usage = response.get("usage") or {}
@@ -1311,6 +1330,16 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                 except Exception:
                     pass
 
+            # Hook: scratchpad completion check — nudge if task not done
+            try:
+                if _scratch.state is not None and not _scratch.should_finish():
+                    _next_action = _scratch.state.next_action
+                    session.append({"role": "user", "content":
+                        f"[scratchpad] Task incomplete. Next action: {_next_action}. Continue."})
+                    continue
+            except Exception:
+                pass
+
             return LoopResult(
                 status="done",
                 content=content,
@@ -1406,6 +1435,19 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         _exec_start = _time.monotonic()
         _process_tool_calls(session, tool_calls)
         _total_executing_s += _time.monotonic() - _exec_start
+
+        # Hook: update scratchpad after tool execution
+        try:
+            for _call in tool_calls:
+                _tname = (_call.get("function") or {}).get("name", "")
+                _last_tool = next(
+                    (m for m in reversed(session.messages) if m.get("role") == "tool"),
+                    None,
+                )
+                _result = _last_tool.get("content", "") if _last_tool else ""
+                _scratch.update_after_tool(_tname, _result)
+        except Exception:
+            pass
 
         # Rule 23: push live perf metrics to dashboard every tool turn
         try:
@@ -1783,6 +1825,12 @@ def run_agent(user_input, extra_system: str | None = None):
         )
 
     session.append({"role": "user", "content": user_content})
+
+    # Hook: init scratchpad for this task
+    try:
+        _scratch.initialize(user_content)
+    except Exception:
+        pass
 
     result = run_inner_loop(
         session, MAX_TOOL_TURNS, verbose_usage=True,
