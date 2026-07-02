@@ -1085,6 +1085,13 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                 _turn_tools = curate(session.messages, TOOL_SPECS)
             except Exception:
                 _turn_tools = TOOL_SPECS
+            # Scratchpad v2: filter tools per intent
+            try:
+                _filtered = _scratch.filter_tools(_turn_tools)
+                if _filtered:
+                    _turn_tools = _filtered
+            except Exception:
+                pass
 
         # Hard token budget gate + pre-call telemetry
         try:
@@ -1254,6 +1261,13 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             _content_lower = content.lower()
             if any(sig in _content_lower for sig in _REFUSAL_SIGNALS):
                 return LoopResult(status="done", content=content, turns_used=turn_count, finish_reason="refused")
+
+            # ── Scratchpad should_stop early-exit ──────────────────────────
+            try:
+                if _scratch.state is not None and _scratch.state.should_stop:
+                    return LoopResult(status="done", content=content or "", turns_used=turn_count, finish_reason="completed")
+            except Exception:
+                pass
 
             # ── V1.6 Phase 3: impl mode nudge injection ──────────────────
             if _ap_enabled:
