@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Optional, Any
 
@@ -67,6 +68,7 @@ class Session:
 
     # Memory manager — lazily created on first access
     _memory_manager: Any = None
+    _lock: Any = field(default_factory=threading.RLock)
 
     @property
     def memory_manager(self):
@@ -76,7 +78,8 @@ class Session:
         return self._memory_manager
 
     def reset(self) -> None:
-        self.messages = []
+        with self._lock:
+            self.messages = []
         self.todos = []
         self.tool_call_count = 0
         self.cumulative_in_tokens = 0
@@ -93,17 +96,20 @@ class Session:
         # explicit /profile choice survives until they change it.
 
     def total_tokens(self) -> int:
-        return sum(message_tokens(m) for m in self.messages)
+        with self._lock:
+            return sum(message_tokens(m) for m in self.messages)
 
     def ensure_system(self) -> None:
-        if not self.messages or self.messages[0].get("role") != "system":
-            self.messages.insert(
-                0,
-                {"role": "system", "content": self.system_prompt},
-            )
+        with self._lock:
+            if not self.messages or self.messages[0].get("role") != "system":
+                self.messages.insert(
+                    0,
+                    {"role": "system", "content": self.system_prompt},
+                )
 
     def append(self, msg: dict) -> None:
-        self.messages.append(msg)
+        with self._lock:
+            self.messages.append(msg)
         # Persistence is opt-out via KRYTH_NO_PERSIST. The store
         # silently drops the write if no session has been started, so
         # calling this when persistence is off costs nothing.

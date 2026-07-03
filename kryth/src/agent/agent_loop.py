@@ -42,6 +42,30 @@ from agent.tools._results import err, is_error
 
 # Orchestration removed — single-agent sequential execution only.
 
+import os as _path_os
+
+
+def _safe_resolve_path(user_path: str) -> str:
+    """Resolve a user/model-supplied path and verify it's within CWD.
+    
+    Prevents path traversal attacks (``read_file("../../../etc/passwd")``).
+    Returns the resolved absolute path, or raises ValueError if outside CWD.
+    """
+    resolved = _path_os.path.realpath(user_path)
+    cwd = _path_os.path.realpath(".")
+    try:
+        _path_os.path.commonpath([resolved, cwd])
+    except ValueError:
+        # Different drives on Windows — can't compute common path
+        if resolved.startswith(cwd.rstrip("\\") + "\\") or resolved == cwd.rstrip("\\"):
+            return resolved
+        raise ValueError(f"Path {user_path} resolves outside working directory")
+    if not resolved.startswith(cwd):
+        # On different Windows drives — blocked
+        if ":" in cwd and ":" in resolved and cwd.split(":")[0] != resolved.split(":")[0]:
+            raise ValueError(f"Path {user_path} is on a different drive than CWD")
+    return resolved
+
 
 # Effectively unlimited - set to 100000 by default (can be overridden via env var)
 MAX_TOOL_TURNS = int(getenv("KRYTH_MAX_TOOL_TURNS", "100000"))
@@ -317,6 +341,25 @@ def dispatch_tool_call(session, call):
         return
 
     args = _coerce_tool_args(tool_name, args)
+
+    # ── Path traversal guard ─────────────────────────────────────────────
+    # Resolve all path arguments to prevent "../../../etc/passwd" attacks.
+    # This runs BEFORE any tool executes.
+    if tool_name in ("read_file", "write_file", "edit_file", "multi_edit", "delete_file"):
+        _path_arg = args.get("path", "")
+        if _path_arg:
+            try:
+                args["path"] = _safe_resolve_path(_path_arg)
+            except (ValueError, OSError) as _pe:
+                _logger.warning("dispatch_tool_call path traversal blocked: %s -> %s", tool_name, _path_arg)
+                result = err(
+                    "PATH_TRAVERSAL",
+                    f"Path '{_path_arg}' resolves outside the working directory and was blocked.",
+                )
+                ui.tool_start(tool_name, args)
+                ui.tool_error(f"path traversal blocked: {_path_arg}")
+                _append_tool_msg(session, call_id, tool_name, result)
+                return
 
     # ── Memory pre-check: duplicate read / command detection ──────────────
     if tool_name == "read_file":
@@ -647,27 +690,29 @@ def dispatch_tool_call(session, call):
         _logger.debug("dispatch_tool_call output_summarizer: %s", _e)
 
     # Auto-compress browser results every N tool calls
-    try:
-        from agent.context_manager import compress_messages, COMPRESS_EVERY_N
-        if session.tool_call_count % COMPRESS_EVERY_N == 0:
-            session.messages, dropped = compress_messages(session.messages)
-            if dropped > 0:
-                ui.debug(f"(context: compressed {dropped:,} chars of old browser results)")
-    except Exception as _e:
-        _logger.debug("dispatch_tool_call compress_messages: %s", _e)
+        try:
+            from agent.context_manager import compress_messages, COMPRESS_EVERY_N
+            if session.tool_call_count % COMPRESS_EVERY_N == 0:
+                with session._lock:
+                    session.messages, dropped = compress_messages(session.messages)
+                if dropped > 0:
+                    ui.debug(f"(context: compressed {dropped:,} chars of old browser results)")
+        except Exception as _e:
+            _logger.debug("dispatch_tool_call compress_messages: %s", _e)
 
     # Periodic history checkpointing — compresses old turns into structured JSON
-    try:
-        from agent.checkpoint_manager import should_checkpoint, apply_checkpoint
-        _ckpt_count = getattr(session, "_tool_calls_since_checkpoint", 0) + 1
-        session._tool_calls_since_checkpoint = _ckpt_count
-        if should_checkpoint(session, _ckpt_count):
-            session.messages, _freed = apply_checkpoint(session.messages)
-            session._tool_calls_since_checkpoint = 0
-            if _freed > 0:
-                ui.debug(f"(checkpoint: archived {_freed:,} chars of old history)")
-    except Exception as _e:
-        _logger.debug("dispatch_tool_call checkpoint: %s", _e)
+        try:
+            from agent.checkpoint_manager import should_checkpoint, apply_checkpoint
+            with session._lock:
+                _ckpt_count = getattr(session, "_tool_calls_since_checkpoint", 0) + 1
+                session._tool_calls_since_checkpoint = _ckpt_count
+                if should_checkpoint(session, _ckpt_count):
+                    session.messages, _freed = apply_checkpoint(session.messages)
+                    session._tool_calls_since_checkpoint = 0
+                    if _freed > 0:
+                        ui.debug(f"(checkpoint: archived {_freed:,} chars of old history)")
+        except Exception as _e:
+            _logger.debug("dispatch_tool_call checkpoint: %s", _e)
 
     # Tools that render their own visual representation skip the generic tee
     if tool_name not in SELF_RENDERED_TOOLS:
@@ -707,8 +752,7 @@ def _speculative_preload(session, user_input: str) -> "threading.Event":
     import threading as _t
 
     done = _t.Event()
-    results: dict = {}
-    session._speculative_results = results
+    session._speculative_results = None
 
     lower = user_input.lower()
     patterns: list[str] = []
@@ -745,7 +789,8 @@ def _speculative_preload(session, user_input: str) -> "threading.Event":
                 if len(found) >= 12:
                     break
             if found:
-                results["files"] = found[:12]
+                with session._lock:
+                    session._speculative_results = {"files": found[:12]}
         except Exception as _e:
             _logger.debug("_speculative_preload failed: %s", _e)
         finally:
@@ -962,8 +1007,9 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         try:
             _block = _scratch.render_prompt_block()
             if _block:
-                _scratch_state = len(session.messages)
-                session.messages.append({"role": "system", "content": _block})
+                with session._lock:
+                    _scratch_state = len(session.messages)
+                    session.messages.append({"role": "system", "content": _block})
         except Exception as _e:
             _logger.warning("scratchpad.render_prompt_block failed: %s", _e)
 
@@ -972,8 +1018,9 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             from agent.memory import get_context_summary as _gcs
             _mem_block = _gcs(id(session), max_tokens=400)
             if _mem_block:
-                _mem_state = len(session.messages)
-                session.messages.append({"role": "system", "content": _mem_block})
+                with session._lock:
+                    _mem_state = len(session.messages)
+                    session.messages.append({"role": "system", "content": _mem_block})
         except Exception as _e:
             _logger.debug("run_inner_loop get_context_summary: %s", _e)
 
@@ -984,16 +1031,18 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         )
 
         # Remove injected scratchpad and memory blocks (in reverse order)
-        if _mem_state is not None:
-            try:
-                session.messages.pop(_mem_state)
-            except Exception as _e:
-                _logger.debug("run_inner_loop pop mem_state: %s", _e)
-        if _scratch_state is not None:
-            try:
-                session.messages.pop(_scratch_state)
-            except Exception as _e:
-                _logger.warning("failed to pop scratchpad block: %s", _e)
+        if _mem_state is not None or _scratch_state is not None:
+            with session._lock:
+                if _mem_state is not None:
+                    try:
+                        session.messages.pop(_mem_state)
+                    except Exception as _e:
+                        _logger.debug("run_inner_loop pop mem_state: %s", _e)
+                if _scratch_state is not None:
+                    try:
+                        session.messages.pop(_scratch_state)
+                    except Exception as _e:
+                        _logger.warning("failed to pop scratchpad block: %s", _e)
         _turn_llm_end = _time.monotonic()
         _total_planning_s += _turn_llm_end - _turn_llm_start
         usage = response.get("usage") or {}
@@ -1429,9 +1478,10 @@ def run_agent(user_input, extra_system: str | None = None):
     # so the new task starts with a clean slate.
     if getattr(session, "_task_interrupted", False):
         session._task_interrupted = False
-        session.messages = [
-            m for m in session.messages if m.get("role") == "system"
-        ]
+        with session._lock:
+            session.messages = [
+                m for m in session.messages if m.get("role") == "system"
+            ]
         ui.muted("  (previous task interrupted — starting fresh)")
 
 
@@ -1448,7 +1498,8 @@ def run_agent(user_input, extra_system: str | None = None):
 
     # Wait briefly for preloaded data --- max 200 ms; don't block if still loading.
     _preload_done.wait(timeout=0.2)
-    _sr = getattr(session, "_speculative_results", {})
+    with session._lock:
+        _sr = session._speculative_results or {}
     if _sr.get("experience") and _is_first_turn:
         try:
             _exp_text = str(_sr["experience"])[:800]
