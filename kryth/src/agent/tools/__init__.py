@@ -51,7 +51,6 @@ from agent.tools._specs import TOOL_SPECS
 # Research: save_research_finding, get_research_report
 # Terminal: shell_exec, shell_state, shell_plan, shell_run_plan, shell_build_test_loop, process_list, process_kill, terminal_memory_recall
 # Supervisor: run_supervised_mission, supervisor_status, supervisor_predict, supervisor_health, supervisor_replan, supervisor_recover, ownership_claim, ownership_release, ownership_status, budget_status
-# Mission: MISSION_TOOLS
 # Factory: FACTORY_TOOLS
 # Stream write: write_file_begin, write_file_chunk, write_file_finalize
 
