@@ -17,7 +17,7 @@ from agent.ui.input import PromptUI
 REPL_COMMANDS = {
     "/clear", "/todos", "/tokens", "/plan", "/mode", "/skills", "/help", "/diag",
     "/log", "/resume", "/memory", "/profile", "/config", "/bridge",
-    "/models", "/tools", "/status", "/session",
+    "/models", "/tools", "/status", "/session", "/health",
     "/graph", "/init", "/layer", "/replay", "/agents", "/logs", "/debug",
     "/exec", "/audit",
     # Manual orchestration — never auto-triggered
@@ -259,6 +259,19 @@ def _cmd_skills(args: str = "") -> None:
         # Fallback to legacy if ecosystem unavailable
         names = list_skills()
         ui.muted("skills: " + ", ".join(f"/{n}" for n in names))
+
+
+def _cmd_health(_args: str = "") -> None:
+    """Show live session health: model, timing breakdown, context pressure."""
+    from kryth.health_cmd import get_health_report
+    report = get_health_report()
+    for line in report.splitlines():
+        if line.startswith("──") or line.strip() == "":
+            ui.muted(line)
+        elif "Context:" in line:
+            ui.muted(line)
+        else:
+            ui.info(line)
 
 
 def _cmd_diag(_args: str = "") -> None:
@@ -692,6 +705,7 @@ _HANDLERS = {
     "/skills":  _cmd_skills,
     "/diag":    _cmd_diag,
     "/help":    _cmd_help,
+    "/health":  _cmd_health,
     "/models":  _cmd_models,
     "/tools":   _cmd_tools,
     "/status":  _cmd_status,

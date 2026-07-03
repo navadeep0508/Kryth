@@ -13,6 +13,7 @@ from openai import (
 from dotenv import load_dotenv
 import httpx
 import json
+import logging
 import os
 import re
 import time
@@ -22,6 +23,8 @@ from agent import ui
 from agent.env import getenv
 
 load_dotenv()
+
+_logger = logging.getLogger(__name__)
 
 # Provider endpoint + models are env-configurable so users can swap
 # providers (OpenAI, NVIDIA, freemodel.dev, OpenRouter, local llama.cpp)
@@ -33,6 +36,38 @@ BASE_URL = getenv("KRYTH_BASE_URL", "https://api.openai.com/v1")
 MAIN_MODEL = getenv("KRYTH_MAIN_MODEL", "gpt-4o-mini")
 PLANNER_MODEL = getenv("KRYTH_PLANNER_MODEL", "gpt-4o-mini")
 SUMMARIZER_MODEL = getenv("KRYTH_SUMMARIZER_MODEL", "gpt-4o-mini")
+
+def reload_config() -> None:
+    """Refresh module-level config from environment variables.
+
+    Call this after `/config` saves new values to ``~/.kryth/config.json``
+    and calls ``apply_to_env()``.  The module-level constants
+    ``MAIN_MODEL``, ``PLANNER_MODEL``, ``SUMMARIZER_MODEL``, and
+    ``BASE_URL`` are re-read from ``os.environ`` so that REPL commands
+    like ``/diag``, ``/models``, and ``/status`` show the live values
+    without a restart. If the API key or base URL changed, the cached
+    ``_client`` is also discarded so the next call picks up the new
+    credentials.
+    """
+    global _client, BASE_URL, MAIN_MODEL, PLANNER_MODEL, SUMMARIZER_MODEL
+
+    # Snapshot old values to detect changes
+    old_key = os.getenv("OPENAI_API_KEY", "").strip() or "not-configured"
+    old_url = getenv("KRYTH_BASE_URL", BASE_URL)
+
+    # Refresh from env
+    MAIN_MODEL       = getenv("KRYTH_MAIN_MODEL",       "gpt-4o-mini")
+    PLANNER_MODEL    = getenv("KRYTH_PLANNER_MODEL",    "gpt-4o-mini")
+    SUMMARIZER_MODEL = getenv("KRYTH_SUMMARIZER_MODEL", "gpt-4o-mini")
+    BASE_URL         = getenv("KRYTH_BASE_URL",         "https://api.openai.com/v1")
+
+    # If key or endpoint changed, drop the cached client so
+    # ``_get_client()`` creates a fresh one on the next call.
+    new_key = os.getenv("OPENAI_API_KEY", "").strip() or "not-configured"
+    new_url = getenv("KRYTH_BASE_URL", BASE_URL)
+    if new_key != old_key or new_url.rstrip("/") != old_url.rstrip("/"):
+        _client = None
+
 
 # Transient errors worth retrying. Auth / bad-request / not-found are
 # terminal — retrying won't help.
@@ -74,8 +109,8 @@ def _get_client() -> OpenAI:
     try:
         from agent.model_config.router import get_client as _mc_get_client
         return _mc_get_client("main")
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("model_config.router unavailable, using env-var fallback: %s", _e)
 
     current_key = os.getenv("OPENAI_API_KEY", "").strip() or "not-configured"
     current_url = getenv("KRYTH_BASE_URL", BASE_URL)
@@ -1211,8 +1246,8 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None, task_complexity:
         # Only override model if model_config has a non-default value
         if _stream_mc_model and _stream_mc_model != selected_model:
             selected_model = _stream_mc_model
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("model_config.router.get_llm unavailable, using main: %s", _e)
 
     request_messages = _sanitize_messages(messages)
     request_messages = _sanitize_messages_for_provider(request_messages)
@@ -1904,128 +1939,7 @@ def ask_llm_stream(messages, tools=None, *, routing_hints=None, task_complexity:
     }
 
 
-_PLANNER_SYSTEM = """You plan small-to-medium software tasks for an
-autonomous coding agent. Output a STRICT JSON object — no markdown, no
-prose preamble, just the object. The object must conform to this
-schema:
 
-{
-  "goal": "one sentence — what the user actually wants",
-  "task_type": "build_app|build_landing|build_dashboard|build_api|build_cli|build_library|fix_bug|refactor|investigate|other",
-  "required_files": [
-    {"path": "relative/path.ext", "purpose": "one-line description"}
-  ],
-  "execution_steps": [
-    "ordered, imperative steps the executor should perform"
-  ],
-  "validation_steps": [
-    "how the executor verifies success (run X, open Y, curl Z)"
-  ],
-  "risks": [
-    "known failure modes or unknowns worth surfacing"
-  ],
-  "dependencies": [
-    "third-party packages/runtimes required"
-  ]
-}
-
-Hard rules:
-- For build_app / build_landing / build_dashboard / build_api: required_files
-  MUST contain >= 3 entries with concrete paths and real purposes.
-- execution_steps and validation_steps must be non-empty for any build.
-- Filenames should match the language of the request (index.html,
-  styles.css, script.js, app.py, requirements.txt, package.json, etc).
-- Do NOT write any code. Only the plan.
-- Output is parsed by ``json.loads`` — single object, no trailing comma,
-  no comments."""
-
-
-def _extract_json_object(text: str) -> dict | None:
-    """Pull the first balanced ``{...}`` block out of ``text`` and parse
-    it. Returns None on failure. Tolerates surrounding prose and
-    markdown fences that some models add despite instructions.
-    """
-    if not text:
-        return None
-    # Strip markdown code fences if present.
-    if "```" in text:
-        # Pull contents of the first fence.
-        parts = text.split("```")
-        for part in parts:
-            cleaned = part.lstrip("json").lstrip("\n").strip()
-            if cleaned.startswith("{"):
-                text = cleaned
-                break
-
-    start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        ch = text[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                blob = text[start:i + 1]
-                try:
-                    obj = json.loads(blob)
-                except json.JSONDecodeError:
-                    return None
-                return obj if isinstance(obj, dict) else None
-    return None
-
-
-def ask_planner(user_input):
-    """Return ``(structured_plan_dict_or_None, fallback_prose)``.
-
-    On success the dict matches the schema in ``_PLANNER_SYSTEM``. On
-    parse failure we return any prose the model produced so the caller
-    can still display it as a hint — degrades gracefully when the
-    planner ignores the JSON instruction.
-    """
-    # Use model_config router for planner role if available
-    _planner_client = client
-    _planner_model = PLANNER_MODEL
-    try:
-        from agent.model_config.router import get_llm as _mc_get_llm
-        _planner_client, _planner_model = _mc_get_llm("planner")
-    except Exception:
-        pass
-
-    try:
-        response = _retry(
-            "ask_planner",
-            _planner_client.chat.completions.create,
-            model=_planner_model,
-            messages=[
-                {"role": "system", "content": _PLANNER_SYSTEM},
-                {"role": "user", "content": user_input},
-            ],
-            temperature=0,
-            max_tokens=800,
-        )
-    except KeyboardInterrupt:
-        raise
-    except APIStatusError as e:
-        ui.muted(f"(planner skipped: {_format_api_error(e)})")
-        return None, ""
-    except Exception as e:
-        ui.muted(f"(planner unavailable: {type(e).__name__}; continuing)")
-        return None, ""
-
-    msg = response.choices[0].message
-    text = getattr(msg, "content", None) or ""
-    text = text.strip()
-    if not text:
-        return None, ""
-
-    plan = _extract_json_object(text)
-    if plan is None:
-        # Couldn't parse — return prose so the caller can still show it.
-        return None, text
-    return plan, text
 
 
 _CRITIC_SYSTEM = """You are a senior reviewer auditing a change another
@@ -2152,71 +2066,3 @@ def diagnose_error(
 
     msg = response.choices[0].message
     return (getattr(msg, "content", None) or "").strip()
-
-
-def summarize(messages_to_compress: list) -> str:  # noqa: C901
-    # Use model_config router for summary role if available, else fall back
-    # to the main model so summarization always works even when a dedicated
-    # summarizer model (e.g. gpt-4o-mini) isn't available on the endpoint.
-    _sum_client = client
-    _sum_model = SUMMARIZER_MODEL
-    try:
-        from agent.model_config.router import get_llm as _mc_get_llm
-        _sum_client, _sum_model = _mc_get_llm("summary")
-    except Exception:
-        pass
-    # If the configured summarizer model differs from the main model and the
-    # call fails, _summarize_with will retry on the main model automatically.
-    _fallback_model = MAIN_MODEL
-
-    rendered = []
-    for m in messages_to_compress:
-        role = m.get("role", "?")
-        content = m.get("content")
-        if content:
-            rendered.append(f"[{role}] {content}")
-        for call in m.get("tool_calls") or []:
-            fn = call.get("function", {})
-            rendered.append(
-                f"[assistant->tool] {fn.get('name')}({fn.get('arguments')})"
-            )
-
-    blob = "\n".join(rendered)[:30000]
-    # Sanitize: replace any characters that cannot be encoded to UTF-8 (e.g., surrogates)
-    blob = blob.encode("utf-8", errors="replace").decode("utf-8")
-
-    _sum_messages = [
-        {
-            "role": "system",
-            "content": (
-                "Summarize the following agent conversation. "
-                "Preserve: user intent, decisions made, files touched, "
-                "errors hit, and the current state of the task. "
-                "Be terse. No markdown."
-            ),
-        },
-        {"role": "user", "content": blob},
-    ]
-
-    for attempt_model, attempt_client in [(_sum_model, _sum_client), (_fallback_model, client)]:
-        try:
-            response = _retry(
-                "summarize",
-                attempt_client.chat.completions.create,
-                model=attempt_model,
-                messages=_sum_messages,
-                temperature=0,
-                max_tokens=4096,
-            )
-            text = (response.choices[0].message.content or "").strip()
-            if text:
-                return text
-        except KeyboardInterrupt:
-            raise
-        except APIStatusError as e:
-            ui.muted(f"(summarizer/{attempt_model} skipped: {_format_api_error(e)})")
-        except Exception as e:
-            ui.muted(f"(summarizer/{attempt_model} unavailable: {type(e).__name__})")
-        if attempt_model == _fallback_model:
-            break  # both attempts done
-    return ""

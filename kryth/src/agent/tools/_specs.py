@@ -189,12 +189,12 @@ TOOL_SPECS = [
         },
     },
 
-    # ── Task Management ─────────────────────────────────────────────────────
+    # ── Execution Plan (Todo) Management ─────────────────────────────────────
     {
         "type": "function",
         "function": {
             "name": "todo_write",
-            "description": "Set the agent's working todo list. Replaces the existing list.",
+            "description": "Set the execution plan. Replaces the current plan. Controls task completion — all steps must be completed (or explicitly blocked) before the task finishes.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -203,10 +203,19 @@ TOOL_SPECS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "text": {"type": "string"},
+                                "text": {"type": "string", "description": "Step description"},
                                 "status": {
                                     "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"],
+                                    "enum": ["pending", "active", "in_progress", "completed", "blocked", "failed"],
+                                    "description": "pending=not started, active/in_progress=in progress, completed=done, blocked=stuck, failed=errored",
+                                },
+                                "tool_hint": {
+                                    "type": "string",
+                                    "description": "Expected tool to complete this step (e.g. read_file, edit_file, run_tests, run_command)",
+                                },
+                                "verification_required": {
+                                    "type": "boolean",
+                                    "description": "Whether this step needs verification before considered done",
                                 },
                             },
                             "required": ["text"],
@@ -221,7 +230,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "todo_read",
-            "description": "Read the current todo list.",
+            "description": "Read the current execution plan (todo list).",
             "parameters": {"type": "object", "properties": {}},
         },
     },

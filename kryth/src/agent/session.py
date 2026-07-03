@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import contextvars
 from dataclasses import dataclass, field
-from typing import Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from agent.memory.memory_manager import MemoryManager
+from typing import Optional, Any
 
 
 def estimate_tokens(text: str) -> int:
@@ -32,6 +29,7 @@ class Session:
     messages: list = field(default_factory=list)
     todos: list = field(default_factory=list)
     tool_call_count: int = 0
+    session_id: int = 0  # unique per object, set in __post_init__
     system_prompt: str = ""
     project_map: str = ""
     cumulative_in_tokens: int = 0
@@ -55,17 +53,24 @@ class Session:
     # Values: "ASK" | "AUTO" | "SESSION_APPROVED" | "ALWAYS_SINGLE"
     multi_agent_mode: str = "ASK"
 
+    # Timing tracking for tool execution (replaced anti_paralysis.py)
+    analysis_time_s: float = 0.0
+    impl_time_s: float = 0.0
+    search_count: int = 0
+    duplicate_searches: int = 0
+
     # Read Memory: semantic summaries of explored files
     read_memory: dict = field(default_factory=dict)  # path -> FileSummary
 
-    # Memory Manager — unified 5-layer memory architecture
-    memory_manager: Optional["MemoryManager"] = None
+    # Memory manager — lazily created on first access
+    _memory_manager: Any = None
 
-    def get_memory_manager(self):
-        if self.memory_manager is None:
+    @property
+    def memory_manager(self):
+        if self._memory_manager is None:
             from agent.memory.memory_manager import MemoryManager
-            self.memory_manager = MemoryManager(session_id=id(self))
-        return self.memory_manager
+            self._memory_manager = MemoryManager(session_id=id(self))
+        return self._memory_manager
 
     def reset(self) -> None:
         self.messages = []
@@ -76,6 +81,10 @@ class Session:
         self.mode = "default"
         self.remembered_permissions = {}
         self.denial_counts = {}
+        self.analysis_time_s = 0.0
+        self.impl_time_s = 0.0
+        self.search_count = 0
+        self.duplicate_searches = 0
         # Profile is intentionally NOT reset: /clear is "fresh
         # transcript", not "fresh autonomy level". The operator's
         # explicit /profile choice survives until they change it.

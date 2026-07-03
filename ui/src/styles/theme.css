@@ -1,0 +1,371 @@
+:root {
+  --bg-primary: #090909;
+  --bg-surface: #111111;
+  --bg-panel: #151515;
+  --bg-hover: #1a1a1a;
+  --bg-active: #202020;
+  --border: #262626;
+  --border-focus: #333333;
+  --text-primary: #f5f5f5;
+  --text-secondary: #a0a0a0;
+  --text-muted: #8b8b8b;
+  --text-dim: #5c5c5c;
+  --accent-success: #4ade80;
+  --accent-warning: #facc15;
+  --accent-error: #f87171;
+  --accent-active: #60a5fa;
+  --accent-info: #818cf8;
+  --font-mono: "JetBrains Mono", "Geist Mono", "SF Mono", monospace;
+  --font-size: 13px;
+  --font-size-sm: 11px;
+  --font-size-lg: 15px;
+  --line-height: 1.5;
+  --radius: 4px;
+  --radius-sm: 2px;
+  --transition: 120ms ease;
+  --scrollbar-width: 8px;
+  --sidebar-width: 240px;
+  --inspector-width: 300px;
+  --separator-width: 2px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgba(96, 165, 250, 0.3);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+  height: var(--scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-sm);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+.kryth-layout {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.kryth-sidebar {
+  width: var(--sidebar-width);
+  min-width: 180px;
+  max-width: 400px;
+  background: var(--bg-panel);
+  border-right: var(--separator-width) solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+
+.kryth-sidebar-header {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.kryth-logo {
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.kryth-logo-sub {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.kryth-sidebar-section {
+  padding: 8px 0;
+}
+
+.kryth-sidebar-section-title {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  padding: 4px 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.kryth-sidebar-item {
+  padding: 4px 16px;
+  font-size: var(--font-size);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kryth-sidebar-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.kryth-sidebar-item.active {
+  color: var(--accent-active);
+  background: var(--bg-active);
+}
+
+.kryth-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-primary);
+  min-width: 400px;
+}
+
+.kryth-terminal-view {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  padding: 8px 0;
+}
+
+.kryth-terminal-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.kryth-command-bar {
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
+.kryth-command-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  padding: 10px 16px;
+  caret-color: var(--accent-active);
+}
+
+.kryth-command-input::placeholder {
+  color: var(--text-dim);
+}
+
+.kryth-inspector {
+  width: var(--inspector-width);
+  min-width: 240px;
+  max-width: 500px;
+  background: var(--bg-panel);
+  border-left: var(--separator-width) solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+
+.kryth-inspector-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.kryth-pipeline {
+  padding: 8px 0;
+}
+
+.kryth-stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px;
+  font-size: var(--font-size);
+}
+
+.kryth-stage-icon {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.kryth-stage.pending { color: var(--text-dim); }
+.kryth-stage.running { color: var(--accent-active); }
+.kryth-stage.success { color: var(--accent-success); }
+.kryth-stage.failed  { color: var(--accent-error); }
+.kryth-stage.warning { color: var(--accent-warning); }
+
+.kryth-stage-detail {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  margin-left: 24px;
+}
+
+.kryth-separator {
+  width: var(--separator-width);
+  background: var(--border);
+  cursor: col-resize;
+  transition: background var(--transition);
+  flex-shrink: 0;
+}
+
+.kryth-separator:hover,
+.kryth-separator.active {
+  background: var(--accent-active);
+}
+
+.kryth-tool-summary {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.kryth-tool-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.kryth-tool-block {
+  border-bottom: 1px solid var(--border);
+}
+
+.kryth-tool-block-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.kryth-tool-block-header:hover {
+  background: var(--bg-hover);
+}
+
+.kryth-tool-block-header.running { color: var(--accent-active); }
+.kryth-tool-block-header.success { color: var(--accent-success); }
+.kryth-tool-block-header.failed  { color: var(--accent-error); }
+
+.kryth-tool-block-args {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.kryth-tool-block-output {
+  padding: 8px 16px 8px 40px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  background: var(--bg-primary);
+}
+
+.kryth-tool-block-files {
+  padding: 4px 16px 8px 40px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.kryth-file-chip {
+  font-size: var(--font-size-sm);
+  color: var(--accent-info);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.kryth-file-chip:hover {
+  background: var(--bg-hover);
+}
+
+.kryth-bottom-bar {
+  height: 24px;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 16px;
+  font-size: var(--font-size-sm);
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.kryth-bottom-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.kryth-bottom-bar-item.active {
+  color: var(--accent-active);
+}
+
+.kryth-hidden {
+  display: none !important;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.kryth-pulse {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

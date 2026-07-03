@@ -10,17 +10,19 @@ swapped to a different UI by replacing the subscriber list.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
 
 from agent import ui
+
+_logger = logging.getLogger(__name__)
 from agent.context import build_project_map
-from agent.dynamic_builder import run_dynamic_build_with_approval
 # from agent.ecosystem.router import route  # removed: skills auto-injection disabled
 from agent.env import getenv
 from agent.hooks import HOOK_BLOCK_PREFIX, run_hooks
-from agent.llm import ask_llm_stream, ask_planner, summarize, _sanitize_tool_name
+from agent.llm import ask_llm_stream, _sanitize_tool_name
 from agent.permissions import ask_user, check_permission
 from agent.project_context import git_status_snapshot, load_context_file
 from agent.prompts import SYSTEM_PROMPT
@@ -43,8 +45,6 @@ from agent.tools._results import err, is_error
 
 # Effectively unlimited - set to 100000 by default (can be overridden via env var)
 MAX_TOOL_TURNS = int(getenv("KRYTH_MAX_TOOL_TURNS", "100000"))
-COMPACT_AT_TOKENS = 30000   # ~90k real tokens --- compact less often, fewer LLM round-trips
-KEEP_RECENT_AFTER_COMPACT = 6
 
 LoopStatus = Literal["done", "max_turns", "interrupted", "api_error"]
 
@@ -194,6 +194,17 @@ def _append_tool_msg(session, call_id: str, name: str, content: str) -> None:
 DENIAL_HARD_STOP = 5
 DENIAL_WARN_AT = 3
 
+# Tool categories for timing tracking (moved from anti_paralysis.py)
+_ANALYSIS_TOOLS = {
+    "read_file", "glob", "grep", "search_code", "semantic_search",
+    "fts_search", "ast_search", "search_smart",
+}
+_IMPL_TOOLS = {
+    "write_file", "edit_file", "multi_edit", "run_command",
+    "run_tests", "run_install",
+}
+
+
 
 def _denial_key(tool_name: str, args: dict) -> tuple[str, str]:
     """Stable key for the consecutive-denial counter. Mirrors
@@ -228,6 +239,61 @@ def _hard_stop_denial_msg(tool_name: str, count: int) -> str:
     )
 
 
+# Regex patterns that match file-reading shell commands which can be
+# serviced from the read cache instead of hitting disk.
+_READ_CMD_PATTERNS: list[tuple[re.Pattern, int]] = [
+    # cat/type/Get-Content  <path>   (capture group 1 = path)
+    (re.compile(r'^(?:cat|type|Get-Content|gc)\s+["\']?(.+?)["\']?\s*$', re.I), 1),
+    # head/tail  -n  <path>   or  head/tail  <path>
+    (re.compile(r'^(?:head|tail)(?:\s+-\d+)?\s+["\']?(.+?)["\']?\s*$', re.I), 1),
+    # python -c "with open(...) as f: print(f.read())"  — extract path
+    (re.compile(r"""["']with\s+open\(["']([^"']+)["']""", re.I), 1),
+]
+
+
+def _try_get_read_from_cmd(cmd: str, session) -> Optional[str]:
+    """If *cmd* is a file-reading shell command, try to serve its target
+    from the read cache.  Returns a pre-formatted result string, or None."""
+    _path: Optional[str] = None
+    for pat, grp in _READ_CMD_PATTERNS:
+        m = pat.search(cmd.strip())
+        if m:
+            _path = m.group(grp).strip().strip("\"'").lstrip(".").lstrip("/").lstrip("\\")
+            break
+    if not _path:
+        return None
+    try:
+        _dup = session.memory_manager.check_duplicate_read(_path)
+        if not _dup:
+            return None
+        _content = _dup.get("summary", "")
+        try:
+            from agent.memory import get_cached_read as _gcr
+            _cached = _gcr(id(session), _path)
+            if _cached and _cached.result:
+                _content = _cached.result
+        except Exception:
+            pass
+        return f"[FROM READ MEMORY — previously read as '{cmd.split()[0]}']\n{_content}"
+    except Exception:
+        return None
+
+
+def _fix_windows_command(cmd: str) -> str:
+    """Rewrite Windows-incompatible command patterns before execution.
+    Returns the (possibly modified) command string.
+    """
+    if not __import__("os").name == "nt":
+        return cmd
+    # python3 → python (Windows has no python3 symlink)
+    cmd = re.sub(r'\bpython3\b', 'python', cmd)
+    # pip3 → pip
+    cmd = re.sub(r'\bpip3\b', 'pip', cmd)
+    # grep → findstr (when inside a pipe chain on Windows)
+    cmd = re.sub(r'\|\s*grep\b', '| findstr', cmd)
+    return cmd
+
+
 def dispatch_tool_call(session, call):
     fn = call.get("function", {})
     # Defensive chokepoint: clean any Harmony/special-token bleed in the
@@ -250,6 +316,89 @@ def dispatch_tool_call(session, call):
         return
 
     args = _coerce_tool_args(tool_name, args)
+
+    # ── Memory pre-check: duplicate read / command detection ──────────────
+    if tool_name == "read_file":
+        _path = args.get("path", "")
+        if _path:
+            try:
+                _dup = session.memory_manager.check_duplicate_read(_path)
+                if _dup:
+                    ui.debug(f"(memory: {_path} already read, injecting cached content)")
+                    _content = _dup.get("summary", "")
+                    try:
+                        from agent.memory import get_cached_read as _gcr
+                        _cached = _gcr(id(session), _path)
+                        if _cached and _cached.result:
+                            _content = _cached.result
+                    except Exception:
+                        pass
+                    result = f"[FROM READ MEMORY — previously read]\n{_content}"
+                    ui.tool_start(tool_name, args)
+                    ui.tool_result(result, error=False)
+                    _append_tool_msg(session, call_id, tool_name, result)
+                    return
+            except Exception:
+                pass
+    elif tool_name == "run_command":
+        _cmd = args.get("command", "")
+        _cwd = args.get("cwd", "")
+        if _cmd:
+            try:
+                _dup = session.memory_manager.check_duplicate_command(_cmd, _cwd)
+                if _dup:
+                    _prev_output = _dup.get("previous_output", "")
+                    _exit = _dup.get("exit_code", 0)
+                    _run_count = _dup.get("run_count", 1)
+                    ui.debug(f"(memory: command '{_cmd[:40]}' run {_run_count}x before)")
+                    result = (
+                        f"[FROM EXECUTION MEMORY — previously run {_run_count}x, "
+                        f"exit={_exit}]\n{_prev_output}"
+                    )
+                    ui.tool_start(tool_name, args)
+                    ui.tool_result(result, error=_exit != 0)
+                    _append_tool_msg(session, call_id, tool_name, result)
+                    return
+            except Exception:
+                pass
+        # Check if this is a file-reading command (cat/type/head/tail)
+        # that can be serviced from the read cache instead of disk.
+        if _cmd:
+            try:
+                _cached = _try_get_read_from_cmd(_cmd, session)
+                if _cached:
+                    ui.debug(f"(memory: '{_cmd[:40]}' is a file-read command, serving from cache)")
+                    result = _cached
+                    ui.tool_start(tool_name, args)
+                    ui.tool_result(result, error=False)
+                    _append_tool_msg(session, call_id, tool_name, result)
+                    return
+            except Exception:
+                pass
+        # Windows command compatibility: rewrite known-bad patterns
+        # before they hit the shell (saves round-trip failures).
+        if _cmd:
+            _fixed = _fix_windows_command(_cmd)
+            if _fixed != _cmd:
+                ui.debug(f"(memory: fixed Windows command: {_fixed[:80]})")
+                args["command"] = _fixed
+                _cmd = _fixed
+    elif tool_name == "edit_file":
+        _path = args.get("path", "")
+        _old = args.get("old_string", "") or args.get("old_text", "")
+        _new = args.get("new_string", "") or args.get("new_text", "")
+        if _path and _old:
+            try:
+                _dup = session.memory_manager.check_duplicate_edit(_path, _old, _new)
+                if _dup:
+                    ui.debug(f"(memory: edit already applied to {_path})")
+                    result = f"[FROM MUTATION MEMORY — edit already applied to {_path}]\n{_dup['summary']}"
+                    ui.tool_start(tool_name, args)
+                    ui.tool_result(result, error=False)
+                    _append_tool_msg(session, call_id, tool_name, result)
+                    return
+            except Exception:
+                pass
 
     # ---- Repeat-denial circuit breaker --------------------------
     # If this exact (tool, args) has been denied repeatedly, short-circuit
@@ -376,37 +525,30 @@ def dispatch_tool_call(session, call):
     session.tool_call_count += 1
     _clear_denials(session, tool_name)
 
-    # V1.6: record timing for anti-paralysis metrics
+    # Record timing on session (replaces anti_paralysis.py)
+    if _tool_elapsed > 0:
+        if tool_name in _ANALYSIS_TOOLS:
+            session.analysis_time_s += _tool_elapsed
+        elif tool_name in _IMPL_TOOLS:
+            session.impl_time_s += _tool_elapsed
+
+    # ── Memory recording: persist tool results ────────────────────────────
+    _error = has_error(result)
     try:
-        from agent.anti_paralysis import record_timing as _ap_timing
-        _ap_timing(id(session), tool_name, _tool_elapsed)
+        session.memory_manager.on_tool_result(tool_name, args, result, error=_error)
     except Exception:
         pass
+    # Special case: record read_file in ReadMemory for duplicate detection
+    if tool_name == "read_file" and not _error:
+        _path = args.get("path", "")
+        if _path:
+            try:
+                from agent.memory import record_read_file as _rrf
+                _rrf(id(session), _path, args, str(result))
+            except Exception:
+                pass
 
-    # V1.6: update mission memory when file written
-    if tool_name == "write_file":
-        try:
-            from agent.anti_paralysis import get_memory as _ap_mem
-            _ap_mem(id(session)).remember_fix(
-                f"wrote {args.get('path', '')}"
-            )
-        except Exception:
-            pass
-
-    # Anti-paralysis: detect test success to enable stop-after-success (Phase 8)
-    if tool_name in ("run_tests", "run_command"):
-        _result_str = str(result)
-        _cmd = args.get("command", "") or ""
-        _is_test_cmd = any(t in _cmd for t in ("pytest", "jest", "npm test", "yarn test", "vitest"))
-        if tool_name == "run_tests" or _is_test_cmd:
-            if ("passed" in _result_str.lower() or "ok" in _result_str.lower()) \
-               and "failed" not in _result_str.lower() \
-               and "error" not in _result_str.lower()[:100]:
-                try:
-                    from agent.anti_paralysis import record_tests_passed
-                    record_tests_passed(id(session))
-                except Exception:
-                    pass
+    # Scratchpad: completion tracking is handled by update_after_tool
 
     # Rules 17+18: background validation + incremental testing after every write.
     # Delegates to patch_pipeline for centralized syntax/lint/test checks.
@@ -579,7 +721,7 @@ def _speculative_preload(session, user_input: str) -> "threading.Event":
     seen: set[str] = set()
     patterns = [p for p in patterns if not (p in seen or seen.add(p))]  # type: ignore[func-returns-value]
 
-    pending = [1 + (1 if patterns else 0)]
+    pending = [1 if patterns else 0]  # just _preload_files if patterns match
     lock = _t.Lock()
 
     def _tick() -> None:
@@ -587,19 +729,6 @@ def _speculative_preload(session, user_input: str) -> "threading.Event":
             pending[0] -= 1
             if pending[0] == 0:
                 done.set()
-
-    def _search_memory() -> None:
-        try:
-            from agent.experience import get_experience
-            exp = get_experience(".")
-            hits = exp.search(user_input, top_k=3)
-            if hits:
-                results["experience"] = hits
-                session._experience_hits = getattr(session, "_experience_hits", 0) + len(hits)
-        except Exception:
-            pass
-        finally:
-            _tick()
 
     def _preload_files() -> None:
         try:
@@ -624,270 +753,12 @@ def _speculative_preload(session, user_input: str) -> "threading.Event":
         finally:
             _tick()
 
-    _t.Thread(target=_search_memory, daemon=True, name="kryth-mem-preload").start()
     if patterns:
         _t.Thread(target=_preload_files, daemon=True, name="kryth-file-preload").start()
     else:
-        done.set()  # no file patterns needed --- only memory thread outstanding; it will set
+        done.set()
 
     return done
-
-
-_HIGH_SIGNAL_NEEDLES = (
-    "[error ", "traceback", "syntaxerror", "assertionerror",
-    "failed", " fail ", "exception:", "panic:", "fatal:",
-)
-
-# Cheap path-like token detector for focal-file extraction. Catches the
-# typical shapes: ``agent/foo.py``, ``src/bar.ts``, ``a.txt``. Filters
-# out punctuation-only matches and bare flag tokens like ``-A``.
-_PATH_RE = re.compile(r"[A-Za-z_./\\-]+\.[A-Za-z0-9]{1,6}")
-
-
-def _focal_files(recent_messages: list, limit: int = 12) -> set[str]:
-    """Extract file paths referenced in the recent (kept) tail of the
-    transcript. Used by the relevance scorer to decide which older
-    messages are still load-bearing."""
-    seen: set[str] = set()
-    for m in recent_messages:
-        text = str(m.get("content") or "")
-        for call in m.get("tool_calls") or []:
-            text += " " + str((call.get("function") or {}).get("arguments") or "")
-        for tok in _PATH_RE.findall(text):
-            seen.add(tok)
-            if len(seen) >= limit:
-                return seen
-    return seen
-
-
-def _relevance_tier(msg: dict, focal_files: set[str]) -> str:
-    """Score a single message as ``high`` / ``medium`` / ``low``.
-
-    high:    references an error or a focal file --- keep intact.
-    medium:  meaningful payload (>50 chars) --- light truncation.
-    low:     bulky tool output with no clear signal --- aggressive stub.
-    """
-    text = str(msg.get("content") or "")
-    low = text.lower()
-
-    if any(needle in low for needle in _HIGH_SIGNAL_NEEDLES):
-        return "high"
-    if focal_files and any(f in text for f in focal_files):
-        return "high"
-    if len(text) < 250:
-        return "high"  # already concise --- no point eliding
-    if msg.get("role") == "assistant" and msg.get("tool_calls"):
-        return "high"  # tool-call shapes are tiny and structurally important
-    if len(text) < 1500:
-        return "medium"
-    return "low"
-
-
-def _python_fallback_compact(
-    to_compress: list,
-    focal_files: set[str] | None = None,
-) -> tuple[list, int, int]:
-    """Deterministic compactor used when the summarizer model is empty
-    or down.
-
-    Relevance-aware: high-tier messages (errors, focal-file refs, short
-    payloads, tool-call shapes) pass through untouched. Medium-tier
-    messages get a head+tail trim. Low-tier bulky tool output collapses
-    to a single-line stub. ``focal_files`` carries the path tokens we
-    extracted from the messages we're KEEPING, so anything older that
-    references the same files survives intact.
-
-    Returns ``(compacted_messages, dropped_messages, dropped_chars)``
-    so the caller can tell the user how much detail was lost.
-    """
-    focal_files = focal_files or set()
-    compacted = []
-    dropped_messages = 0
-    dropped_chars = 0
-
-    for m in to_compress:
-        role = m.get("role")
-        tier = _relevance_tier(m, focal_files)
-
-        if role == "tool":
-            body = str(m.get("content", "") or "")
-            if tier == "high":
-                # Keep intact unless it's truly enormous; even then,
-                # preserve head + tail to retain error context.
-                if len(body) <= 6000:
-                    compacted.append(m)
-                    continue
-                head, tail = body[:2400], body[-2400:]
-                dropped_messages += 1
-                dropped_chars += len(body) - (len(head) + len(tail) + 20)
-                compacted.append({
-                    "role": "tool",
-                    "tool_call_id": m.get("tool_call_id", ""),
-                    "name": m.get("name", ""),
-                    "content": f"{head}\n---[trimmed]---\n{tail}",
-                })
-                continue
-            if tier == "medium":
-                head, tail = body[:600], body[-300:]
-                dropped_messages += 1
-                dropped_chars += max(0, len(body) - (len(head) + len(tail) + 20))
-                compacted.append({
-                    "role": "tool",
-                    "tool_call_id": m.get("tool_call_id", ""),
-                    "name": m.get("name", ""),
-                    "content": f"{head}\n---[trimmed]---\n{tail}",
-                })
-                continue
-            # low --- keep only the stub.
-            stub = f"[elided tool result, {len(body)} chars; ask again if needed]"
-            if len(body) > len(stub):
-                dropped_messages += 1
-                dropped_chars += len(body) - len(stub)
-            compacted.append({
-                "role": "tool",
-                "tool_call_id": m.get("tool_call_id", ""),
-                "name": m.get("name", ""),
-                "content": stub,
-            })
-            continue
-
-        if role == "assistant":
-            new = {"role": "assistant"}
-            if m.get("tool_calls"):
-                new["tool_calls"] = m["tool_calls"]
-            elif m.get("content"):
-                text = str(m["content"])
-                if tier == "high":
-                    new["content"] = text
-                elif tier == "medium" and len(text) > 800:
-                    dropped_messages += 1
-                    dropped_chars += len(text) - 800
-                    new["content"] = text[:600] + " ---[trimmed]--- " + text[-200:]
-                elif tier == "low" and len(text) > 400:
-                    dropped_messages += 1
-                    dropped_chars += len(text) - 400
-                    new["content"] = text[:400] + " ---"
-                else:
-                    new["content"] = text
-            else:
-                new["content"] = ""
-            compacted.append(new)
-            continue
-
-        compacted.append(m)
-    return compacted, dropped_messages, dropped_chars
-
-
-def maybe_compact(session):
-    total = session.total_tokens()
-    if total < COMPACT_AT_TOKENS:
-        return
-
-    msgs = session.messages
-    sys_msgs = [m for m in msgs if m.get("role") == "system"]
-    rest = [m for m in msgs if m.get("role") != "system"]
-
-    if len(rest) <= KEEP_RECENT_AFTER_COMPACT + 2:
-        return
-
-    to_compress = rest[:-KEEP_RECENT_AFTER_COMPACT]
-    keep = rest[-KEEP_RECENT_AFTER_COMPACT:]
-
-    ui.compact_start(count=len(to_compress), tokens=total)
-
-    # Subagents (depth > 0) skip the LLM summarizer --- they have a short focused
-    # task and the round-trip latency (~5-15s) costs more than it saves.
-    # Root agent uses LLM summarizer for better quality context retention.
-    is_subagent = getattr(session, "depth", 0) > 0
-    summary = "" if is_subagent else summarize(to_compress)
-
-    if summary.strip():
-        session.messages = sys_msgs + [{
-            "role": "system",
-            "content": f"[Earlier conversation summary]\n{summary}",
-        }] + keep
-        return
-
-    focal = _focal_files(keep)
-    compacted, dropped_msgs, dropped_chars = _python_fallback_compact(
-        to_compress, focal_files=focal,
-    )
-    ui.compact_fallback(
-        dropped_messages=dropped_msgs,
-        dropped_chars=dropped_chars,
-    )
-    session.messages = sys_msgs + compacted + keep
-
-
-def _detect_tool_loop(tool_calls, recent_history, max_repeats=12):
-    """Detect pathological tool loops (same tool, same args, going nowhere).
-
-    Write/edit tools are explicitly excluded --- calling write_file 20 times is
-    normal when building a project. Only read-only or search tools looping with
-    no progress signal a real loop.
-
-    Special case: run_command with identical args repeated 5+ times is always
-    a loop regardless --- catches infinite pip install / pytest retry loops.
-    """
-    if not tool_calls or not recent_history:
-        return False
-
-    # These tools are safe to repeat many times --- never flag them as loops.
-    _REPEAT_OK = frozenset({
-        "write_file", "edit_file", "multi_edit",
-        "read_file", "grep", "glob", "search_code",
-        "browser_click", "browser_type", "browser_scroll",
-        "todo_write", "checkpoint",
-    })
-
-    import json as _json
-
-    current_tools = [call.get("function", {}).get("name", "") for call in tool_calls]
-
-    # Special: run_command with the same args 5+ times in the last 20 messages = loop.
-    for call in tool_calls:
-        if call.get("function", {}).get("name") == "run_command":
-            try:
-                args = call.get("function", {}).get("arguments", "")
-                args_obj = _json.loads(args) if isinstance(args, str) else args
-                cmd = args_obj.get("command", "") if isinstance(args_obj, dict) else ""
-            except Exception:
-                cmd = ""
-            if not cmd:
-                continue
-            count = 0
-            for msg in reversed(recent_history[-20:]):
-                if msg.get("role") == "tool" and msg.get("name") == "run_command":
-                    count += 1
-                elif msg.get("role") == "assistant":
-                    # Check if this assistant turn called the same command
-                    for tc in (msg.get("tool_calls") or []):
-                        tc_args = tc.get("function", {}).get("arguments", "")
-                        try:
-                            tc_obj = _json.loads(tc_args) if isinstance(tc_args, str) else tc_args
-                            tc_cmd = tc_obj.get("command", "") if isinstance(tc_obj, dict) else ""
-                        except Exception:
-                            tc_cmd = ""
-                        if tc_cmd == cmd:
-                            count += 1
-            if count >= 5:
-                return True
-
-    for tool_name in current_tools:
-        if not tool_name or tool_name in _REPEAT_OK:
-            continue
-
-        consecutive_count = 0
-        for msg in reversed(recent_history[-10:]):
-            if msg.get("role") == "tool" and msg.get("name") == tool_name:
-                consecutive_count += 1
-            elif msg.get("role") == "assistant":
-                break
-
-        if consecutive_count >= max_repeats:
-            return True
-
-    return False
 
 
 def _expand_run_command_paths(tool_calls: list) -> None:
@@ -1026,45 +897,17 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
     # Subagents (depth > 0) are workers with a clear task --- allow fewer
     # idle turns before declaring done, cutting wasted LLM round-trips.
     _is_subagent = getattr(session, "depth", 0) > 0
-    _start_ts = getenv("_KRYTH_LOOP_TS", "")  # for elapsed-time display
-    _consecutive_cmd_failures = 0  # track back-to-back run_command failures
     # Rule 23: performance counters
     _loop_start = _time.monotonic()
     _total_planning_s: float = 0.0
-    _total_executing_s: float = 0.0
-
-    # Anti-paralysis tracking — session-scoped, opt-out via KRYTH_NO_ANTIPARALYSIS=1
-    _ap_session_id = id(session)
-    _ap_enabled = getenv("KRYTH_NO_ANTIPARALYSIS", "0") not in ("1", "true", "yes")
-    if _ap_enabled:
-        try:
-            from agent.anti_paralysis import record_tool_call as _ap_record
-            from agent.anti_paralysis import should_stop as _ap_should_stop
-            from agent.anti_paralysis import stop_after_success_nudge as _ap_stop_nudge
-            from agent.anti_paralysis import format_metrics as _ap_metrics
-        except Exception:
-            _ap_enabled = False
-
-    # Context supervisor replaces maybe_compact --- tiered budget-aware compression
-    try:
-        from agent.context_supervisor import ContextSupervisor
-        _supervisor: ContextSupervisor | None = ContextSupervisor(session)
-    except Exception:
-        _supervisor = None
-
-
-
-    # Checkpoint tracking — how many tool calls since last checkpoint
-    _tool_calls_since_checkpoint = 0
+    _total_executing_s: float = 0.0    # Context supervisor—tiered budget-aware compression. Always available.
+    from agent.context_supervisor import ContextSupervisor
+    _supervisor = ContextSupervisor(session)
 
     for _ in range(max_turns):
         turn_count += 1
-        # Rule 22: synchronous context supervision (compression already done
-        # or does it now if threshold crossed --- fast when under budget).
-        if _supervisor is not None:
-            _supervisor.check()
-        else:
-            maybe_compact(session)
+        # Rule 22: synchronous context supervision
+        _supervisor.check()
         _enforce_message_order(session)
 
         # Emit live progress for subagents so the UI shows current state.
@@ -1074,24 +917,15 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             ui.llm_waiting(label)
 
         # ── Tool curation ────────────────────────────────────────────────
-        # Send only the tools relevant to this task (huge token saving). If a
-        # prior turn escalated (the model needed a tool we hadn't offered), we
-        # fall back to the full set for the rest of the session — so curation
-        # can never permanently break execution.
+        # Single authority: scratchpad.curate_tools() filters by intent + domains.
+        # If a prior turn escalated, we use the full set for the rest of the session.
         _turn_tools = TOOL_SPECS
         if not getattr(session, "_tools_full_escalated", False):
             try:
-                from agent.tool_curator import curate
-                _turn_tools = curate(session.messages, TOOL_SPECS)
-            except Exception:
+                _turn_tools = _scratch.curate_tools(TOOL_SPECS)
+            except Exception as _e:
+                _logger.warning("scratchpad.curate_tools failed, using full set: %s", _e)
                 _turn_tools = TOOL_SPECS
-            # Scratchpad v2: filter tools per intent
-            try:
-                _filtered = _scratch.filter_tools(_turn_tools)
-                if _filtered:
-                    _turn_tools = _filtered
-            except Exception:
-                pass
 
         # Hard token budget gate + pre-call telemetry
         try:
@@ -1126,11 +960,22 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
 
         # Hook: inject scratchpad prompt block before LLM call
         _scratch_state = None
+        _mem_state = None
         try:
             _block = _scratch.render_prompt_block()
             if _block:
                 _scratch_state = len(session.messages)
                 session.messages.append({"role": "system", "content": _block})
+        except Exception as _e:
+            _logger.warning("scratchpad.render_prompt_block failed: %s", _e)
+
+        # Inject memory context on every turn (known files, functions, commands)
+        try:
+            from agent.memory import get_context_summary as _gcs
+            _mem_block = _gcs(id(session), max_tokens=400)
+            if _mem_block:
+                _mem_state = len(session.messages)
+                session.messages.append({"role": "system", "content": _mem_block})
         except Exception:
             pass
 
@@ -1140,12 +985,17 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             tools=_turn_tools,
         )
 
-        # Remove injected scratchpad block
+        # Remove injected scratchpad and memory blocks (in reverse order)
+        if _mem_state is not None:
+            try:
+                session.messages.pop(_mem_state)
+            except Exception:
+                pass
         if _scratch_state is not None:
             try:
                 session.messages.pop(_scratch_state)
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.warning("failed to pop scratchpad block: %s", _e)
         _turn_llm_end = _time.monotonic()
         _total_planning_s += _turn_llm_end - _turn_llm_start
         usage = response.get("usage") or {}
@@ -1165,7 +1015,7 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             if reason == "context_overflow":
                 # Input too large --- force compaction and retry this turn.
                 ui.muted("(context overflow --- compacting and retrying---)")
-                maybe_compact(session)
+                _supervisor._emergency_archive(None)
                 turn_count -= 1  # don't count this as a used turn
                 continue
             if reason in ("api_error", "stream_error", "timeout"):
@@ -1209,36 +1059,8 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
 
         tool_calls = response["tool_calls"] or []
 
-        # Detect user question intent (used in both tool and no-tool paths)
-        _user_msg_q = ""
-        for _m in reversed(session.messages):
-            if _m.get("role") == "user" and isinstance(_m.get("content"), str):
-                _user_msg_q = _m["content"]
-                break
-        _user_lower_q = _user_msg_q.lower().strip()
-        _exec_signals_q = (
-            "modify", "fix", "change", "update", "create", "write",
-            "build", "add", "remove", "delete", "rename", "move",
-            "implement", "refactor", "install", "run", "start",
-            "deploy", "migrate", "replace", "edit", "patch",
-            "do it", "do all", "make it", "set up", "configure",
-        )
-        _question_signals_q = (
-            "what ", "what's", "how ", "how's", "why ", "why's",
-            "where ", "when ", "who ", "which ",
-            "is it ", "are there ", "are the",
-            "can you", "does it", "do i ", "do you",
-            "will it", "would it", "should i",
-            "incomplete", "missing", "explain", "summar",
-            "describe", "tell me", "list ",
-        )
-        _is_question_turn = (
-            not any(s in _user_lower_q for s in _exec_signals_q)
-            and (
-                any(s in _user_lower_q for s in _question_signals_q)
-                or _user_lower_q.endswith("?")
-            )
-        )
+        # Intent from scratchpad — single authority. Used by question guard below.
+        _current_intent = (_scratch.state.intent if _scratch.state else "READ")
 
         if not tool_calls:
             content = response["content"] or ""
@@ -1262,24 +1084,15 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             if any(sig in _content_lower for sig in _REFUSAL_SIGNALS):
                 return LoopResult(status="done", content=content, turns_used=turn_count, finish_reason="refused")
 
-            # ── Scratchpad should_stop early-exit ──────────────────────────
+            # ── Scratchpad completion nudge ──────────────────────────────
             try:
-                if _scratch.state is not None and _scratch.state.should_stop:
-                    return LoopResult(status="done", content=content or "", turns_used=turn_count, finish_reason="completed")
-            except Exception:
-                pass
-
-            # ── V1.6 Phase 3: impl mode nudge injection ──────────────────
-            if _ap_enabled:
-                try:
-                    from agent.anti_paralysis import should_inject_impl_nudge, impl_mode_nudge, get_root_cause
-                    if should_inject_impl_nudge(_ap_session_id, had_tool_calls=False):
-                        _rc = get_root_cause(_ap_session_id)
-                        session.append({"role": "user", "content": impl_mode_nudge(_rc)})
-                        turn_count -= 1  # replay with nudge
-                        continue
-                except Exception:
-                    pass
+                _nudge = _scratch.next_nudge()
+                if _nudge:
+                    session.append({"role": "user", "content": _nudge})
+                    turn_count -= 1
+                    continue
+            except Exception as _e:
+                _logger.warning("scratchpad.next_nudge failed: %s", _e)
 
             # ── Curation auto-expand (Phase 6 safety) ────────────────────
             # If we offered a curated SUBSET and the model produced no tool
@@ -1295,11 +1108,6 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                 and not content
             ):
                 session._tools_full_escalated = True
-                try:
-                    from agent.tool_curator import _curation_miss
-                    _curation_miss()
-                except Exception:
-                    pass
                 if session.messages and session.messages[-1].get("role") == "assistant":
                     session.messages.pop()
                 turn_count -= 1  # replay with the full tool set
@@ -1319,120 +1127,34 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
 
             _consecutive_no_tool_turns += 1
 
-            # Text-only (no tool calls) completion path.
-            # No tool calls = the model is either answering a question
-            # conversationally, or it finished its tool work and is
-            # summarizing. Accept as done.
-            # Note: content may be empty in the response dict even when
-            # the LLM streamed text live (common with step/nemotron models
-            # where content goes through _filter_leaks). The streaming UI
-            # already displayed it to the user, so an empty content string
-            # here is fine — we know the model didn't want tools.
-            if _total_tool_calls == 0:
-                return LoopResult(status="done", content=content, turns_used=turn_count, finish_reason="completed")
-
-            if _consecutive_no_tool_turns <= 1 and _total_tool_calls > 0:
-                _files_written = sum(
-                    1 for m in session.messages
-                    if m.get("role") == "tool" and m.get("name") == "write_file"
-                )
-                _cmds_run = sum(
-                    1 for m in session.messages
-                    if m.get("role") == "tool" and m.get("name") == "run_command"
-                    and not (m.get("content") or "").startswith("[COMMAND BLOCKED")
-                )
-                _cmds_blocked = sum(
-                    1 for m in session.messages
-                    if m.get("role") == "tool" and m.get("name") == "run_command"
-                    and (m.get("content") or "").startswith("[COMMAND BLOCKED")
-                )
-                if _files_written > 0 and _cmds_run == 0:
-                    _nudge = f"[sys] {_files_written} file(s) written. Run install+start now."
-                elif _files_written == 0 and _cmds_run == 0:
-                    # Check scratchpad before declaring done (prevents premature
-                    # exit on READ tasks where files_written=0 and cmds_run=0)
-                    try:
-                        if _scratch.state is not None and not _scratch.should_finish() and not _is_question_turn:
-                            _next_action = _scratch.state.next_action
-                            session.append({"role": "user", "content":
-                                f"[scratchpad] Task incomplete. Next action: {_next_action}. Continue."})
-                            continue
-                    except Exception:
-                        pass
-                    return LoopResult(status="done", content=content or "", turns_used=turn_count, finish_reason="completed")
-                elif _files_written == 0 and _cmds_blocked > 0 and _cmds_run == 0:
-                    # Check scratchpad before declaring done
-                    try:
-                        if _scratch.state is not None and not _scratch.should_finish() and not _is_question_turn:
-                            _next_action = _scratch.state.next_action
-                            session.append({"role": "user", "content":
-                                f"[scratchpad] Task incomplete. Next action: {_next_action}. Continue."})
-                            continue
-                    except Exception:
-                        pass
-                    return LoopResult(status="done", content=content or "", turns_used=turn_count, finish_reason="completed")
-                else:
-                    _nudge = "[sys] Run install+start now, or reply with your final answer."
-                session.append({"role": "user", "content": _nudge})
-                continue
-
-            # Self-evaluation gate: for non-trivial tasks, score confidence
-            # before declaring done. Low confidence → one extra validation turn.
-            if _total_tool_calls > 0:
-                try:
-                    from agent.self_eval import evaluate_task as _self_eval
-                    _task_desc = next(
-                        (m.get("content", "") for m in session.messages
-                         if m.get("role") == "user" and isinstance(m.get("content"), str)),
-                        "",
-                    )
-                    _ev = _self_eval(session, _task_desc, "medium")
-                    if not _ev.confident and turn_count <= max_turns - 2 \
-                            and not getattr(session, "_self_eval_fired", False):
-                        session._self_eval_fired = True
-                        session.append({"role": "user", "content": _ev.nudge_message()})
-                        continue
-                except Exception:
-                    pass
-
-            # Hook: scratchpad completion check — nudge if task not done
-            try:
-                if _scratch.state is not None and not _scratch.should_finish() and not _is_question_turn:
-                    _next_action = _scratch.state.next_action
-                    session.append({"role": "user", "content":
-                        f"[scratchpad] Task incomplete. Next action: {_next_action}. Continue."})
-                    continue
-            except Exception:
-                pass
-
-            return LoopResult(
-                status="done",
-                content=content,
-                turns_used=turn_count,
-                finish_reason="completed",
+            # ── Single evaluate() — the ONE completion authority ──────────
+            # All text-only responses go through scratchpad.evaluate().
+            # It decides: done (return), nudge (continue), or fallthrough.
+            # This replaces the old "if total_tool_calls == 0 → done" path,
+            # which bypassed scratchpad and caused premature completion.
+            _has_blocked = any(
+                m.get("role") == "tool" and m.get("name") == "run_command"
+                and (m.get("content") or "").startswith("[COMMAND BLOCKED")
+                for m in session.messages[-12:]
             )
+            try:
+                _decision = _scratch.evaluate(
+                    has_blocked_commands=_has_blocked,
+                    is_question_turn=_current_intent in ("CHAT", "CHAT_READ", "READ", "SEARCH"),
+                )
+                if _decision.done:
+                    return LoopResult(status="done", content=content or "", turns_used=turn_count, finish_reason=_decision.finish_reason)
+                if _decision.nudge:
+                    session.append({"role": "user", "content": _decision.nudge})
+                    continue
+            except Exception as _e:
+                _logger.warning("scratchpad.evaluate failed: %s", _e)
+            # Fallthrough: scratchpad had no opinion — treat as done.
+            return LoopResult(status="done", content=content or "", turns_used=turn_count, finish_reason="completed")
 
         # Tools were called --- reset the no-tool counter.
         _consecutive_no_tool_turns = 0
         _total_tool_calls += len(tool_calls)
-
-        # Anti-paralysis: record tool calls, check execution budget and stop signal
-        if _ap_enabled:
-            try:
-                for _tc in tool_calls:
-                    _tname = (_tc.get("function") or {}).get("name", "")
-                    _ap_nudge = _ap_record(_ap_session_id, _tname, "medium")
-                    if _ap_nudge:
-                        # Budget exhausted — inject nudge and continue to next turn
-                        session.append({"role": "user", "content": _ap_nudge})
-                        break
-                # Phase 8: stop after success (files written + tests passed)
-                if _ap_should_stop(_ap_session_id):
-                    _stop_msg = _ap_stop_nudge()
-                    session.append({"role": "user", "content": _stop_msg})
-                    ui.muted(_ap_metrics(_ap_session_id))
-            except Exception:
-                pass
 
         # Detect infinite tool loops
         hermes_recovered = response.get("finish_reason") in (
@@ -1444,7 +1166,7 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         # and there are already file read results in context, block execution
         # tools (write_file, run_command, edit_file) so the model answers
         # from context. Prevents "what is incomplete?" → pip install → python.
-        if _is_question_turn:
+        if _current_intent in ("CHAT", "CHAT_READ", "READ", "SEARCH"):
             _has_reads = any(
                 m.get("role") == "tool" and m.get("name") in ("read_file", "grep")
                 for m in session.messages
@@ -1479,16 +1201,27 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                 _parsed = {}
                 try:
                     _parsed = json.loads(_raw_args) if _raw_args else {}
-                except Exception:
-                    pass
+                except Exception as _e2:
+                    _logger.warning("failed to parse tool args for scratchpad: %s", _e2)
                 _last_tool = next(
                     (m for m in reversed(session.messages) if m.get("role") == "tool"),
                     None,
                 )
                 _result = _last_tool.get("content", "") if _last_tool else ""
                 _scratch.update_after_tool(_tname, _result, args=_parsed)
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.warning("scratchpad.update_after_tool failed: %s", _e)
+
+        # ── Post-tool nudge: if scratchpad says enough info, nudge to summarize ──
+        # Don't return early (that would skip the final response). Instead inject
+        # a nudge so the model produces a summary, which evaluate() catches.
+        try:
+            if _scratch.should_finish():
+                _tip = "[scratchpad] SUMMARIZE: Task complete — provide a concise summary of what you found."
+                session.append({"role": "user", "content": _tip})
+                continue
+        except Exception as _e:
+            _logger.warning("scratchpad.should_finish failed: %s", _e)
 
         # Rule 23: push live perf metrics to dashboard every tool turn
         try:
@@ -1597,69 +1330,20 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
 
     # Max turns reached - warn the user
     ui.warn(f"Reached maximum tool turns ({max_turns}). Task may be incomplete. Consider breaking into smaller steps or increasing KRYTH_MAX_TOOL_TURNS.")
-    if _ap_enabled:
-        try:
-            ui.muted(_ap_metrics(_ap_session_id))
-        except Exception:
-            pass
+    ui.muted(
+        f"  Duplicate searches: {session.duplicate_searches}  |  "
+        f"Analysis: {session.analysis_time_s:.1f}s  |  "
+        f"Execution: {session.impl_time_s:.1f}s"
+    )
     return LoopResult(status="max_turns", turns_used=turn_count, finish_reason="max_turns")
 
 
 # ---------------------------------------------------------------------------
 # Planning heuristic
 # ---------------------------------------------------------------------------
-
-_PLANNER_TRIGGER_WORDS = {
-    "add", "build", "create", "implement", "fix", "debug", "refactor",
-    "rewrite", "remove", "delete", "update", "change", "migrate", "split",
-    "merge", "rename", "test", "run", "investigate", "find", "make",
-    "write", "design", "extract", "wire", "integrate", "optimize",
-    "set", "setup", "scaffold", "generate", "deploy",
-    "app", "application", "website", "site", "page", "landing",
-    "dashboard", "cli", "api", "server", "service", "tool", "project",
-    "system", "script", "bot", "game", "ui", "frontend", "backend",
-    "fullstack", "endpoint", "module", "library", "package",
-}
-
-_BUILD_INTENT_WORDS = {
-    "app", "application", "website", "site", "landing", "dashboard",
-    "cli", "api", "server", "service", "project", "system", "frontend",
-    "backend", "fullstack", "bot", "game",
-}
-
-
-def _should_plan(user_input: str) -> bool:
-    text = user_input.strip()
-    if not text:
-        return False
-    if text.startswith("/"):
-        return False
-    words = text.split()
-    lowered = {w.lower().strip(",.!?:;\"'") for w in words}
-    if lowered & _BUILD_INTENT_WORDS:
-        return True
-    if len(words) < 4:
-        return False
-    return bool(lowered & _PLANNER_TRIGGER_WORDS)
-
-
 def build_initial_system(session, user_input: str = ""):
-    from agent.context import ProjectSnapshot, build_focused_map
-    from agent.env import getenv_bool
-    
+    from agent.context import ProjectSnapshot, build_focused_map, build_retrieval_context
     import os as _os
-
-    # --- Auto-init: build graph in background daemon --- never blocks execution ---
-    def _bg_graph_init():
-        try:
-            from agent.memory import memory
-            if not memory.graph.is_built() and getenv_bool("KRYTH_AUTO_INIT", True):
-                memory.init(auto=True)
-        except Exception:
-            pass
-    import threading as _init_t
-
-    _init_t.Thread(target=_bg_graph_init, daemon=True).start()
 
     _cwd = _os.getcwd()
     project_map = ""
@@ -1670,31 +1354,16 @@ def build_initial_system(session, user_input: str = ""):
     import concurrent.futures as _cf_init
 
     def _get_project_map():
-        # Priority 1: semantic memory graph (built after /init)
+        # Priority 1: grep-first retrieval (Claude-Code style)
         try:
-            from agent.memory import memory
-            if memory.graph.is_built() and user_input:
-                files = memory.graph.search(user_input, top_k=12)
-                if files:
-                    ctx = memory.graph.context_for(files)
-                    if ctx:
-                        ui.debug(f"(graph context: {len(files)} relevant files)")
-                        return ctx
-        except Exception:
-            pass
-
-        # Priority 2: grep-first retrieval (Phase 2 — Claude-Code style)
-        # Fast, no graph needed. Finds files containing task-relevant symbols.
-        try:
-            from agent.context import build_retrieval_context
             _retrieval = build_retrieval_context(user_input)
             if _retrieval:
                 ui.debug(f"(retrieval context: grep-based)")
                 return _retrieval
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.debug("retrieval context failed: %s", _e)
 
-        # Priority 3: mtime-cached focused directory map (fallback)
+        # Priority 2: mtime-cached focused directory map (fallback)
         snapshot = ProjectSnapshot()
         project_map, from_cache = snapshot.get_or_build()
         if from_cache:
@@ -1723,6 +1392,22 @@ def build_initial_system(session, user_input: str = ""):
     if project_map:
         parts.append(f"Project files:\n{project_map}")
 
+    # Inject memory context — known files, functions, classes already read
+    try:
+        _mem_block = session.memory_manager.get_prompt_block(user_input=user_input)
+        if _mem_block:
+            parts.append(_mem_block)
+    except Exception:
+        pass
+    # Inject ReadMemory context — cached file summaries
+    try:
+        from agent.memory import get_context_summary
+        _read_mem = get_context_summary(id(session), max_tokens=600)
+        if _read_mem:
+            parts.append(_read_mem)
+    except Exception:
+        pass
+
     session.system_prompt = "\n\n".join(parts)
 
     # Token breakdown for debugging
@@ -1732,18 +1417,6 @@ def build_initial_system(session, user_input: str = ""):
         f"  git={len(git_state)//4} tok"
         f"  map={len(project_map)//4} tok"
     )
-
-
-def _plan_hint_for_model(plan: dict) -> str:
-    return json.dumps({
-        "goal": plan.get("goal", ""),
-        "task_type": plan.get("task_type", ""),
-        "required_files": plan.get("required_files", []),
-        "execution_steps": plan.get("execution_steps", []),
-        "validation_steps": plan.get("validation_steps", []),
-        "dependencies": plan.get("dependencies", []),
-    }, ensure_ascii=False)
-
 
 def run_agent(user_input, extra_system: str | None = None):
     session = get_session()
@@ -1763,14 +1436,6 @@ def run_agent(user_input, extra_system: str | None = None):
         ]
         ui.muted("  (previous task interrupted — starting fresh)")
 
-
-    # Rule 15: early worker pool warmup --- fires before LLM call, before build_initial_system.
-    # Workers begin reading domain-relevant files while we build project context.
-    _early_futures: dict = {}
-    try:
-        pass
-    except Exception:
-        pass
 
     # Rules 13/14/21: fire speculative preload immediately --- runs while project
     # scan and context build happen, so memory + relevant files arrive for free.
@@ -1799,62 +1464,23 @@ def run_agent(user_input, extra_system: str | None = None):
             session.append({"role": "system",
                             "content": f"[Preloaded relevant files]\n{_file_list}"})
         except Exception:
-            pass
-
-    # Inject graph context on first turn only --- project context is already
-    # in the system prompt on subsequent turns, re-injecting every turn adds
-    # 0.1---0.5s of I/O overhead with no benefit.
-    if _is_first_turn:
-        try:
-            from agent.memory import memory
-            if memory.graph.is_built():
-                files = memory.graph.search(user_input, top_k=12)
-                if files:
-                    fresh_context = memory.graph.context_for(files)
-                    session.messages[:] = [
-                        m for m in session.messages
-                        if not (m.get("role") == "system" and m.get("content", "").startswith("[Dynamic graph context]"))
-                    ]
-                    inject_msg = {"role": "system", "content": f"[Dynamic graph context]\n{fresh_context}"}
-                    if session.messages and session.messages[0].get("role") == "system":
-                        session.messages.insert(1, inject_msg)
-                    else:
-                        session.messages.insert(0, inject_msg)
-        except Exception:
-            pass
-
-    
-
-    plan_dict: dict | None = None
-    plan_prose: str = ""
-
-    # Conditionally inject heavy prompt sections — saves 700-1100 tok per call
+            pass    # Conditionally inject heavy prompt sections — saves 700-1100 tok per call
     # by only sending rules when actually relevant to this task.
     if _is_first_turn:
         try:
             from agent.prompts import BROWSER_RULES, STREAMING_RULES
             session.append({"role": "system", "content": BROWSER_RULES})
             session.append({"role": "system", "content": STREAMING_RULES})
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.warning("failed to inject rule prompts: %s", _e)
 
     if extra_system:
         session.append({"role": "system", "content": extra_system})
-    # Skills injection removed — was adding ~900 tok per call with no measurable
-    # quality benefit for direct single-agent mode. Skills are available on-demand
-    # via /skills command or explicit extra_system from slash-command handlers.
-
-    # All paths — single-agent tool loop.
-    # No planner, no DAG, no mission gate, no complexity routing.
 
     if session.mode == "plan":
         ui.plan_mode_active()
 
     user_content = user_input
-    if plan_dict:
-        user_content = f"{user_input}\n\n[plan]\n{_plan_hint_for_model(plan_dict)}"
-    elif plan_prose:
-        user_content = f"{user_input}\n\n[BROWSER AUTOMATION DIRECTIVE] {plan_prose}"
 
     # Fast-path directive: injected for ALWAYS_SINGLE runs so the LLM knows to
     # skip any internal deliberation and dispatch tools on the very first turn.
@@ -1870,28 +1496,12 @@ def run_agent(user_input, extra_system: str | None = None):
     # Hook: init scratchpad for this task
     try:
         _scratch.initialize(user_content)
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.warning("scratchpad.initialize failed: %s", _e)
 
     result = run_inner_loop(
         session, MAX_TOOL_TURNS, verbose_usage=True,
     )
-
-    # --- Experience Engine: record task outcome ---
-    try:
-        from agent.experience import get_experience
-        _exp2 = get_experience(".")
-        _exp2.learn(
-            "task",
-            title=user_input[:80],
-            summary=result.content[:200] if result.content else "",
-            tags=["medium", "coding"],
-            success=(result.status == "done"),
-            importance=0.5,
-            extra={"turns": result.turns_used, "status": result.status},
-        )
-    except Exception:
-        pass
 
     # Persist refreshed cumulative tokens / mode / profile so /resume
     # sees the post-turn state.
@@ -1905,8 +1515,8 @@ def run_agent(user_input, extra_system: str | None = None):
             profile=session.profile,
         )
         store.write_meta_marker()
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.warning("session persistence failed: %s", _e)
 
     if result.status == "interrupted":
         ui.publish_turn_summary(

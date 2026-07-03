@@ -74,29 +74,39 @@ def _mask(value: str, key: str) -> str:
     return value or "(not set)"
 
 
-def apply_to_env(cfg: dict[str, str] | None = None) -> None:
+def apply_to_env(cfg: dict[str, str] | None = None, *, overwrite: bool = False) -> None:
+    """Apply config dictionary to ``os.environ``.
+
+    By default (``overwrite=False``) only env vars that are NOT already set
+    are populated — this lets shell-provided env vars take precedence over
+    ``config.json`` at startup.
+
+    Pass ``overwrite=True`` when called from the interactive config editor's
+    save path so that values the user explicitly changed take effect immediately
+    in the current process.
+    """
     if cfg is None:
         cfg = _load()
     for key, env_var in KEY_TO_ENV.items():
         value = cfg.get(key, "").strip()
-        if value and not os.environ.get(env_var, "").strip():
+        if value and (overwrite or not os.environ.get(env_var, "").strip()):
             os.environ[env_var] = value
 
     # Map single config keys to all legacy env vars so existing code works
     api_key = cfg.get("api_key", "").strip()
     if api_key:
         for legacy in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
-            if not os.environ.get(legacy, "").strip():
+            if overwrite or not os.environ.get(legacy, "").strip():
                 os.environ[legacy] = api_key
 
     model = cfg.get("model", "").strip()
     if model:
         for legacy in ("KRYTH_MAIN_MODEL", "KRYTH_PLANNER_MODEL", "KRYTH_SUMMARIZER_MODEL", "KRYTH_VISION_MODEL"):
-            if not os.environ.get(legacy, "").strip():
+            if overwrite or not os.environ.get(legacy, "").strip():
                 os.environ[legacy] = model
 
     base_url = cfg.get("base_url", "").strip()
-    if base_url and not os.environ.get("KRYTH_BASE_URL", "").strip():
+    if base_url and (overwrite or not os.environ.get("KRYTH_BASE_URL", "").strip()):
         os.environ["KRYTH_BASE_URL"] = base_url
 
 
@@ -270,8 +280,17 @@ def open_config_tui(focus_key: str | None = None) -> None:
 
             elif key in ("s", "S"):
                 _save(cfg)
-                # Hot-apply to current process
-                apply_to_env(cfg)
+                # Hot-apply to current process — overwrite=True forces
+                # the new values into os.environ even if the env vars
+                # were already set at startup.
+                apply_to_env(cfg, overwrite=True)
+                # Refresh llm.py module-level constants so /diag, /models etc.
+                # show the new values without a restart.
+                try:
+                    from agent.llm import reload_config
+                    reload_config()
+                except Exception:
+                    pass
                 saved = True
                 break
 
