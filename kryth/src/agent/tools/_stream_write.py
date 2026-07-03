@@ -50,18 +50,6 @@ _streams: dict[str, _StreamState] = {}
 _streams_lock = threading.Lock()
 
 
-# ── Dashboard helper ──────────────────────────────────────────────────────────
-
-def _dash_event(event_type: str, **kwargs) -> None:
-    try:
-        import sys as _sys
-        _dash = _sys.modules.get("agent.ui.dashboard")
-        if _dash and _dash.get_active():
-            _dash.push_event(event_type, **kwargs)
-    except Exception:
-        pass
-
-
 # ── Background AST/JSON validation ───────────────────────────────────────────
 
 def _bg_validate_chunk(path: str, content: str, ext: str) -> None:
@@ -71,9 +59,8 @@ def _bg_validate_chunk(path: str, content: str, ext: str) -> None:
             import ast as _ast
             try:
                 _ast.parse(content)
-            except SyntaxError as e:
-                _dash_event("stream_error", path=path,
-                            error=str(e), line=getattr(e, "lineno", None))
+            except SyntaxError:
+                pass  # partial Python is expected during streaming
         elif ext == ".json":
             import json as _json
             try:
@@ -86,8 +73,8 @@ def _bg_validate_chunk(path: str, content: str, ext: str) -> None:
                 _yaml.safe_load(content)
             except ImportError:
                 pass
-            except Exception as e:
-                _dash_event("stream_error", path=path, error=str(e), line=None)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -123,7 +110,6 @@ def write_file_begin(path: str, estimated_lines: int = 0) -> str:
     with _streams_lock:
         _streams[path] = state
 
-    _dash_event("stream_begin", path=path, estimated_lines=estimated_lines)
     return f"Stream started: {path} (target ~{estimated_lines} lines)"
 
 
@@ -154,15 +140,6 @@ def write_file_chunk(path: str, content: str) -> str:
             state.lines_written += content.count("\n")
         except Exception as e:
             return err("EXEC_FAILED", f"write_file_chunk failed for {path}: {e}")
-
-    # Live progress on dashboard
-    pct = (state.lines_written / state.estimated_lines * 100
-           if state.estimated_lines > 0 else 0)
-    _dash_event("stream_progress",
-                path=path,
-                lines=state.lines_written,
-                estimated=state.estimated_lines,
-                pct=round(pct, 1))
 
     # Background validation of accumulated content
     ext = os.path.splitext(path)[1].lower()
@@ -197,7 +174,6 @@ def write_file_finalize(path: str) -> str:
         state.finalized = True
 
     total_lines = state.lines_written
-    _dash_event("stream_complete", path=path, lines=total_lines)
 
     # Full background validation on the finished file
     ext = os.path.splitext(path)[1].lower()

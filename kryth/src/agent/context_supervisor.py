@@ -372,12 +372,7 @@ class ContextSupervisor:
         self._last_tier = "compress"
         if ui and freed > 0:
             ui.muted(f"  ◈ Context at {self.token_fraction():.0%} — compressed {freed:,} chars")
-        try:
-            import sys; _d = sys.modules.get("agent.ui.dashboard")
-            if _d and _d.get_active():
-                _d.push_event("intel", message=f"Context compressed ({freed//1000}k chars freed)")
-        except Exception:
-            pass
+        # (dashboard intel push removed — agent.ui.dashboard archived)
 
     def _aggressive_compress(self, ui) -> None:
         """Heavy: compress all large outputs + replace old history with summary."""

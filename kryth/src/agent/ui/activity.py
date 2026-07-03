@@ -44,12 +44,7 @@ class ActivityIndicator:
         try:
             import sys
             mc_mod = sys.modules.get("agent.ui.mission_control")
-            if mc_mod is not None and mc_mod.get_active_mc() is not None:
-                return True
-            dash_mod = sys.modules.get("agent.ui.dashboard")
-            if dash_mod is not None and dash_mod.get_active():
-                return True
-            return False
+            return mc_mod is not None and mc_mod.get_active_mc() is not None
         except Exception:
             return False
 

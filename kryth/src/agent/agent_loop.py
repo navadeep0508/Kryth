@@ -608,59 +608,7 @@ def dispatch_tool_call(session, call):
                         args=(_written_path, "medium"),
                         daemon=True, name=f"kryth-validate-{_written_path[-20:]}").start()
 
-    # Push rich events to floating Textual dashboard
-    try:
-        import sys as _sys
-        _dash = _sys.modules.get("agent.ui.dashboard")
-        if _dash is not None and _dash.get_active():
-            _agent_role = getattr(session, "_agent_role", "")
-            _agent_id = getattr(session, "_agent_id", _agent_role)
-            _path = (args.get("path") or args.get("command", ""))[:35]
-
-            # Base tool event — pass the file/target as `detail` so the
-            # dashboard can humanize it ("Creating hero.tsx", not "write_file").
-            _dash.push_event("tool_used", tool=tool_name, agent=_agent_role,
-                             action=f"{tool_name} {_path}".strip(), detail=_path)
-
-            # Rich tool stream with icons
-            _icons = {
-                "read_file": "---", "write_file": "---", "edit_file": "---",
-                "multi_edit": "---", "run_command": "---", "grep": "---",
-                "search_code": "---", "semantic_search": "---",
-                "browser_click": "---", "browser_type": "---",
-                "run_tests": "---",
-            }
-            _icon = _icons.get(tool_name, "-")
-            _dash.push_event("tool_stream", agent=_agent_role, icon=_icon,
-                             action=f"{tool_name} {_path}".strip(),
-                             detail="")
-
-            # Patch viewer for file writes/edits
-            if tool_name == "write_file":
-                content = args.get("content", "")
-                lines = content.count("\n") + 1 if content else 0
-                _dash.push_event("patch", filename=_path,
-                                 lines_written=0, lines_total=lines, is_new=True)
-            elif tool_name in ("edit_file", "multi_edit"):
-                old = args.get("old_string", "")
-                new = args.get("new_string", "")
-                diff = []
-                for ln in (old or "").splitlines()[:4]:
-                    diff.append(("-", ln[:38]))
-                for ln in (new or "").splitlines()[:4]:
-                    diff.append(("+", ln[:38]))
-                _dash.push_event("patch", filename=_path, diff=diff, is_new=False)
-
-            # File ownership
-            if tool_name in ("write_file", "edit_file", "multi_edit") and _path and _agent_role:
-                _dash.push_event("file_locked", path=_path, agent=_agent_role)
-
-            # Agent status update
-            if _agent_id:
-                _dash.push_event("agent_update", id=_agent_id, role=_agent_role,
-                                 status="running", task=f"{tool_name} {_path}".strip())
-    except Exception as _e:
-        _logger.debug("dispatch_tool_call dashboard: %s", _e)
+    # (dashboard event push removed — agent.ui.dashboard archived)
 
     post = run_hooks("PostToolUse", tool_name, args, result)
     if post:
@@ -1270,21 +1218,7 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         except Exception as _e:
             _logger.warning("scratchpad.should_finish failed: %s", _e)
 
-        # Rule 23: push live perf metrics to dashboard every tool turn
-        try:
-            import sys as _sys
-            _dash = _sys.modules.get("agent.ui.dashboard")
-            if _dash is not None and _dash.get_active():
-                _elapsed = _time.monotonic() - _loop_start
-                _dash.push_event("perf_metrics",
-                    planning_s=round(_total_planning_s, 1),
-                    executing_s=round(_total_executing_s, 1),
-                    elapsed_s=round(_elapsed, 1),
-                    total_tools=_total_tool_calls,
-                    turn=turn_count,
-                )
-        except Exception as _e:
-            _logger.debug("run_inner_loop dashboard perf: %s", _e)
+        # (dashboard perf push removed — agent.ui.dashboard archived)
 
         # Safety gate early-exit: if the last tool result was a [BLOCKED]
         # destructive-command refusal, exit immediately. Otherwise the model

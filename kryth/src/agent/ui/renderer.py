@@ -209,9 +209,6 @@ def _on_llm_waiting(e: Event) -> None:
         mc_mod = sys.modules.get("agent.ui.mission_control")
         if mc_mod is not None and mc_mod.get_active_mc() is not None:
             return
-        dash_mod = sys.modules.get("agent.ui.dashboard")
-        if dash_mod is not None and dash_mod.get_active():
-            return
     except Exception:
         pass
     msg = e.data.get("message") or _ACTIVITY_MSGS[_activity_idx % len(_ACTIVITY_MSGS)]
