@@ -1,0 +1,15 @@
+
+  Model Configuration Health Check
+  ──────────────────────────────────────────────────
+  ✗ Main Model           error: Error code: 429 - {'status': 429, 'title': 'Too Many Requests'}
+  ✗ Planner Model        error: Error code: 429 - {'status': 429, 'title': 'Too Many Requests'}
+  ✓ Vision Model         stepfun-ai/step-3.7-flash
+  ✗ Summary Model        error: Error code: 429 - {'status': 429, 'title': 'Too Many Requests'}
+  ✗ Extraction Model     error: Error code: 429 - {'status': 429, 'title': 'Too Many Requests'}
+  ✗ Reasoning Model      error: Error code: 429 - {'status': 429, 'title': 'Too Many Requests'}
+
+  Mode: specialized
+  ⚠  5 model(s) unreachable
+
+
+---STDERR---

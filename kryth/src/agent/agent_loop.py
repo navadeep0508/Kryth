@@ -1401,6 +1401,28 @@ def build_initial_system(session, user_input: str = ""):
 
 def run_agent(user_input, extra_system: str | None = None):
     session = get_session()
+
+    # ── Register MCP tools from configured servers ─────────────────────────
+    try:
+        from agent.mcp.manager import get_mcp_configs
+        from agent.tools import register_mcp_tools
+        _mcp_configs = get_mcp_configs()
+        if _mcp_configs:
+            from agent.mcp.manager import discover_all_tools
+            _all_mcp = discover_all_tools()
+            _mcp_specs: list[dict] = []
+            for _server_name, _tools in _all_mcp.items():
+                _mcp_specs.extend(_tools)
+            if _mcp_specs:
+                _registered = register_mcp_tools(_mcp_specs)
+                _TOOL_SPEC_BY_NAME.update(
+                    (s["function"]["name"], s) for s in _mcp_specs
+                )
+                _logger.info("Registered %d MCP tools from %d servers",
+                             _registered, len(_all_mcp))
+    except Exception as _e:
+        _logger.debug("run_agent mcp registration: %s", _e)
+
     ui.begin_turn()
     ui.turn_start()
 

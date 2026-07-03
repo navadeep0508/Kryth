@@ -93,6 +93,40 @@ READ_ONLY_TOOLS = frozenset({
     "get_research_report",
 })
 
+_MCP_NAMES: set[str] = set()
+
+
+def register_mcp_tools(mcp_specs: list[dict]) -> int:
+    """Register MCP tools from discovered servers.
+
+    Each spec must have an ``mcp_server`` field. The corresponding
+    handler is factory-built to dispatch calls to that MCP server.
+
+    Returns the number of tools registered.
+    """
+    from agent.mcp.manager import call_mcp_tool
+    count = 0
+    for spec in mcp_specs:
+        func = spec["function"]
+        name = func["name"]
+        server = spec.get("mcp_server", "")
+
+        if name in _MCP_NAMES or name in TOOLS:
+            continue
+
+        def _make_handler(_server: str, _tool: str) -> callable:
+            def _handler(**kwargs: dict) -> str:
+                return call_mcp_tool(_server, _tool, kwargs)
+            _handler.__name__ = _tool
+            _handler.__qualname__ = f"MCP_{_server}.{_tool}"
+            return _handler
+
+        TOOLS[name] = _make_handler(server, name)
+        TOOL_SPECS.append(spec)
+        _MCP_NAMES.add(name)
+        count += 1
+    return count
+
 SELF_RENDERED_TOOLS = frozenset({
     "read_file",
     "write_file",

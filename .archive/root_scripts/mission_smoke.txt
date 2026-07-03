@@ -1,0 +1,36 @@
+
+                   ██╗  ██╗██████╗ ██╗   ██╗████████╗██╗  ██╗                   
+                   ██║ ██╔╝██╔══██╗╚██╗ ██╔╝╚══██╔══╝██║  ██║                   
+                   █████╔╝ ██████╔╝ ╚████╔╝    ██║   ███████║                   
+                   ██╔═██╗ ██╔══██╗  ╚██╔╝     ██║   ██╔══██║                   
+                   ██║  ██╗██║  ██║   ██║      ██║   ██║  ██║                   
+                   ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝                   
+
+                                           ⟨◉_◉⟩                                
+
+                           Autonomous Coding Intelligence                       
+
+╭─ ◈ System Initialization ────────────────────────────────────────────────────╮
+│                                                                              │
+│  ◈ Initializing KRYTH                 ◈ Loading configuration                │
+│  ◈ Scanning workspace                 ◈ Preparing execution engine           │
+│  ◈ Loading tools  24 available        ◈ Agent ready                          │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭─ ◈ KRYTH ────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  ◈ MODEL  stepfun-ai/step-3.5-flash   ◈ TOOLS  24 loaded                     │
+│  ◈ ENDPOINT                           ◈ VERSION  2.4.0                       │
+│  https://integrate.api.nvidia.com/…                                          │
+│                                                                              │
+│  ◈ Ready  ·  Type your request or /help for commands                         │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+type a request, or use a slash command (/help for the full list)
+
+[2m────────────────────────────────────────────────────────────────────────────────[0m
+> 
+                          ◈ KRYTH  Session terminated                           
+
