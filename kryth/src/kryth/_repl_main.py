@@ -1260,7 +1260,7 @@ def _cmd_graph(args: str = "") -> None:
             if not os.path.exists(html):
                 ui.warn("No graph.html found. Run /graph build first.")
             else:
-                subprocess.Popen(["start", html], shell=True)
+                subprocess.Popen(["cmd.exe", "/c", "start", html])
                 ui.success(f"Opening {html}")
 
         else:

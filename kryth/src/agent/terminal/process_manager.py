@@ -7,6 +7,7 @@ Uses psutil when available; falls back to subprocess-based inspection.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -157,8 +158,7 @@ class ProcessManager:
 
         try:
             proc = subprocess.Popen(
-                info.command,
-                shell=True,
+                shlex.split(info.command),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 cwd=None,

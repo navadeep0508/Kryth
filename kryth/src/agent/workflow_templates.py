@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -117,7 +118,7 @@ def _handle_delete(tmpl: WorkflowTemplate, m: re.Match, ctx: Any) -> WorkflowRes
 
 def _run_cmd(cmd: str, cwd: str | None = None) -> Tuple[bool, str]:
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+        r = subprocess.run(shlex.split(cmd), capture_output=True, text=True,
                            timeout=120, cwd=cwd)
         out = (r.stdout + r.stderr).strip()
         return r.returncode == 0, out

@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -224,7 +225,7 @@ class DebugCycle:
     def _rerun(self, command: str, cwd: Optional[str]) -> Tuple[bool, str, str, int]:
         try:
             r = subprocess.run(
-                command, shell=True, capture_output=True, text=True,
+                shlex.split(command), capture_output=True, text=True,
                 timeout=120, cwd=cwd,
             )
             return r.returncode == 0, r.stdout, r.stderr, r.returncode

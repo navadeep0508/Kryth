@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 
 from agent.settings import load_settings
@@ -36,8 +37,7 @@ def run_hooks(event: str, tool_name: str = "", tool_args: dict | None = None, to
 
         try:
             result = subprocess.run(
-                cmd,
-                shell=True,
+                shlex.split(cmd),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -72,25 +73,26 @@ def _looks_like_bash(cmd: str) -> bool:
     return any(idiom in cmd for idiom in _BASH_IDIOMS)
 
 
-def _prepare_command(command: str) -> tuple[str, str | None]:
-    """Return ``(command_to_run, note)``.
+def _prepare_command(command: str) -> tuple[list[str], str | None]:
+    """Return ``(args, note)``.
 
-    On Windows, when the command uses bash idioms and bash is on PATH,
-    re-route via ``bash -c "..."`` so things like ``mkdir -p`` work.
-    ``note`` is a one-line annotation for the log (or ``None``).
+    Returns a list of arguments that can be passed to ``subprocess.Popen``
+    / ``subprocess.run`` with ``shell=False``.  On Windows, when the
+    command uses bash idioms and bash is on PATH, re-routes via
+    ``bash -c`` so things like ``mkdir -p`` work.  ``note`` is a
+    one-line annotation for the log (or ``None``).
     """
     if not IS_WINDOWS:
-        return command, None
+        return shlex.split(command), None
     if not _looks_like_bash(command):
-        return command, None
+        return ["cmd.exe", "/c", command], None
     bash = _resolve_bash()
     if not bash:
-        return command, (
+        return ["cmd.exe", "/c", command], (
             "warning: command uses bash idioms but bash.exe not found; "
             "install Git for Windows or rewrite for cmd.exe"
         )
-    escaped = command.replace('"', '\\"')
-    return f'"{bash}" -c "{escaped}"', f"routed via {os.path.basename(bash)}"
+    return [bash, "-c", command], f"routed via {os.path.basename(bash)}"
 
 
 # task_id -> {"proc": Popen, "out_path": str, "out_file": file, "command": str}
@@ -104,10 +106,9 @@ def _spawn_background(command):
         f"kryth-bg-{task_id}.log",
     )
     out_file = open(out_path, "w", encoding="utf-8", errors="replace")
-    runnable, _ = _prepare_command(command)
+    args, _ = _prepare_command(command)
     proc = subprocess.Popen(
-        runnable,
-        shell=True,
+        args,
         stdout=out_file,
         stderr=subprocess.STDOUT,
         text=True,
@@ -122,7 +123,7 @@ def _spawn_background(command):
 
 
 def _run_with_live_box(
-    runnable: str,
+    args: list[str],
     command: str,
     timeout: int,
     note: str | None,
@@ -165,8 +166,7 @@ def _run_with_live_box(
 
     try:
         proc = subprocess.Popen(
-            runnable,
-            shell=True,
+            args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -310,12 +310,12 @@ def run_command(command, timeout=15, run_in_background=False):
     try:
         bounded_timeout = max(1, min(int(timeout), 600))
 
-        runnable, note = _prepare_command(command)
+        args, note = _prepare_command(command)
         ui.shell_run(command=command, timeout=bounded_timeout, note=note)
 
         # Live streaming box — shows output as it arrives, supports Ctrl+C
         full_output, exit_code = _run_with_live_box(
-            runnable, command, bounded_timeout, note
+            args, command, bounded_timeout, note
         )
 
         ui.shell_end(
