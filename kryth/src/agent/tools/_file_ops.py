@@ -11,10 +11,13 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+import logging
 import os
 import tempfile
 
 from agent import ui
+
+_logger = logging.getLogger(__name__)
 from agent.context import IGNORE_DIRS
 from agent.tools._results import err
 
@@ -48,8 +51,8 @@ def _resolve_path(path: str) -> str:
         candidate = os.path.join(root, clean)
         if os.path.exists(candidate):
             return os.path.abspath(candidate)
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("_resolve_path project_root: %s", _e)
 
     # 3. Fuzzy basename match under repo root (avoid expensive os.walk on large trees)
     from agent.context import IGNORE_DIRS
@@ -63,8 +66,8 @@ def _resolve_path(path: str) -> str:
                 for f in filenames:
                     if f == basename or f.lower() == basename.lower():
                         return os.path.abspath(os.path.join(dirpath, f))
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.debug("_resolve_path fuzzy walk: %s", _e)
 
     return clean
 
@@ -80,13 +83,13 @@ def _invalidate_indexes(*paths: str) -> None:
     try:
         from agent import repo_index
         repo_index.invalidate(*paths)
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("_invalidate_indexes repo_index: %s", _e)
     try:
         from agent import retriever
         retriever.invalidate()
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("_invalidate_indexes retriever: %s", _e)
 
 
 def _checkpoint(path: str) -> None:
@@ -94,8 +97,8 @@ def _checkpoint(path: str) -> None:
     try:
         from agent import snapshots
         snapshots.snapshot(path)
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("_checkpoint snapshots: %s", _e)
 
 
 DEFAULT_READ_LIMIT = 2000
@@ -387,8 +390,8 @@ def _extract_pdf_text(path: str) -> str | None:
         return "\n".join(pages)
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("read_pdf fitz: %s", _e)
 
     # pdfminer.six — widely available
     try:
@@ -396,8 +399,8 @@ def _extract_pdf_text(path: str) -> str | None:
         return pdfminer_extract(path)
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("read_pdf pdfminer: %s", _e)
 
     # pypdf — lightweight
     try:
@@ -406,8 +409,8 @@ def _extract_pdf_text(path: str) -> str | None:
         return "\n".join(page.extract_text() or "" for page in reader.pages)
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("read_pdf pypdf: %s", _e)
 
     # pdfplumber — good for structured extraction
     try:
@@ -416,8 +419,8 @@ def _extract_pdf_text(path: str) -> str | None:
             return "\n".join(page.extract_text() or "" for page in pdf.pages)
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("read_pdf pdfplumber: %s", _e)
 
     # pdftotext CLI (poppler-utils)
     import subprocess as _sp
@@ -425,8 +428,8 @@ def _extract_pdf_text(path: str) -> str | None:
         result = _sp.run(["pdftotext", path, "-"], capture_output=True, text=True, timeout=30)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("read_pdf pdftotext: %s", _e)
 
     return None
 
