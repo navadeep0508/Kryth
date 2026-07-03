@@ -504,8 +504,92 @@ def save_report(report: BenchmarkReport, path: str = ""):
     if not path:
         path = str(_HERE / "benchmark_report.json")
     data = asdict(report)
+    data["_timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     Path(path).write_text(json.dumps(data, indent=2))
     print(f"\n  Report saved to {path}")
+
+
+# ── Regression comparison ────────────────────────────────────────────────
+
+_REGRESSION_THRESHOLDS = {
+    "success_rate":     {"delta": -5.0,  "suffix": "%",   "decimals": 1, "uses_pct": False},
+    "crash_rate":       {"delta": 2.0,   "suffix": "%",   "decimals": 1, "uses_pct": False},
+    "avg_latency_s":    {"delta": 2.0,   "suffix": "s",   "decimals": 1, "uses_pct": False},
+    "avg_tokens":       {"delta": 500,   "suffix": "",    "decimals": 0, "uses_pct": False},
+    "avg_tool_calls":   {"delta": 3.0,   "suffix": "",    "decimals": 1, "uses_pct": False},
+    "avg_turns":        {"delta": 2.0,   "suffix": "",    "decimals": 1, "uses_pct": False},
+    "avg_loop_count":   {"delta": 0.50,  "suffix": "",    "decimals": 2, "uses_pct": False},
+    "avg_duplicate_reads": {"delta": 1.0, "suffix": "",   "decimals": 1, "uses_pct": False},
+}
+
+
+def load_report(path: str) -> dict:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _fmt(val: float, suffix: str, decimals: int) -> str:
+    return f"{val:.{decimals}f}{suffix}"
+
+
+def compare_reports(current: dict, baseline: dict) -> list[dict]:
+    """Compare current report against baseline.
+    Returns a list of dicts with keys: metric, current, baseline, delta, regression, threshold.
+    """
+    checks = []
+    for metric, cfg in _REGRESSION_THRESHOLDS.items():
+        cur = current.get(metric, 0.0)
+        base = baseline.get(metric, cur)
+        if base == 0 and cur == 0:
+            continue
+        raw_delta = cur - base
+
+        # For "lower is worse" metrics (success_rate), regression = delta < threshold
+        # For "higher is worse" metrics, regression = delta > threshold
+        threshold = cfg["delta"]
+        if threshold < 0:
+            is_regression = raw_delta < threshold
+        else:
+            is_regression = raw_delta > threshold
+
+        checks.append({
+            "metric": metric,
+            "current": _fmt(cur, cfg["suffix"], cfg["decimals"]),
+            "baseline": _fmt(base, cfg["suffix"], cfg["decimals"]),
+            "delta": raw_delta,
+            "regression": is_regression,
+            "threshold": str(threshold) + cfg["suffix"],
+        })
+    return checks
+
+
+def print_regression_report(checks: list[dict]):
+    regressions = [c for c in checks if c["regression"]]
+    if not regressions:
+        print(f"\n  No regressions detected (compared against baseline)")
+        return
+
+    print(f"\n  REGRESSIONS DETECTED ({len(regressions)})")
+    print(f"  {'─'*60}")
+    for c in regressions:
+        d = c["delta"]
+        arrow = "↑" if d > 0 else "↓"
+        print(f"  {c['metric']:25s} {c['current']:>10s}  {arrow}  (baseline: {c['baseline']:>10s}, threshold: {c['threshold']})")
+    print()
+
+
+def print_comparison(checks: list[dict]):
+    print(f"\n  {'─'*60}")
+    print(f"  COMPARISON vs BASELINE")
+    print(f"  {'─'*60}")
+    for c in checks:
+        d = c["delta"]
+        arrow = "↑" if d > 0.001 else ("↓" if d < -0.001 else "=")
+        flag = "  <--" if c["regression"] else ""
+        print(f"  {c['metric']:25s} {c['current']:>10s}  {arrow}  (baseline: {c['baseline']:>10s}){flag}")
+    print()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
@@ -518,6 +602,8 @@ def main():
     parser.add_argument("--list", "-l", action="store_true", help="List prompts without running")
     parser.add_argument("--save", "-s", default="", help="Save report to path")
     parser.add_argument("--verbose", "-v", action="store_true", default=True, help="Verbose output")
+    parser.add_argument("--compare", action="store_true", help="Compare against saved baseline after running")
+    parser.add_argument("--baseline", default="", help="Baseline report path (default: previous benchmark_report.json)")
 
     args = parser.parse_args()
 
@@ -534,7 +620,27 @@ def main():
     save_path = args.save or str(_HERE / "benchmark_report.json")
     save_report(report, save_path)
 
-    return 0 if report.failed == 0 and report.crashed == 0 else 1
+    exit_code = 0
+    if report.failed > 0 or report.crashed > 0:
+        exit_code = 1
+
+    if args.compare:
+        baseline_path = args.baseline or str(_HERE / "benchmark_report.json")
+        current = json.loads(Path(save_path).read_text(encoding="utf-8"))
+        baseline = load_report(baseline_path)
+        if not baseline:
+            print(f"\n  No baseline found at {baseline_path} — saving current as baseline.")
+        else:
+            checks = compare_reports(current, baseline)
+            print_comparison(checks)
+            print_regression_report(checks)
+            if any(c["regression"] for c in checks):
+                print("  ❌ REGRESSION FAILED — some metrics exceeded threshold\n")
+                exit_code = max(exit_code, 2)
+            else:
+                print("  ✅ All metrics within threshold\n")
+
+    return exit_code
 
 
 if __name__ == "__main__":
