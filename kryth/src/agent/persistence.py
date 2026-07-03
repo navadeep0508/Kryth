@@ -38,9 +38,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 import uuid
+
+_logger = logging.getLogger(__name__)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -77,8 +80,8 @@ def _session_dir(project_hash: str) -> Path:
 def _ensure_dir(p: Path) -> None:
     try:
         p.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
+    except OSError as _e:
+        _logger.debug("_ensure_dir mkdir: %s", _e)
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +242,8 @@ class SessionStore:
             try:
                 f.flush()
                 f.close()
-            except OSError:
-                pass
+            except OSError as _e:
+                _logger.debug("SessionFile.close flush/close: %s", _e)
 
     def flush(self) -> None:
         f = self._file
@@ -250,10 +253,10 @@ class SessionStore:
             f.flush()
             try:
                 os.fsync(f.fileno())
-            except (OSError, AttributeError):
-                pass
-        except OSError:
-            pass
+            except (OSError, AttributeError) as _e:
+                _logger.debug("SessionFile.flush fsync: %s", _e)
+        except OSError as _e:
+            _logger.debug("SessionFile.flush flush: %s", _e)
 
     # -- writers ------------------------------------------------------
 
@@ -479,8 +482,8 @@ def latest_session_id(project_hash: str | None = None) -> str | None:
             sid = data.get("session_id")
             if isinstance(sid, str) and (sd / f"{sid}.jsonl").is_file():
                 return sid
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, json.JSONDecodeError) as _e:
+            _logger.debug("resume_session_id read latest.json: %s", _e)
     metas = list_recent(ph, limit=1)
     return metas[0].session_id if metas else None
 
@@ -497,7 +500,8 @@ def _load_meta(path: Path) -> SessionMeta | None:
     try:
         with open(path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-    except OSError:
+    except OSError as _e:
+        _logger.debug("_load_meta open: %s", _e)
         return None
 
     meta: SessionMeta | None = None
@@ -507,7 +511,8 @@ def _load_meta(path: Path) -> SessionMeta | None:
             continue
         try:
             obj = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as _e:
+            _logger.debug("_load_meta json parse: %s", _e)
             continue
         m = _meta_from_dict(obj)
         if m is not None:
@@ -527,8 +532,8 @@ def _write_latest_pointer(session_dir: Path, session_id: str) -> None:
             json.dumps({"session_id": session_id, "ts": time.time()}),
             encoding="utf-8",
         )
-    except OSError:
-        pass
+    except OSError as _e:
+        _logger.debug("_write_latest_pointer: %s", _e)
 
 
 def _prune_old_sessions(session_dir: Path) -> None:
@@ -540,13 +545,14 @@ def _prune_old_sessions(session_dir: Path) -> None:
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-    except OSError:
+    except OSError as _e:
+        _logger.debug("_prune_old_sessions iterdir: %s", _e)
         return
     for old in files[MAX_SESSIONS_PER_PROJECT:]:
         try:
             old.unlink()
-        except OSError:
-            pass
+        except OSError as _e:
+            _logger.debug("_prune_old_sessions unlink: %s", _e)
 
 
 __all__ = [

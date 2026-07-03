@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import contextvars
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, Any
+
+_logger = logging.getLogger(__name__)
 
 
 def estimate_tokens(text: str) -> int:
@@ -183,5 +186,5 @@ def reset_session() -> None:
     try:
         from agent.persistence import session_store
         session_store().start_new(".")
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("Session.reset session_store.start_new: %s", _e)

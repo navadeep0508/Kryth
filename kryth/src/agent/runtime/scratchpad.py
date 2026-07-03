@@ -7,8 +7,11 @@ No other system independently decides execution flow.
 
 from __future__ import annotations
 
+import logging
 import os as _os
 import re as _re
+
+_logger = logging.getLogger(__name__)
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -486,11 +489,13 @@ class ScratchpadManager:
         matched = False
         if hint and tool_name == hint:
             matched = True
-        elif tool_name == "todo_write" and hint == "todo_write":
+        elif hint == "todo_write" and tool_name == "todo_write":
             matched = True
-        elif tool_name == "write_file" and hint in ("edit_file", "write_file"):
+        elif hint in ("write_file", "edit_file", "multi_edit") and tool_name in ("write_file", "edit_file", "multi_edit"):
             matched = True
-        elif tool_name == "run_command" and hint == "run_install":
+        elif hint in ("run_command", "run_install", "run_tests") and tool_name in ("run_command", "run_install", "run_tests"):
+            matched = True
+        elif hint in ("read_file", "grep") and tool_name in ("read_file", "grep"):
             matched = True
 
         if matched and self._has_evidence(active, tool_name, result):
@@ -619,15 +624,15 @@ class ScratchpadManager:
                     command=(args.get("command", "") or "")[:60] or "(unknown)",
                     pattern=args.get("pattern", "") or "(unknown)",
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("_format_tool_success format: %s", _e)
         if "path" in args_or_result or "Args:" in args_or_result:
             try:
                 import json as _json
                 extracted = _json.loads(str(args_or_result).split("Args:")[-1].split("|")[0])
                 return pattern.format(path=extracted.get("path", ""), command=extracted.get("command", ""), pattern=extracted.get("pattern", ""))
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("_format_tool_success json extract: %s", _e)
         return pattern
 
     # ── Semantic duplicate detection ──────────────────────────────────────
@@ -652,6 +657,10 @@ class ScratchpadManager:
             scan_count = sum(1 for a in recent if a == "scanned repository")
             if scan_count >= 3:
                 return True
+        # Re-read detection: same file path read more than once in last 6 actions
+        read_files = [a for a in recent if a.startswith("read ")]
+        if len(read_files) >= 2 and len(set(read_files)) < len(read_files):
+            return True
         return False
 
     # ── Finding extraction ────────────────────────────────────────────────
@@ -1006,8 +1015,8 @@ class ScratchpadManager:
                                 return LoopDecision(done=True)
                         else:
                             break
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("evaluate LLM response parse: %s", _e)
             return LoopDecision(done=True)
 
         # 2. Has blocked commands with no writes — check next_action
@@ -1039,45 +1048,39 @@ class ScratchpadManager:
         if s.todos:
             _done = sum(1 for t in s.todos if t.status == "completed")
             _total = len(s.todos)
-            plan_lines = [f"EXECUTION PLAN  ({_done}/{_total} steps completed)"]
-            for t in s.todos:
-                if t.status == "completed":
-                    plan_lines.append(f"  \u2713 {t.title}")
-                elif t.status == "active":
-                    plan_lines.append(f"  \u2192 {t.title}")
-                elif t.status == "blocked":
-                    plan_lines.append(f"  \u2717 {t.title}")
-                elif t.status == "failed":
-                    plan_lines.append(f"  \u2717 {t.title} (failed)")
-                else:
-                    plan_lines.append(f"  \u25CB {t.title}")
-            plan_block = "\n".join(plan_lines)
+            _active = [t for t in s.todos if t.status in ("active", "pending", "blocked", "failed")]
+            if _total <= 1:
+                plan_block = ""  # trivial — don't waste tokens on a 1-step plan
+            elif _done == _total:
+                plan_block = f"EXECUTION PLAN  ({_done}/{_total} — all done)"
+            else:
+                plan_lines = [f"EXECUTION PLAN  ({_done}/{_total})"]
+                for t in _active:
+                    if t.status == "active":
+                        plan_lines.append(f"  \u2192 {t.title}")
+                    elif t.status == "blocked":
+                        plan_lines.append(f"  \u2717 {t.title}")
+                    elif t.status == "failed":
+                        plan_lines.append(f"  \u2717 {t.title} (failed)")
+                    else:
+                        plan_lines.append(f"  \u25CB {t.title}")
+                plan_block = "\n".join(plan_lines)
 
         # ── Scratchpad state ────────────────────────────────────────────
-        goal = s.goal[:80].strip() + ("..." if len(s.goal) > 80 else "")
-        steps = s.completed_steps[-6:] or ["(none)"]
-        findings = s.findings[-3:] or ["(none)"]
-        blockers = s.blockers or ["(none)"]
-
+        blockers = s.blockers or []
         cs = s.confidence_scores
         block = (
-            f"TASK SCRATCHPAD\n"
-            f"GOAL:     {goal}\n"
-            f"INTENT:   {s.intent}\n"
-            f"PROGRESS: {round(s.progress * 100, 1)}%  "
-            f"CONFIDENCE: K{round(cs.knowledge * 100, 0):.0f}% "
-            f"D{round(cs.diagnosis * 100, 0):.0f}% "
-            f"C{round(cs.completion * 100, 0):.0f}% "
-            f"({round(s.confidence * 100, 1)}%)\n"
-            f"STEPS:    {', '.join(steps)}\n"
-            f"FINDINGS: {', '.join(findings)}\n"
-            f"BLOCKERS: {', '.join(blockers)}\n"
-            f"NEXT:     {s.next_action}"
+            f"[SCRATCHPAD] {s.intent} | "
+            f"{round(s.progress * 100, 1)}% | "
+            f"K{round(cs.knowledge * 100):.0f} D{round(cs.diagnosis * 100):.0f} C{round(cs.completion * 100):.0f} | "
+            f"NEXT: {s.next_action}"
         )
+        if blockers:
+            block += f" | BLOCKED: {'; '.join(blockers)}"
         if s.should_stop:
-            block += "\nSTATUS:   COMPLETE — stopping"
+            block += " | COMPLETE"
         if s._force_summarize:
-            block += "\nSTATUS:   LOOP DETECTED — summarizing"
+            block += " | SUMMARIZE"
 
         # Combine plan + state (plan first)
         if plan_block:

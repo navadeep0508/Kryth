@@ -272,10 +272,11 @@ def _try_get_read_from_cmd(cmd: str, session) -> Optional[str]:
             _cached = _gcr(id(session), _path)
             if _cached and _cached.result:
                 _content = _cached.result
-        except Exception:
-            pass
-        return f"[FROM READ MEMORY — previously read as '{cmd.split()[0]}']\n{_content}"
-    except Exception:
+        except Exception as _e:
+            _logger.debug("_try_get_read_from_cmd get_cached_read: %s", _e)
+        return f"{_content}\n\n[— end of file (from cache) —]"
+    except Exception as _e:
+        _logger.debug("_try_get_read_from_cmd failed: %s", _e)
         return None
 
 
@@ -331,15 +332,15 @@ def dispatch_tool_call(session, call):
                         _cached = _gcr(id(session), _path)
                         if _cached and _cached.result:
                             _content = _cached.result
-                    except Exception:
-                        pass
-                    result = f"[FROM READ MEMORY — previously read]\n{_content}"
+                    except Exception as _e:
+                        _logger.debug("dispatch_tool_call get_cached_read: %s", _e)
+                    result = f"{_content}\n\n[— end of file (from cache) —]"
                     ui.tool_start(tool_name, args)
                     ui.tool_result(result, error=False)
                     _append_tool_msg(session, call_id, tool_name, result)
                     return
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("dispatch_tool_call check_duplicate_read: %s", _e)
     elif tool_name == "run_command":
         _cmd = args.get("command", "")
         _cwd = args.get("cwd", "")
@@ -359,10 +360,8 @@ def dispatch_tool_call(session, call):
                     ui.tool_result(result, error=_exit != 0)
                     _append_tool_msg(session, call_id, tool_name, result)
                     return
-            except Exception:
-                pass
-        # Check if this is a file-reading command (cat/type/head/tail)
-        # that can be serviced from the read cache instead of disk.
+            except Exception as _e:
+                _logger.debug("dispatch_tool_call check_duplicate_command: %s", _e)
         if _cmd:
             try:
                 _cached = _try_get_read_from_cmd(_cmd, session)
@@ -373,10 +372,8 @@ def dispatch_tool_call(session, call):
                     ui.tool_result(result, error=False)
                     _append_tool_msg(session, call_id, tool_name, result)
                     return
-            except Exception:
-                pass
-        # Windows command compatibility: rewrite known-bad patterns
-        # before they hit the shell (saves round-trip failures).
+            except Exception as _e:
+                _logger.debug("dispatch_tool_call _try_get_read_from_cmd: %s", _e)
         if _cmd:
             _fixed = _fix_windows_command(_cmd)
             if _fixed != _cmd:
@@ -397,8 +394,8 @@ def dispatch_tool_call(session, call):
                     ui.tool_result(result, error=False)
                     _append_tool_msg(session, call_id, tool_name, result)
                     return
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("dispatch_tool_call check_duplicate_edit: %s", _e)
 
     # ---- Repeat-denial circuit breaker --------------------------
     # If this exact (tool, args) has been denied repeatedly, short-circuit
@@ -516,8 +513,8 @@ def dispatch_tool_call(session, call):
             _path = args.get("path") or args.get("command", "")[:40]
             _task_label = f"{tool_name} {_path}".strip()
             _mc.set_agent(_agent_id or _agent_role, _agent_role, "running", _task_label)
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("dispatch_tool_call mission_control: %s", _e)
 
     _tool_start_ts = __import__("time").monotonic()
     result = execute_tool(tool_name, args)
@@ -536,8 +533,8 @@ def dispatch_tool_call(session, call):
     _error = has_error(result)
     try:
         session.memory_manager.on_tool_result(tool_name, args, result, error=_error)
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("dispatch_tool_call on_tool_result: %s", _e)
     # Special case: record read_file in ReadMemory for duplicate detection
     if tool_name == "read_file" and not _error:
         _path = args.get("path", "")
@@ -545,8 +542,8 @@ def dispatch_tool_call(session, call):
             try:
                 from agent.memory import record_read_file as _rrf
                 _rrf(id(session), _path, args, str(result))
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("dispatch_tool_call record_read_file: %s", _e)
 
     # Scratchpad: completion tracking is handled by update_after_tool
 
@@ -561,8 +558,8 @@ def dispatch_tool_call(session, call):
                 try:
                     from agent.patch_pipeline import validate_patch_silent
                     validate_patch_silent(path, complexity=complexity)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    _logger.debug("dispatch_tool_call bg_validate: %s", _e)
             import threading as _bgt
             _bgt.Thread(target=_bg_validate_and_test,
                         args=(_written_path, "medium"),
@@ -619,8 +616,8 @@ def dispatch_tool_call(session, call):
             if _agent_id:
                 _dash.push_event("agent_update", id=_agent_id, role=_agent_role,
                                  status="running", task=f"{tool_name} {_path}".strip())
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("dispatch_tool_call dashboard: %s", _e)
 
     post = run_hooks("PostToolUse", tool_name, args, result)
     if post:
@@ -633,7 +630,8 @@ def dispatch_tool_call(session, call):
             result_str = compress_result(tool_name, str(result))
         else:
             result_str = str(result)
-    except Exception:
+    except Exception as _e:
+        _logger.debug("dispatch_tool_call compress_result: %s", _e)
         result_str = str(result)
 
     # Phase 3 — smart output summarizer: compress large terminal / test / install outputs
@@ -645,8 +643,8 @@ def dispatch_tool_call(session, call):
             result_str = _os_compressed
             if saved > 500:
                 ui.debug(f"(output-summarizer: {_os_raw_n:,}→{_os_out_n:,} chars, -{saved//4} tok)")
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("dispatch_tool_call output_summarizer: %s", _e)
 
     # Auto-compress browser results every N tool calls
     try:
@@ -655,8 +653,8 @@ def dispatch_tool_call(session, call):
             session.messages, dropped = compress_messages(session.messages)
             if dropped > 0:
                 ui.debug(f"(context: compressed {dropped:,} chars of old browser results)")
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("dispatch_tool_call compress_messages: %s", _e)
 
     # Periodic history checkpointing — compresses old turns into structured JSON
     try:
@@ -668,8 +666,8 @@ def dispatch_tool_call(session, call):
             session._tool_calls_since_checkpoint = 0
             if _freed > 0:
                 ui.debug(f"(checkpoint: archived {_freed:,} chars of old history)")
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.debug("dispatch_tool_call checkpoint: %s", _e)
 
     # Tools that render their own visual representation skip the generic tee
     if tool_name not in SELF_RENDERED_TOOLS:
@@ -742,14 +740,14 @@ def _speculative_preload(session, user_input: str) -> "threading.Event":
                         try:
                             if _os.path.getsize(fpath) < 30_000:
                                 found.append(fpath)
-                        except OSError:
-                            pass
+                        except OSError as _e:
+                            _logger.debug("_speculative_preload getsize: %s", _e)
                 if len(found) >= 12:
                     break
             if found:
                 results["files"] = found[:12]
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.debug("_speculative_preload failed: %s", _e)
         finally:
             _tick()
 
@@ -779,8 +777,8 @@ def _expand_run_command_paths(tool_calls: list) -> None:
                 p = a.get("path", "")
                 if p:
                     written[_os2.path.basename(p).lower()] = _os2.path.abspath(p)
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("_expand_run_command_paths write_file parse: %s", _e)
     if not written:
         return
     for call in tool_calls:
@@ -807,8 +805,8 @@ def _expand_run_command_paths(tool_calls: list) -> None:
             if abs_p and _os2.sep not in fname and "/" not in fname:
                 a["command"] = f'{runner} "{abs_p}"{rest}'
                 fn["arguments"] = json.dumps(a)
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.debug("_expand_run_command_paths run_command rewrite: %s", _e)
 
 
 def _process_tool_calls(session, tool_calls):
@@ -955,8 +953,8 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                     history_tok=_hist_chars // 4,
                     tools_count=len(_turn_tools),
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("run_inner_loop token_budget: %s", _e)
 
         # Hook: inject scratchpad prompt block before LLM call
         _scratch_state = None
@@ -976,8 +974,8 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
             if _mem_block:
                 _mem_state = len(session.messages)
                 session.messages.append({"role": "system", "content": _mem_block})
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.debug("run_inner_loop get_context_summary: %s", _e)
 
         _turn_llm_start = _time.monotonic()
         response = ask_llm_stream(
@@ -989,8 +987,8 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
         if _mem_state is not None:
             try:
                 session.messages.pop(_mem_state)
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("run_inner_loop pop mem_state: %s", _e)
         if _scratch_state is not None:
             try:
                 session.messages.pop(_scratch_state)
@@ -1050,8 +1048,8 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                 from agent.llm import _model_max_tokens_cache, MAIN_MODEL
                 current = _model_max_tokens_cache.get(MAIN_MODEL, 16384)
                 _model_max_tokens_cache[MAIN_MODEL] = min(current * 2, 65536)
-            except Exception:
-                pass
+            except Exception as _e:
+                _logger.debug("run_inner_loop max_tokens_cache update: %s", _e)
             if session.messages and session.messages[-1].get("role") == "assistant":
                 session.messages.pop()
             turn_count -= 1
@@ -1236,8 +1234,8 @@ def run_inner_loop(session, max_turns: int, *, verbose_usage: bool = True) -> Lo
                     total_tools=_total_tool_calls,
                     turn=turn_count,
                 )
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.debug("run_inner_loop dashboard perf: %s", _e)
 
         # Safety gate early-exit: if the last tool result was a [BLOCKED]
         # destructive-command refusal, exit immediately. Otherwise the model
@@ -1397,16 +1395,16 @@ def build_initial_system(session, user_input: str = ""):
         _mem_block = session.memory_manager.get_prompt_block(user_input=user_input)
         if _mem_block:
             parts.append(_mem_block)
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.warning("build_initial_system get_prompt_block: %s", _e)
     # Inject ReadMemory context — cached file summaries
     try:
         from agent.memory import get_context_summary
         _read_mem = get_context_summary(id(session), max_tokens=600)
         if _read_mem:
             parts.append(_read_mem)
-    except Exception:
-        pass
+    except Exception as _e:
+        _logger.warning("build_initial_system get_context_summary: %s", _e)
 
     session.system_prompt = "\n\n".join(parts)
 
@@ -1456,8 +1454,8 @@ def run_agent(user_input, extra_system: str | None = None):
             _exp_text = str(_sr["experience"])[:800]
             session.append({"role": "system",
                             "content": f"[Memory: similar past tasks]\n{_exp_text}"})
-        except Exception:
-            pass
+        except Exception as _e:
+            _logger.debug("run_agent speculative experience: %s", _e)
     if _sr.get("files") and _is_first_turn:
         try:
             _file_list = "\n".join(_sr["files"])
