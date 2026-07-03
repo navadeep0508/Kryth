@@ -65,6 +65,7 @@ kryth.log
 sessions/
 session_store/
 memory/
+!src/agent/memory/
 AGENTS.md
 .AGENTS.md
 
