@@ -7,10 +7,6 @@
   Plans, edits, runs, and reviews code with any model on OpenRouter.
 </p>
 
-<p align="center">
-  <img src="assets/krythnewdemo.gif" alt="KRYTH planning and executing a multi-step task in the terminal" width="100%" />
-</p>
-
 KRYTH connects to LLMs through OpenRouter, reads and edits your code with a built-in tool set, runs shell commands, delegates to specialized sub-agents, and streams everything through a full-screen TUI. Every mutating action goes through an approval policy you control, so it is as autonomous or as careful as you want it to be.
 
 ## Quick Start
@@ -53,28 +49,28 @@ kryth sessions          # list saved sessions
 
 Configuration lives in `~/.config/kryth/config.toml`, with per-project overrides in `.kryth/config.toml`, and `AGENTS.md` is picked up automatically.
 
-Full [CLI reference](docs/cli.md) | [configuration reference](docs/configuration.md)
+Full [CLI reference](https://github.com/navadeep0508/Kryth/blob/main/docs/cli.md) | [configuration reference](https://github.com/navadeep0508/Kryth/blob/main/docs/configuration.md)
 
 ## Documentation
 
 | Page | What it covers |
 | --- | --- |
-| [CLI reference](docs/cli.md) | Installing, logging in, every command and flags |
-| [Configuration](docs/configuration.md) | `config.toml`, per-project overrides, `AGENTS.md`, every option |
-| [Tools](docs/tools.md) | The built-in tool set, sub-agents, MCP servers |
-| [Approvals](docs/approvals.md) | The six approval policies and the rules that override them |
-| [Sessions](docs/sessions.md) | Saving, resuming, checkpointing and rewinding conversations |
-| [Slash commands](docs/slash-commands.md) | Everything you can type after a `/` inside the TUI |
-| [Architecture](docs/architecture.md) | How the codebase is put together, class by class |
-| [Technologies](docs/technologies.md) | The libraries KRYTH is built on and what each one does |
+| [CLI reference](https://github.com/navadeep0508/Kryth/blob/main/docs/cli.md) | Installing, logging in, every command and flags |
+| [Configuration](https://github.com/navadeep0508/Kryth/blob/main/docs/configuration.md) | `config.toml`, per-project overrides, `AGENTS.md`, every option |
+| [Tools](https://github.com/navadeep0508/Kryth/blob/main/docs/tools.md) | The built-in tool set, sub-agents, MCP servers |
+| [Approvals](https://github.com/navadeep0508/Kryth/blob/main/docs/approvals.md) | The six approval policies and the rules that override them |
+| [Sessions](https://github.com/navadeep0508/Kryth/blob/main/docs/sessions.md) | Saving, resuming, checkpointing and rewinding conversations |
+| [Slash commands](https://github.com/navadeep0508/Kryth/blob/main/docs/slash-commands.md) | Everything you can type after a `/` inside the TUI |
+| [Architecture](https://github.com/navadeep0508/Kryth/blob/main/docs/architecture.md) | How the codebase is put together, class by class |
+| [Technologies](https://github.com/navadeep0508/Kryth/blob/main/docs/technologies.md) | The libraries KRYTH is built on and what each one does |
 
 ## Why KRYTH?
 
 - **Bring any model.** OpenRouter as the backend means versatility. One login gives you large models Claude, OpenAI, Deepseek, Kimi, and even access to smaller free models.
-- **Safety is a first-class feature.** Six approval policies, dangerous-command rejection, and confirmation for anything outside the working directory. You choose the risk level, not the agent. See [Approvals](docs/approvals.md).
+- **Safety is a first-class feature.** Six approval policies, dangerous-command rejection, and confirmation for anything outside the working directory. You choose the risk level, not the agent. See [Approvals](https://github.com/navadeep0508/Kryth/blob/main/docs/approvals.md).
 - **It survives long sessions.** Context pruning reclaims tokens from stale tool output, and when the window fills up, KRYTH compacts history into a continuation brief and keeps going instead of erroring out.
-- **Nothing is lost when you close the terminal.** Sessions are checkpointed after every turn, so `kryth --continue` puts you back exactly where you were, and `/rewind` walks the conversation back to any earlier checkpoint. See [Sessions](docs/sessions.md).
-- **Configurable by design.** A readable, object-oriented Python codebase built on Rich, Click, and Pydantic. Every tool is one class behind a shared abstract base, so adding a tool or a sub-agent is a small, well-marked change. See [Architecture](docs/architecture.md).
+- **Nothing is lost when you close the terminal.** Sessions are checkpointed after every turn, so `kryth --continue` puts you back exactly where you were, and `/rewind` walks the conversation back to any earlier checkpoint. See [Sessions](https://github.com/navadeep0508/Kryth/blob/main/docs/sessions.md).
+- **Configurable by design.** A readable, object-oriented Python codebase built on Rich, Click, and Pydantic. Every tool is one class behind a shared abstract base, so adding a tool or a sub-agent is a small, well-marked change. See [Architecture](https://github.com/navadeep0508/Kryth/blob/main/docs/architecture.md).
 - **Component-based UI design.** KRYTH uses a modular, component-based UI system with separate components for every visual element (spinners, gutters, markdown rendering, tool displays, confirmations, etc.), making it easy to maintain, customize, and extend the interface.
 
 ## What it can do
@@ -173,14 +169,14 @@ Currently being worked on:
 - **Parallel Subagents** - allows sub-agents to call instances of other sub-agents to delegate more work to specialized agents.
 - **Git Integration** - allows users to use git commands with kryth.
 
-Have an idea? [Open an issue](https://github.com/andrefetch/kryth/issues), feature discussions are very welcome.
+Have an idea? [Open an issue](https://github.com/navadeep0508/Kryth/issues), feature discussions are very welcome.
 
 ## Contributing
 
-Contributions of every size are appreciated, from typo fixes to new tools and sub-agents. Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and check the [open issues](https://github.com/andrefetch/kryth/issues) for something to pick up!
+Contributions of every size are appreciated, from typo fixes to new tools and sub-agents. Read [CONTRIBUTING.md](https://github.com/navadeep0508/Kryth/blob/main/CONTRIBUTING.md) to get started, and check the [open issues](https://github.com/navadeep0508/Kryth/issues) for something to pick up!
 
 If KRYTH is useful to you, **a star on the repo genuinely helps** the project reach more developers. ⭐
 
 ## License
 
-[GNU GENERAL PUBLIC LICENSE v3.0](LICENSE)
+[GNU GENERAL PUBLIC LICENSE v3.0](https://github.com/navadeep0508/Kryth/blob/main/LICENSE)

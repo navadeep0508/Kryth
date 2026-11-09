@@ -8,12 +8,12 @@ Hey, thanks for wanting to contribute!
 KRYTH is a Python project (3.11+). To get set up locally:
 
 ```bash
-git clone https://github.com/andrefetch/kryth.git
+git clone https://github.com/navadeep0508/Kryth.git
 cd kryth
 uv sync
 ```
 
-You can also install the dependencies with `pip install -r requirements.txt` if you prefer pip over uv.
+You can also install the checkout and its declared dependencies with `pip install -e .`.
 
 ## Workflow
 

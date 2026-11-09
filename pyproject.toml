@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kryth"
 version = "0.0.36"
-description = "An open-sourced, terminal-based AI coding agent."
+description = "An open-source terminal-based AI coding agent."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-authors = [{ name = "andrefetch" }]
+authors = [{ name = "navadeep0508" }]
 keywords = ["ai", "agent", "cli", "coding-assistant", "tui", "openrouter"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -20,27 +20,28 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
 ]
 dependencies = [
-    "click>=8.4",
-    "ddgs>=9.14",
-    "fastmcp>=3.4",
-    "httpx>=0.28",
-    "keyring>=25.0",
-    "openai>=2.44",
-    "packaging>=25.0",
-    "platformdirs>=4.10",
-    "prompt-toolkit>=3.0",
-    "pydantic>=2.13",
-    "rich>=15.0",
-    "tiktoken>=0.13",
+    "click>=8.4,<9",
+    "ddgs>=9.14,<10",
+    "fastmcp>=3.4,<4",
+    "httpx>=0.28,<1",
+    "keyring>=25.0,<26",
+    "openai>=2.44,<3",
+    "packaging>=25.0,<27",
+    "platformdirs>=4.10,<5",
+    "prompt-toolkit>=3.0,<4",
+    "pydantic>=2.13,<3",
+    "rich>=15.0,<16",
+    "tiktoken>=0.13,<1",
 ]
 
 [project.urls]
-Homepage = "https://github.com/andrefetch/kryth"
-Repository = "https://github.com/andrefetch/kryth"
-Issues = "https://github.com/andrefetch/kryth/issues"
+Homepage = "https://github.com/navadeep0508/Kryth"
+Repository = "https://github.com/navadeep0508/Kryth"
+Issues = "https://github.com/navadeep0508/Kryth/issues"
 
 [project.scripts]
 kryth = "main:main"

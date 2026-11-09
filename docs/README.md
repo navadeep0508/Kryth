@@ -13,5 +13,6 @@ Everything beyond the [project README](../README.md).
 | [Slash commands](slash-commands.md) | Everything you can type after a `/` inside the TUI |
 | [Architecture](architecture.md) | How the codebase is put together, class by class |
 | [Technologies](technologies.md) | The libraries KRYTH is built on and what each one does |
+| [Publishing](publishing.md) | Build validation and trusted PyPI publishing setup |
 
 New here? [CLI reference](cli.md) then [Configuration](configuration.md) covers day-to-day use. Planning to contribute? Start with [Architecture](architecture.md) and [CONTRIBUTING.md](../CONTRIBUTING.md).
