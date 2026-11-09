@@ -36,6 +36,7 @@ dependencies = [
     "pydantic>=2.13,<3",
     "rich>=15.0,<16",
     "tiktoken>=0.13,<1",
+    "tomli-w>=1.0,<2",
 ]
 
 [project.urls]
