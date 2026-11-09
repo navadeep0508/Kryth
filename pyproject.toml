@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kryth"
+version = "0.0.36"
+description = "An open-sourced, terminal-based AI coding agent."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "andrefetch" }]
+keywords = ["ai", "agent", "cli", "coding-assistant", "tui", "openrouter"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "click>=8.4",
+    "ddgs>=9.14",
+    "fastmcp>=3.4",
+    "httpx>=0.28",
+    "keyring>=25.0",
+    "openai>=2.44",
+    "packaging>=25.0",
+    "platformdirs>=4.10",
+    "prompt-toolkit>=3.0",
+    "pydantic>=2.13",
+    "rich>=15.0",
+    "tiktoken>=0.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/andrefetch/kryth"
+Repository = "https://github.com/andrefetch/kryth"
+Issues = "https://github.com/andrefetch/kryth/issues"
+
+[project.scripts]
+kryth = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["agent*", "client*", "config*", "context*", "hooks*", "prompts*", "safety*", "tools*", "ui*", "utils*"]
