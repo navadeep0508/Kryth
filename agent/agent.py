@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 from typing import AsyncGenerator, Awaitable, Callable
 from agent.session import Session
 from agent.store import SessionRecord
@@ -8,6 +9,17 @@ from agent.events import AgentEvent, AgentEventType
 from client.response import StreamEventType, TokenUsage, ToolCall, ToolResultMessage
 from prompts import create_loop_breaker_prompt
 from tools.base import ToolConfirmation
+
+
+def _confirms_new_project(message: str) -> bool:
+    """Recognize a direct answer that authorizes use of a blank workspace."""
+    normalized = re.sub(r"[^a-z0-9]+", " ", message.lower()).strip()
+    return normalized in {
+        "yes", "yes start here", "here", "new project", "new project here",
+        "start a new project here", "start new project here", "start a new project",
+        "start new project", "create a new project here", "create new project here",
+    }
+
 
 class Agent:
     def __init__(
@@ -30,25 +42,23 @@ class Agent:
     async def run(self, message: str):
         await self.session.hook_system.trigger_before_agent(message)
 
-        # PHASE 1 — Workspace ambiguity check. An empty/ambiguous workspace does
-        # not automatically mean the user wants a new project. Ask for
-        # clarification instead of silently creating nested project directories.
         if self.session.project_context and self.session.project_context.is_ambiguous:
-            hint = (
-                self.session.project_context_hint
-                or f"Workspace `{self.session.config.cwd}` appears to be empty or new."
-            )
-            yield AgentEvent.agent_error(
-                "Clarification needed: "
-                + hint
-                + "\n\nDid you mean to start a new project here, or point KRYTH at a "
-                  "different directory?",
-                details={
-                    "ambiguous_workspace": True,
-                    "workspace": str(self.session.config.cwd),
-                },
-            )
-            return
+            if not _confirms_new_project(message):
+                hint = (
+                    self.session.project_context_hint
+                    or f"Workspace `{self.session.config.cwd}` appears to be empty or new."
+                )
+                yield AgentEvent.agent_error(
+                    "Clarification needed: "
+                    + hint
+                    + "\n\nDid you mean to start a new project here, or point KRYTH at a "
+                      "different directory?",
+                    details={
+                        "ambiguous_workspace": True,
+                        "workspace": str(self.session.config.cwd),
+                    },
+                )
+                return
 
         yield AgentEvent.agent_start(message)
         self.session.inc_turn()
