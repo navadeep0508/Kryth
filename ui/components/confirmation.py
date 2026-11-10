@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from rich.box import ROUNDED
 from rich.console import Group
+from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from tools.base import ToolConfirmation
@@ -68,19 +71,28 @@ def confirmation_request(
     return permission_prompt(confirmation, cwd)
 
 
-def confirmation_choices(badge: str) -> Text:
-    choices = Text()
-    choices.append("y", style="success")
-    choices.append(" accept", style="muted")
-    choices.append("  ·  ", style="dim")
-    choices.append("a", style="info")
-    choices.append(" session", style="muted")
-    choices.append("  ·  ", style="dim")
-    choices.append("n", style="error")
-    choices.append(" reject", style="muted")
-    choices.append("  ·  ", style="dim")
-    choices.append("esc", style="subtitle")
-    choices.append(" cancel", style="muted")
-    choices.append("   ", style="dim")
-    choices.append(badge, style="muted")
-    return choices
+def confirmation_choices(badge: str) -> Panel:
+    """Render approval shortcuts as a compact, keyboard-focused choice card."""
+
+    def choice(key: str, label: str, key_style: str) -> Text:
+        return Text.assemble((f"[{key}] ", key_style), (label, "primary"))
+
+    options = Table.grid(padding=(0, 3))
+    options.add_column(no_wrap=True)
+    options.add_column(no_wrap=True)
+    options.add_row(
+        choice("Y", "Allow once", "success"),
+        choice("A", "Allow for session", "info"),
+    )
+    options.add_row(
+        choice("N", "Reject", "error"),
+        choice("Esc", "Cancel", "subtitle"),
+    )
+
+    return Panel(
+        Group(options, Text(badge, style="muted")),
+        title=Text("Approval", style="warning"),
+        border_style="warning",
+        box=ROUNDED,
+        padding=(0, 1),
+    )

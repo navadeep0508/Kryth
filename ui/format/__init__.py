@@ -9,7 +9,13 @@ from ui.format.args import (
     summarise_value,
 )
 from ui.format.code import extract_read_code, guess_language
-from ui.format.diff import diff_counts, diff_glimpse, diff_stat, diff_stat_text
+from ui.format.diff import (
+    diff_counts,
+    diff_glimpse,
+    diff_stat,
+    diff_stat_text,
+    edit_preview_rows,
+)
 from ui.format.elapsed import format_ago, format_duration, format_elapsed
 
 __all__ = [
@@ -20,6 +26,7 @@ __all__ = [
     'diff_glimpse',
     'diff_stat',
     'diff_stat_text',
+    'edit_preview_rows',
     'extract_read_code',
     'format_ago',
     'format_duration',

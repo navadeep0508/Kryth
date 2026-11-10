@@ -1,4 +1,5 @@
 from ui.components.args_table import render_args_table
+from ui.components.card import card
 from ui.components.confirmation import (
     APPROVE_KEYS,
     REJECT_KEYS,
@@ -60,6 +61,7 @@ __all__ = [
     'APPROVE_KEYS',
     'APPROVAL_OPTIONS',
     'ApprovalAction',
+    'card',
     'Gutter',
     'LOGO_HEIGHT',
     'LOGO_WIDTH',

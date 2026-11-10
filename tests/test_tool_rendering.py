@@ -1,4 +1,8 @@
 from rich.console import Console
+from rich.text import Text
+from pathlib import Path
+
+from tools.base import FileDiff, ToolConfirmation
 
 from ui.components.tool_call import (
     RENDERERS,
@@ -7,6 +11,8 @@ from ui.components.tool_call import (
     tool_header,
     tool_status,
 )
+from ui.components.permission_prompt import permission_prompt
+from ui.components.confirmation import confirmation_choices
 from ui.theme import AGENT_THEME
 
 
@@ -95,6 +101,86 @@ def test_tool_header_uses_readable_name_and_concise_result():
     assert "web" in header.plain
     assert "done" in header.plain
     assert "1.2s" in header.plain
+
+
+def test_write_tool_shows_compact_code_preview_and_overflow_count():
+    diff = "--- /dev/null\n+++ b/demo.py\n@@ -0,0 +1,20 @@\n" + "".join(
+        f"+print({line})\n" for line in range(1, 21)
+    )
+    summary, details = tool_blocks(ToolOutcome(
+        name="write",
+        args={"path": "demo.py"},
+        output="Created demo.py 20 lines",
+        metadata={"path": "demo.py", "is_new_file": True, "lines": 20},
+        diff=diff,
+    ))
+
+    rendered = plain(summary)
+    assert "Wrote 20 lines to demo.py" in rendered
+    assert "print(1)" in rendered
+    assert "print(10)" in rendered
+    assert "print(11)" not in rendered
+    assert "+10 lines" in rendered
+    assert details
+
+
+def test_edit_tool_shows_numbered_context_and_green_additions():
+    diff = (
+        "--- a/demo.py\n+++ b/demo.py\n@@ -85,4 +85,6 @@\n"
+        " before_one\n before_two\n"
+        "+added_one\n+added_two\n"
+        " after_one\n"
+    )
+    summary, _details = tool_blocks(ToolOutcome(
+        name="edit",
+        args={"path": "demo.py"},
+        output="Edited demo.py",
+        metadata={"path": "demo.py", "line_diff": 2},
+        diff=diff,
+    ))
+
+    rendered = plain(summary)
+    assert "Added 2 lines" in rendered
+    assert "85   before_one" in rendered
+    assert "87 + added_one" in rendered
+    assert "88 + added_two" in rendered
+
+
+def test_file_tool_headers_match_write_and_update_layout():
+    write = tool_header("●", "success", "write", "demo.py", Text())
+    update = tool_header("●", "success", "edit", "demo.py", Text())
+    assert write.plain == "● Write(demo.py)"
+    assert update.plain == "● Update(demo.py)"
+
+
+def test_edit_permission_prompt_uses_compact_file_change_layout(tmp_path):
+    path = tmp_path / "demo.py"
+    old = "def multiply(a):\n    return a * 2\n"
+    new = old + "\ndef power(a):\n    return a ** 2\n"
+    confirmation = ToolConfirmation(
+        tool_name="edit",
+        params={"path": "demo.py"},
+        description=f"Edit file: {path}",
+        diff=FileDiff(path, old, new),
+        affected_paths=[path],
+    )
+
+    rendered = plain(permission_prompt(confirmation, tmp_path))
+    assert "Update(demo.py)" in rendered
+    assert "Adds 3 lines" in rendered
+    assert "4 + def power(a):" in rendered
+    assert "5 +     return a ** 2" in rendered
+    assert str(tmp_path) not in rendered
+
+
+def test_approval_choices_render_as_a_keyboard_action_card():
+    rendered = plain([confirmation_choices("approval: ask")])
+    assert "Approval" in rendered
+    assert "[Y] Allow once" in rendered
+    assert "[A] Allow for session" in rendered
+    assert "[N] Reject" in rendered
+    assert "[Esc] Cancel" in rendered
+    assert "approval: ask" in rendered
 
 
 def test_subagent_call_summarizes_role_termination_and_tool_use():

@@ -11,8 +11,9 @@ from ui.components.diff_viewer import diff_viewer
 from ui.components.memory import render_memory
 from ui.components.plan import render_plan
 from ui.format import (
-    diff_glimpse,
+    diff_counts,
     diff_stat_text,
+    edit_preview_rows,
     extract_read_code,
     guess_language,
     headline,
@@ -22,7 +23,7 @@ from ui.format import (
 from ui.theme import KRYTH_SYNTAX
 from utils.text import truncate_text
 
-TOOL_ICON = ">"
+TOOL_ICON = "●"
 
 MAX_BLOCK_TOKENS = 2400
 MAX_DIFF_TOKENS = 4000
@@ -107,31 +108,70 @@ def _written(outcome: ToolOutcome) -> Blocks:
     summary: list[Any] = []
     details: list[Any] = []
 
-    headline_text = Text(outcome.output.strip() or "Completed", style="muted")
-    diff = outcome.diff
-    if diff:
-        headline_text.append(" ┈ ", style="muted")
-        headline_text.append_text(diff_stat_text(diff))
-    summary.append(headline_text)
+    diff = outcome.diff or ""
+    path = outcome.text("path") or outcome.path or "file"
+    added, removed = diff_counts(diff)
+    is_new = bool(outcome.metadata.get("is_new_file"))
+    line_count = outcome.count("lines")
+
+    if is_new:
+        line_count = line_count if line_count is not None else added
+        label = f"Wrote {line_count} lines to {path}"
+    elif added:
+        label = f"Added {added} lines"
+    elif removed:
+        label = f"Removed {removed} lines"
+    else:
+        label = outcome.output.strip() or f"Updated {path}"
+    summary.append(Text(f"└  {label}", style="muted"))
 
     if diff:
-        glimpse = diff_glimpse(diff)
-        if glimpse:
-            summary.append(
-                Syntax(
-                    glimpse,
-                    guess_language(outcome.path or outcome.args.get("path")),
-                    theme=KRYTH_SYNTAX,
-                    word_wrap=False,
-                    background_color="default",
+        language = guess_language(path)
+        if is_new:
+            code_lines = [
+                line[1:]
+                for line in diff.splitlines()
+                if line.startswith("+") and not line.startswith("+++")
+            ]
+            visible = code_lines[:10]
+            if visible:
+                summary.append(
+                    Syntax(
+                        "\n".join(visible),
+                        language,
+                        theme=KRYTH_SYNTAX,
+                        line_numbers=True,
+                        start_line=1,
+                        word_wrap=False,
+                        background_color="default",
+                    )
+                )
+            hidden = len(code_lines) - len(visible)
+            if hidden:
+                summary.append(Text(f"   … +{hidden} lines", style="muted"))
+            remaining = code_lines[len(visible):]
+            if remaining:
+                details.append(
+                    Syntax(
+                        "\n".join(remaining),
+                        language,
+                        theme=KRYTH_SYNTAX,
+                        line_numbers=True,
+                        start_line=len(visible) + 1,
+                        word_wrap=False,
+                        background_color="default",
+                    )
+                )
+        else:
+            preview, hidden = edit_preview_rows(diff, language)
+            summary.extend(preview)
+            if hidden:
+                summary.append(Text(f"   … +{hidden} lines", style="muted"))
+            details.append(
+                diff_viewer(
+                    truncate_text(diff, outcome.model_name, MAX_DIFF_TOKENS), path
                 )
             )
-        details.append(
-            diff_viewer(
-                truncate_text(diff, outcome.model_name, MAX_DIFF_TOKENS),
-                outcome.path or outcome.args.get("path"),
-            )
-        )
 
     return summary, details
 
@@ -444,13 +484,18 @@ def tool_header(
     status: Text,
 ) -> Text:
     label, variant = split_tool_name(name)
+    if name == "edit":
+        label = "Update"
     left = Text.assemble((f"{icon} ", icon_style), (label.replace("_", " ").capitalize(), "tool"))
     if variant:
         left.append(": ", style="muted")
         left.append(variant, style="muted")
     if head:
-        left.append("  ")
-        left.append(head, style="subtitle")
+        if name in {"write", "edit"}:
+            left.append(f"({head})", style="subtitle")
+        else:
+            left.append("  ")
+            left.append(head, style="subtitle")
 
     if status.plain:
         left.append("  ", style="dim")

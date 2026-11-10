@@ -1,6 +1,6 @@
-<h1 align='center'>
-  KRYTH
-</h1>
+<p align="center">
+  <img src="assets/brand/kryth-banner.png" alt="KRYTH — Autonomous Intelligence" width="1000"/>
+</p>
 
 <p align="center">
   <b>An open-source alternative AI coding agent that lives in your terminal.</b><br />
@@ -18,6 +18,10 @@ pip install kryth
 kryth login    # opens your browser to authorize with OpenRouter
 kryth          # start the interactive TUI
 ```
+
+<p align="center">
+  <img src="assets/terminal-animation.gif" alt="KRYTH terminal setup animation" width="700"/>
+</p>
 
 ## Usage
 

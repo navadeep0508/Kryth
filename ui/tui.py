@@ -402,13 +402,17 @@ class TUI:
         head = headline_of(display_args)
         header = tool_header(
             TOOL_ICON,
-            border_style,
+            "success" if success else "error",
             name,
             head[1] if head else None,
-            tool_status(
-                success,
-                elapsed,
-                len((diff or output).splitlines()) if hidden else None,
+            (
+                Text()
+                if success and name in {"write", "edit"}
+                else tool_status(
+                    success,
+                    elapsed,
+                    len((diff or output).splitlines()) if hidden else None,
+                )
             ),
         )
 
