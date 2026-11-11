@@ -538,7 +538,14 @@ def _shell_version(shell_type: ShellType, executable: str | None) -> str | None:
             probes[shell_type], capture_output=True, text=True, timeout=2,
             check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        text = (result.stdout or result.stderr).strip().splitlines()
+        output = (result.stdout or result.stderr).replace("\x00", "").strip()
+        if shell_type == ShellType.WSL_BASH:
+            # `wsl.exe` can exist even when no Linux distribution has been
+            # installed yet. In that state it prints setup guidance instead
+            # of Bash's version, so do not report WSL Bash as available.
+            match = re.search(r"GNU bash, version[^\r\n]*", output)
+            return match.group(0)[:160] if match else None
+        text = output.splitlines()
         return text[0][:160] if text else None
     except (OSError, subprocess.SubprocessError):
         return None
@@ -613,12 +620,15 @@ def detect_available_shells() -> list[ShellInfo]:
         # WSL.
         import shutil
 
-        if shutil.which("wsl"):
+        wsl_executable = shutil.which("wsl")
+        wsl_version = _shell_version(ShellType.WSL_BASH, wsl_executable)
+        if wsl_version:
             shells.append(
                 ShellInfo(
                     type=ShellType.WSL_BASH,
                     family=ShellFamily.POSIX,
-                    executable="wsl",
+                    executable=wsl_executable,
+                    version=wsl_version,
                     available=True,
                 )
             )
