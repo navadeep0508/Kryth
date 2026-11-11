@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kryth"
-version = "0.0.36"
+version = "0.0.37"
 description = "An open-source terminal-based AI coding agent."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,4 +51,4 @@ kryth = "main:main"
 py-modules = ["main"]
 
 [tool.setuptools.packages.find]
-include = ["agent*", "client*", "config*", "context*", "hooks*", "prompts*", "safety*", "tools*", "ui*", "utils*"]
+include = ["agent*", "client*", "config*", "context*", "hooks*", "prompts*", "safety*", "tools*", "ui*", "utils*", "winutils*"]

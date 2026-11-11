@@ -11,13 +11,45 @@ KRYTH connects to LLMs through OpenRouter, reads and edits your code with a buil
 
 ## Quick Start
 
-Install KRYTH, connect OpenRouter, and start an agent in your own repo:
+Install KRYTH and start an agent in your own repo:
 
 ```bash
 pip install kryth
-kryth login    # opens your browser to authorize with OpenRouter
+```
+
+On Windows, `pip install` places `kryth.exe` in the Python `Scripts`
+directory, which is **not** on `PATH` by default. Run this once after
+installing:
+
+```powershell
+kryth setup --path
+```
+
+This adds the Python `Scripts` directory to your user-level `PATH` (no
+administrator rights required). Then open a **new terminal** and run:
+
+```powershell
 kryth          # start the interactive TUI
 ```
+
+What `kryth setup --path` reports:
+
+```text
+# Success — PATH was just configured:
+[KRYTH] Installation completed successfully.
+[KRYTH] Python Scripts directory configured.
+[KRYTH] Open a new terminal and run: kryth
+
+# Already on PATH:
+[KRYTH] PATH is already configured.
+
+# Failure — automatic configuration did not work:
+[KRYTH] Automatic PATH configuration was unsuccessful.
+[KRYTH] Add the Python Scripts directory to your PATH manually,
+[KRYTH] or run: python -m main setup --path
+```
+
+
 
 <p align="center">
   <img src="assets/terminal-animation.gif" alt="KRYTH terminal setup animation" width="700"/>

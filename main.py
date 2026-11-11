@@ -220,6 +220,7 @@ def run(ctx: click.Context, prompt: str | None, setup: bool = False):
 Examples:
   kryth setup          Run the interactive setup wizard
   kryth setup --paste  Paste API key directly instead of interactive prompts
+  kryth setup --path   Configure Windows PATH for KRYTH
 """
 )
 @click.option(
@@ -227,13 +228,41 @@ Examples:
     is_flag=True,
     help="Paste an API key directly instead of the full interactive wizard.",
 )
-def setup(paste: bool):
+@click.option(
+    "--path",
+    is_flag=True,
+    help="Configure the Windows PATH so the `kryth` command is found.",
+)
+def setup(paste: bool, path: bool):
     """Run the interactive setup wizard to configure a provider."""
     try:
         config = load_config(cwd=None)
     except Exception as e:
         console.print(f"[error]Config Error: {e}[/error]")
         sys.exit(1)
+
+    # Windows PATH configuration: on Windows, ensure the Python Scripts
+    # directory (where kryth.exe lives) is on the user PATH.  This runs
+    # before the provider wizard so that `kryth` is usable immediately
+    # after setup completes.
+    path_result = None
+    if sys.platform == "win32":
+        from winutils.windows import configure_windows_path
+
+        path_result = configure_windows_path()
+        if path_result["already_configured"]:
+            console.print(f"[info]{path_result['message']}[/info]")
+        elif path_result["success"]:
+            console.print(f"[success]{path_result['message']}[/success]")
+        else:
+            console.print(f"[error]{path_result['message']}[/error]")
+
+    # If only PATH configuration was requested, exit here.
+    if path and not paste:
+        if sys.platform == "win32":
+            return
+        console.print("[info]PATH configuration is only available on Windows.[/info]")
+        return
 
     from config.setup_wizard import SetupWizard
 
