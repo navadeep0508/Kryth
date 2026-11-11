@@ -221,6 +221,7 @@ Examples:
   kryth setup          Run the interactive setup wizard
   kryth setup --paste  Paste API key directly instead of interactive prompts
   kryth setup --path   Configure Windows PATH for KRYTH
+  python -m kryth setup --path  Recover PATH when `kryth` is not discoverable
 """
 )
 @click.option(
@@ -234,7 +235,24 @@ Examples:
     help="Configure the Windows PATH so the `kryth` command is found.",
 )
 def setup(paste: bool, path: bool):
-    """Run the interactive setup wizard to configure a provider."""
+    """Configure Windows PATH or run the interactive provider setup wizard."""
+    if paste and path:
+        raise click.UsageError("--paste and --path are separate setup modes; run one at a time.")
+
+    if path:
+        if sys.platform != "win32":
+            raise click.ClickException("PATH configuration is only supported on Windows.")
+
+        from kryth.platform.windows import configure_windows_path
+
+        path_result = configure_windows_path()
+        if path_result.success:
+            style = "info" if path_result.already_configured else "success"
+            console.print(f"[{style}]{path_result.message}[/{style}]")
+            return
+
+        raise click.ClickException(path_result.message)
+
     try:
         config = load_config(cwd=None)
     except Exception as e:
@@ -245,24 +263,16 @@ def setup(paste: bool, path: bool):
     # directory (where kryth.exe lives) is on the user PATH.  This runs
     # before the provider wizard so that `kryth` is usable immediately
     # after setup completes.
-    path_result = None
     if sys.platform == "win32":
-        from winutils.windows import configure_windows_path
+        from kryth.platform.windows import configure_windows_path
 
         path_result = configure_windows_path()
-        if path_result["already_configured"]:
-            console.print(f"[info]{path_result['message']}[/info]")
-        elif path_result["success"]:
-            console.print(f"[success]{path_result['message']}[/success]")
+        if path_result.already_configured:
+            console.print(f"[info]{path_result.message}[/info]")
+        elif path_result.success:
+            console.print(f"[success]{path_result.message}[/success]")
         else:
-            console.print(f"[error]{path_result['message']}[/error]")
-
-    # If only PATH configuration was requested, exit here.
-    if path and not paste:
-        if sys.platform == "win32":
-            return
-        console.print("[info]PATH configuration is only available on Windows.[/info]")
-        return
+            console.print(f"[warning]{path_result.message}[/warning]")
 
     from config.setup_wizard import SetupWizard
 

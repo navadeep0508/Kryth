@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kryth"
-version = "0.0.37"
+version = "0.0.38"
 description = "An open-source terminal-based AI coding agent."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "navadeep0508" }]
@@ -17,6 +17,7 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -37,6 +38,7 @@ dependencies = [
     "rich>=15.0,<16",
     "tiktoken>=0.13,<1",
     "tomli-w>=1.0,<2",
+    "tomli>=2.0,<3; python_version < '3.11'",
 ]
 
 [project.urls]
@@ -51,4 +53,4 @@ kryth = "main:main"
 py-modules = ["main"]
 
 [tool.setuptools.packages.find]
-include = ["agent*", "client*", "config*", "context*", "hooks*", "prompts*", "safety*", "tools*", "ui*", "utils*", "winutils*"]
+include = ["agent*", "client*", "config*", "context*", "hooks*", "kryth*", "prompts*", "safety*", "tools*", "ui*", "utils*"]

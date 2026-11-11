@@ -1,9 +1,8 @@
 name: Build and publish to PyPI
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -24,9 +23,55 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
+  windows-install-test:
+    name: Clean Windows wheel install (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install build and test tools
+        run: python -m pip install --upgrade build pytest pytest-asyncio twine
+      - name: Build the wheel under test
+        run: python -m build --wheel
+      - name: Validate wheel metadata
+        run: python -m twine check --strict dist/kryth-*.whl
+      - name: Run automated tests
+        run: python -m pytest -q
+      - name: Install wheel into the clean runner user's Python
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem dist\kryth-*.whl | Select-Object -First 1
+          if (-not $wheel) { throw 'Built KRYTH wheel is missing.' }
+          $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts', scheme='nt_user'))"
+          if (($env:Path -split ';') -contains $scripts) {
+            throw "Test precondition failed: user Scripts directory is already on PATH: $scripts"
+          }
+          python -m pip install --user $wheel.FullName
+          if (-not (Test-Path (Join-Path $scripts 'kryth.exe'))) {
+            throw "pip did not install kryth.exe into the expected user Scripts directory: $scripts"
+          }
+          Set-Location $env:RUNNER_TEMP
+          python -m kryth --version
+          python -m kryth setup --path
+          $registryPath = (Get-ItemProperty -Path 'HKCU:\Environment' -Name Path -ErrorAction Stop).Path
+          $normalized = [IO.Path]::GetFullPath($scripts).TrimEnd('\')
+          $entries = $registryPath -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') }
+          if (($entries | Where-Object { $_ -ieq $normalized }).Count -ne 1) {
+            throw "Scripts directory was not added exactly once to HKCU\Environment\Path: $scripts"
+          }
+          & (Join-Path $scripts 'kryth.exe') --version
+
   build:
     name: Build and validate distributions
-    needs: test
+    needs: [test, windows-install-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -40,6 +85,9 @@ jobs:
       - name: Check release tag matches package version
         run: >-
           python -c "import os, tomllib; version = tomllib.load(open('pyproject.toml', 'rb'))['project']['version']; tag = os.environ['GITHUB_REF_NAME'].removeprefix('v'); assert version == tag, f'Release tag {tag} does not match project version {version}'"
+      - name: Check installer version matches package version
+        run: >-
+          python -c "import tomllib; version = tomllib.load(open('pyproject.toml', 'rb'))['project']['version']; text = open('installer/kryth.iss', encoding='utf-8').read(); assert '#define AppVersion ' + chr(34) + version + chr(34) in text, 'installer/kryth.iss AppVersion does not match pyproject.toml'"
       - name: Build wheel and source distribution
         run: python -m build
       - name: Validate distribution metadata
@@ -50,9 +98,35 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  windows-installer:
+    name: Build Windows installer
+    needs: windows-install-test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install build tools
+        run: python -m pip install --upgrade build
+      - name: Build wheel bundled by installer
+        run: python -m build --wheel
+      - name: Install Inno Setup compiler
+        run: choco install innosetup --version=6.7.1 --no-progress --yes
+      - name: Compile installer
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\kryth.iss'
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows-installer
+          path: dist/installer/KRYTH-Setup-*.exe
+          if-no-files-found: error
+
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [build, windows-install-test, windows-installer]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -68,3 +142,22 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+
+  create-github-release:
+    name: Publish GitHub release after validation
+    needs: [publish, windows-installer]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: windows-installer
+          path: dist/installer
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/installer/KRYTH-Setup-*.exe
+          fail_on_unmatched_files: true
+          name: KRYTH ${{ github.ref_name }}
+          body: |
+            KRYTH ${{ github.ref_name }} includes Windows PATH recovery and the Windows installer.

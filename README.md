@@ -22,31 +22,32 @@ directory, which is **not** on `PATH` by default. Run this once after
 installing:
 
 ```powershell
-kryth setup --path
+python -m kryth setup --path
 ```
 
 This adds the Python `Scripts` directory to your user-level `PATH` (no
-administrator rights required). Then open a **new terminal** and run:
+administrator rights required). You can also use `kryth setup --path` when the
+command is already discoverable. Then open a **new terminal** and run:
 
 ```powershell
 kryth          # start the interactive TUI
 ```
 
-What `kryth setup --path` reports:
+`pip install` does not modify PATH. The Windows installer in the GitHub release
+assets installs KRYTH, configures PATH, and validates the command.
+
+What `python -m kryth setup --path` reports:
 
 ```text
-# Success — PATH was just configured:
-[KRYTH] Installation completed successfully.
-[KRYTH] Python Scripts directory configured.
-[KRYTH] Open a new terminal and run: kryth
+# Success:
+Added C:\Users\you\AppData\Roaming\Python\Python314\Scripts to the user PATH.
+Open a new terminal to run `kryth`.
 
 # Already on PATH:
-[KRYTH] PATH is already configured.
+KRYTH's Scripts directory is already in the user PATH.
 
-# Failure — automatic configuration did not work:
-[KRYTH] Automatic PATH configuration was unsuccessful.
-[KRYTH] Add the Python Scripts directory to your PATH manually,
-[KRYTH] or run: python -m main setup --path
+# Failure:
+Could not update the user PATH. Add the printed Scripts directory manually.
 ```
 
 
@@ -91,6 +92,7 @@ Full [CLI reference](https://github.com/navadeep0508/Kryth/blob/main/docs/cli.md
 
 | Page | What it covers |
 | --- | --- |
+| [Windows installation](https://github.com/navadeep0508/Kryth/blob/main/docs/installation.md) | Windows installer, pip setup, and PATH recovery |
 | [CLI reference](https://github.com/navadeep0508/Kryth/blob/main/docs/cli.md) | Installing, logging in, every command and flags |
 | [Configuration](https://github.com/navadeep0508/Kryth/blob/main/docs/configuration.md) | `config.toml`, per-project overrides, `AGENTS.md`, every option |
 | [Tools](https://github.com/navadeep0508/Kryth/blob/main/docs/tools.md) | The built-in tool set, sub-agents, MCP servers |
