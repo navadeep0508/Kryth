@@ -53,8 +53,16 @@ jobs:
           $wheel = Get-ChildItem dist\kryth-*.whl | Select-Object -First 1
           if (-not $wheel) { throw 'Built KRYTH wheel is missing.' }
           $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts', scheme='nt_user'))"
-          if (($env:Path -split ';') -contains $scripts) {
-            throw "Test precondition failed: user Scripts directory is already on PATH: $scripts"
+          $normalized = [IO.Path]::GetFullPath($scripts).TrimEnd('\')
+          # Hosted Windows runners put the Python user Scripts directory on
+          # PATH by default. Remove it from both scopes to model a fresh user.
+          $env:Path = (($env:Path -split ';' | Where-Object { $_.Trim().TrimEnd('\') -ine $normalized }) -join ';')
+          $environmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+          if ($environmentKey) {
+            $registryValue = [string]$environmentKey.GetValue('Path', '')
+            $freshPath = ($registryValue -split ';' | Where-Object { $_.Trim().TrimEnd('\') -ine $normalized }) -join ';'
+            $environmentKey.SetValue('Path', $freshPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            $environmentKey.Close()
           }
           python -m pip uninstall -y kryth
           python -m pip install --user $wheel.FullName
@@ -65,7 +73,6 @@ jobs:
           python -m kryth --version
           python -m kryth setup --path
           $registryPath = (Get-ItemProperty -Path 'HKCU:\Environment' -Name Path -ErrorAction Stop).Path
-          $normalized = [IO.Path]::GetFullPath($scripts).TrimEnd('\')
           $entries = $registryPath -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') }
           if (($entries | Where-Object { $_ -ieq $normalized }).Count -ne 1) {
             throw "Scripts directory was not added exactly once to HKCU\Environment\Path: $scripts"
