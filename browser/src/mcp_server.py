@@ -21,8 +21,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from mcp.server import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server import Server
+from mcp.types import CallToolResult, TextContent
 from PIL import Image
 
 from kuba_browser.admin import ensure_daemon
@@ -52,7 +52,9 @@ from kuba_browser.helpers import (
     wait_for_load,
 )
 
-SERVER = MCPServer("kuba-browser")
+SERVER = Server("kuba-browser")
+
+_TOOLS: dict[str, Any] = {}
 
 
 def _normalize(value: Any) -> Any:
@@ -130,9 +132,60 @@ def _tool(fn):
                 result = fn(*args, **kwargs)
             return _dump(result)
         except Exception as exc:  # noqa: BLE001 -- browser failures must reach the MCP client.
-            raise ToolError(str(exc)) from exc
+            raise RuntimeError(f"Error executing tool {fn.__name__}: {exc}") from exc
 
-    return SERVER.tool(name=fn.__name__, description=fn.__doc__ or "")(wrapper)
+    _TOOLS[fn.__name__] = wrapper
+    return wrapper
+
+
+@SERVER.call_tool()
+async def _call_tool_handler(tool_name: str, arguments: dict):
+    """Dispatch a tool call to the registered kuba-browser helper."""
+    if tool_name not in _TOOLS:
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Unknown tool: {tool_name}")],
+            isError=True,
+        )
+    try:
+        result_text = _TOOLS[tool_name](**(arguments or {}))
+        return CallToolResult(
+            content=[TextContent(type="text", text=result_text)],
+            isError=False,
+        )
+    except Exception as exc:
+        return CallToolResult(
+            content=[TextContent(type="text", text=str(exc))],
+            isError=True,
+        )
+
+
+async def _handle_call_tool(message, req):
+    """Direct tool-call handler for tests and programmatic use."""
+    ctr = await _call_tool_handler(req.name, req.arguments or {})
+    # Expose snake_case alias for test compatibility
+    ctr.is_error = ctr.isError
+    return ctr
+
+
+SERVER._handle_call_tool = _handle_call_tool
+
+
+@SERVER.list_tools()
+async def _list_tools_handler():
+    from mcp.types import Tool as MCPTool
+
+    return [
+        MCPTool(
+            name=name,
+            description=fn.__doc__ or "",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": True,
+            },
+        )
+        for name, fn in _TOOLS.items()
+    ]
 
 
 @_tool

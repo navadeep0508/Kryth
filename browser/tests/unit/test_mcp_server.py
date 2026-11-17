@@ -1,10 +1,14 @@
 import asyncio
+import sys
+from pathlib import Path
 
 import pytest
 
 pytest.importorskip("mcp")
 
 from mcp_types import CallToolRequestParams
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import mcp_server
 
