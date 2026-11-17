@@ -11,7 +11,6 @@
 <p align="center">
   <a href="https://github.com/navadeep0508/Kryth/stargazers"><img src="https://img.shields.io/github/stars/navadeep0508/Kryth?style=flat&color=E8FF3A&label=stars" alt="GitHub stars" /></a>
   <a href="https://pypi.org/project/kryth/"><img src="https://img.shields.io/pypi/v/kryth?color=E8FF3A" alt="PyPI version" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="GPL-3.0-or-later license" /></a>
   <a href="https://pypi.org/project/kryth/"><img src="https://img.shields.io/pypi/pyversions/kryth" alt="Python versions" /></a>
   <a href="https://github.com/navadeep0508/Kryth/releases/latest"><img src="https://img.shields.io/github/v/release/navadeep0508/Kryth?label=latest%20release" alt="Latest GitHub release" /></a>
 </p>
@@ -205,10 +204,6 @@ Alternatively, install the project in editable mode with `python -m pip install 
 - Report bugs or request features through [GitHub Issues](https://github.com/navadeep0508/Kryth/issues).
 - For proposed changes, open a [pull request](https://github.com/navadeep0508/Kryth/pulls).
 - Contributions follow the [Code of Conduct](CODE_OF_CONDUCT.md).
-
-## License
-
-KRYTH is licensed under the [GNU General Public License v3.0 or later](LICENSE).
 
 ---
 
