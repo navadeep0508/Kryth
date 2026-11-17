@@ -37,7 +37,7 @@ KRYTH connects a language model to a codebase-aware tool loop. Instead of stoppi
 
 ### Windows
 
-The latest [GitHub release](https://github.com/navadeep0508/Kryth/releases/latest) includes the official `KRYTH-Setup-<version>.exe` installer. It installs the wheel for the current user, adds the Python Scripts directory to your user PATH, and checks the launcher. It supports installed Python 3.10–3.14 with pip and does not require administrator rights. Open a new terminal after installation.
+The latest [GitHub release](https://github.com/navadeep0508/Kryth/releases/latest) includes the official `KRYTH-Setup-<version>.exe` installer. It installs the wheel for the current user, adds the Python Scripts directory to your user PATH, and checks the launcher. It supports installed Python 3.11–3.14 with pip and does not require administrator rights. Open a new terminal after installation.
 
 Or install through pip:
 
@@ -50,7 +50,7 @@ If `kryth` is still not found, run `python -m kryth setup --path` using the same
 
 ### Linux and macOS
 
-KRYTH requires Python 3.10 or newer, as declared in the package metadata.
+KRYTH requires Python 3.11 or newer, as declared in the package metadata.
 
 ```bash
 python3 -m pip install kryth
@@ -140,7 +140,7 @@ The diagram follows the implementation's agent, client, tool registry, approval,
 
 ## Technology stack
 
-The package declares Python `>=3.10` and these core dependency ranges in `pyproject.toml`:
+The package declares Python `>=3.11` and these core dependency ranges in `pyproject.toml`:
 
 | Component | Role |
 | --- | --- |

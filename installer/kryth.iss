@@ -33,7 +33,7 @@ var
   Candidate: String;
 begin
   Result := False;
-  for Minor := 14 downto 10 do
+  for Minor := 14 downto 11 do
   begin
     Candidate := '-3.' + IntToStr(Minor);
     if Exec('py.exe', Candidate + ' -m pip --version', '', SW_HIDE,
@@ -50,7 +50,7 @@ function InitializeSetup(): Boolean;
 begin
   Result := FindSupportedPython();
   if not Result then
-    MsgBox('KRYTH requires Python 3.10–3.14 and pip. Install a supported Python version and run this installer again.',
+    MsgBox('KRYTH requires Python 3.11–3.14 and pip. Install a supported Python version and run this installer again.',
       mbError, MB_OK);
 end;
 

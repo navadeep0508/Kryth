@@ -1,6 +1,6 @@
 # Publishing KRYTH to PyPI
 
-KRYTH builds a wheel and source archive from `pyproject.toml`. The GitHub release workflow runs the test suite, validates a built wheel on clean Windows runners across Python 3.10–3.14, builds the Windows installer, then builds and publishes distributions with PyPI Trusted Publishing. PyPI publishing depends on all installation checks passing.
+KRYTH builds a wheel and source archive from `pyproject.toml`. The GitHub release workflow runs the test suite, validates a built wheel on clean Windows runners across Python 3.11–3.14, builds the Windows installer, then builds and publishes distributions with PyPI Trusted Publishing. PyPI publishing depends on all installation checks passing.
 
 ## Before a release
 
@@ -19,4 +19,4 @@ python -m build
 python -m twine check --strict dist\kryth-*.whl dist\kryth-*.tar.gz
 ```
 
-The installer source is `installer/kryth.iss`. It uses an already installed Python 3.10–3.14, installs the bundled wheel for the current user, runs `python -m kryth setup --path`, and verifies the installed CLI. It does not run during wheel or source builds.
+The installer source is `installer/kryth.iss`. It uses an already installed Python 3.11–3.14, installs the bundled wheel for the current user, runs `python -m kryth setup --path`, and verifies the installed CLI. It does not run during wheel or source builds.

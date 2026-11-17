@@ -1,12 +1,12 @@
 # Installing KRYTH on Windows
 
-KRYTH requires Python 3.10–3.14. The Python `pip` installer creates the `kryth.exe` launcher in the selected interpreter's Scripts directory, but pip does not add that directory to Windows PATH.
+KRYTH requires Python 3.11–3.14. The Python `pip` installer creates the `kryth.exe` launcher in the selected interpreter's Scripts directory, but pip does not add that directory to Windows PATH.
 
 ## Recommended: Windows installer
 
 Download `KRYTH-Setup-<version>.exe` from the [latest GitHub release](https://github.com/navadeep0508/Kryth/releases/latest). The installer:
 
-1. Selects the newest installed Python from 3.10 through 3.14 that has pip.
+1. Selects the newest installed Python from 3.11 through 3.14 that has pip.
 2. Installs the bundled KRYTH wheel for the current user.
 3. Adds that interpreter's user Scripts directory to `HKCU\Environment\Path`.
 4. Verifies the installed module and generated `kryth.exe` launcher.
@@ -33,6 +33,6 @@ The setup command preserves the existing per-user PATH value and registry type, 
 
 ## Python and virtual environments
 
-KRYTH's PATH manager uses `sysconfig` and supports the Windows schemes for Python 3.10–3.14, including `nt_user`. With a virtual environment, use that environment's Python to install and configure KRYTH; the manager then targets that environment's Scripts directory. PATH changes are persistent for the Windows user, so install KRYTH into a user-visible interpreter if you expect `kryth` to work from every terminal.
+KRYTH's PATH manager uses `sysconfig` and supports the Windows schemes for Python 3.11–3.14, including `nt_user`. With a virtual environment, use that environment's Python to install and configure KRYTH; the manager then targets that environment's Scripts directory. PATH changes are persistent for the Windows user, so install KRYTH into a user-visible interpreter if you expect `kryth` to work from every terminal.
 
 On non-Windows platforms, `setup --path` reports that PATH configuration is Windows-only.

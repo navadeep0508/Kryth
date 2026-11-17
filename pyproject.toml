@@ -7,7 +7,7 @@ name = "kryth"
 version = "0.0.42"
 description = "An open-source terminal-based AI coding agent."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "navadeep0508" }]
 keywords = ["ai", "agent", "cli", "coding-assistant", "tui", "openrouter"]
 classifiers = [
@@ -15,7 +15,6 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -24,11 +23,13 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.4,<9",
+    "Pillow>=10.0,<12",
     "cdp-use==1.4.5",
     "ddgs>=9.14,<10",
     "fastmcp>=3.4,<4",
     "httpx>=0.28,<1",
     "keyring>=25.0,<26",
+    "mcp>=1.24.0,<2",
     "openai>=2.44,<3",
     "packaging>=25.0,<27",
     "platformdirs>=4.10,<5",
@@ -45,11 +46,18 @@ Homepage = "https://github.com/navadeep0508/Kryth"
 Repository = "https://github.com/navadeep0508/Kryth"
 Issues = "https://github.com/navadeep0508/Kryth/issues"
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "Pillow",
+]
+
 [project.scripts]
 kryth = "main:main"
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["main", "mcp_server"]
 
 [tool.setuptools.package-dir]
 kuba_browser = "browser/src/kuba_browser"
