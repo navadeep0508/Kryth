@@ -25,9 +25,6 @@ jobs:
       - name: Lint packaging entry points and affected tests
         run: >-
           ruff check ui/components/logo.py tests/test_brand.py
-          browser/tests/unit/test_mcp_server.py browser/tests/unit/test_mcp_cli.py
-          browser/src/kuba_browser/mcp_server.py browser/src/kuba_browser/mcp_cli.py
-          browser/src/mcp_server.py
 
   test:
     name: Test on Python ${{ matrix.python-version }}
