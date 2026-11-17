@@ -23,8 +23,7 @@ jobs:
       - name: Compile project sources
         run: python -m compileall -q agent browser/src client config context kryth prompts safety tools ui utils
       - name: Lint packaging entry points and affected tests
-        run: >-
-          ruff check ui/components/logo.py tests/test_brand.py
+        run: python -m ruff check ui/components/logo.py tests/test_brand.py
 
   test:
     name: Test on Python ${{ matrix.python-version }}
