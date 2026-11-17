@@ -30,6 +30,7 @@ def _load_env_file(p):
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
+REMOTE_ID = None
 SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
