@@ -12,14 +12,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from rich.console import Group
 from rich.syntax import Syntax
 from rich.text import Text
 
 from tools.base import ToolConfirmation
+from ui.components.args_table import render_args_table
+from ui.components.diff_viewer import diff_viewer
 from ui.format import guess_language
 from ui.theme import KRYTH_SYNTAX
-from ui.theme.palette import PALETTE, hex_colour
-from utils.paths import display_path_relative_to_cwd
 
 
 class RiskLevel(str, Enum):
@@ -28,6 +29,7 @@ class RiskLevel(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    CRITICAL = "critical"
 
 
 class ShellType(str, Enum):
@@ -47,12 +49,20 @@ class ApprovalAction(str, Enum):
     ALLOW_ONCE = "allow_once"
     ALLOW_SESSION = "allow_session"
     REJECT = "reject"
+    CANCELLED = "cancelled"
 
 
 # --- Risk classification patterns ---
 
+_CRITICAL_RISK = [
+    r"\brm\s+-rf\s+/(?:\s|$)", r"\bformat\s+[a-z]:", r"\bdiskpart\b",
+    r"\bremove-item\b(?=.*(?:system32|windows|/|\\))(?=.*(?:-recurse|-force))",
+    r"\bshutdown\s+/(?:s|r)\b",
+]
+
 _HIGH_RISK = [
     r"\brm\b.*-rf", r"\brmdir\b", r"\bdel\b\s", r"\berase\b",
+    r"\bremove-item\b.*(?:-recurse|-force)", r"\bdel\s+/s\b", r"\brd\s+/s\b",
     r"\bformat\b\s", r"\bmkfs\b", r"\bfdisk\b", r"\bparted\b",
     r"\bshutdown\b", r"\breboot\b", r"\bhalt\b", r"\bpoweroff\b",
     r"\bsudo\b", r"\brunas\b", r"\bpsexec\b",
@@ -100,6 +110,10 @@ def classify_risk(command: str) -> RiskLevel:
     existing permission requirements).
     """
     lowered = command.lower().strip()
+
+    for pattern in _CRITICAL_RISK:
+        if re.search(pattern, lowered):
+            return RiskLevel.CRITICAL
 
     for pattern in _HIGH_RISK:
         if re.search(pattern, lowered):
@@ -198,6 +212,9 @@ _COMMAND_DESCRIPTIONS = [
     (r"\btouch\b", "Create or update a file"),
     (r"\bcp\b", "Copy files or directories"),
     (r"\bmv\b", "Move or rename files"),
+    (r"\bremove-item\b", "Remove files or directories"),
+    (r"\bget-childitem\b", "List files and directories"),
+    (r"\brd\b|\brmdir\b", "Remove a directory"),
 ]
 
 
@@ -220,6 +237,7 @@ RISK_STYLES = {
     RiskLevel.LOW: ("success", "LOW"),
     RiskLevel.MEDIUM: ("warning", "MEDIUM"),
     RiskLevel.HIGH: ("error", "HIGH"),
+    RiskLevel.CRITICAL: ("error", "CRITICAL"),
 }
 
 SHELL_LABELS = {
@@ -239,24 +257,28 @@ APPROVAL_OPTIONS = [
 
 
 class TerminalApprovalPanel:
-    """Rich renderable for terminal command approval requests.
-
-    Shows command details, risk classification, shell type, working directory,
-    syntax-highlighted command preview, and an interactive approval menu.
-    """
+    """Compact approval selector shared by terminal and file operations."""
 
     def __init__(
         self,
         confirmation: ToolConfirmation,
         cwd: Path | str | None = None,
         selected: int = 0,
+        *,
+        expanded: bool = False,
     ) -> None:
         self.confirmation = confirmation
         self.cwd = Path(cwd) if cwd else None
         self.selected = max(0, min(2, selected))
+        self.expanded = expanded
 
         self.command = confirmation.command or ""
-        self.risk_level = getattr(confirmation, "risk_level", RiskLevel.MEDIUM)
+        try:
+            self.risk_level = RiskLevel(getattr(confirmation, "risk_level", RiskLevel.MEDIUM))
+        except ValueError:
+            self.risk_level = RiskLevel.MEDIUM
+        if confirmation.is_dangerous and self.risk_level in {RiskLevel.LOW, RiskLevel.MEDIUM}:
+            self.risk_level = RiskLevel.HIGH
         self.shell_type = getattr(confirmation, "shell_type", ShellType.UNKNOWN)
         self.description = confirmation.description or ""
 
@@ -265,91 +287,132 @@ class TerminalApprovalPanel:
     # -- Rich renderable protocol --
 
     def __rich_console__(self, console: Any, options: Any) -> Any:
-        yield self._header()
-        description = self._description()
-        if description is not None:
-            yield description
-        yield self._shell_info()
-        command = self._command_preview()
-        if command is not None:
-            yield command
-        yield self._menu()
-        yield self._hints()
+        blocks: list[Any] = [
+            Text("APPROVAL REQUIRED", style="bold warning"),
+            self._tool_risk(),
+            self._description(options.max_width),
+            self._menu(),
+            self._hints(),
+        ]
+        if self.expanded:
+            blocks.extend(self._details(options.max_width))
+        yield Group(*blocks)
 
     # -- Panel sections --
 
-    def _header(self) -> Text:
-        header = Text("KRYTH wants to execute", style="bright")
-        header.append("  |  ", style="dim")
+    def _tool_risk(self) -> Text:
+        tool = self.confirmation.tool_name.replace("_", " ").title()
+        if self.confirmation.tool_name == "bash":
+            tool = SHELL_LABELS.get(self.shell_type, "Shell")
+        header = Text(tool, style="primary")
+        header.append(" | ")
         header.append(self._risk_label, style=f"bold {self._risk_style}")
-        header.append("  |  ", style="dim")
-        header.append(SHELL_LABELS[self.shell_type], style="muted")
         return header
 
-    def _description(self) -> Text | None:
-        desc = self.description
-        if desc.startswith("Execute (DANGEROUS): "):
-            desc = desc[len("Execute (DANGEROUS): ") :]
-        elif desc.startswith("Execute: "):
-            desc = desc[len("Execute: ") :]
+    def _description(self, width: int) -> Text | None:
+        summary = describe_command(self.command) if self.command else None
+        if summary:
+            line = Text(summary, style="secondary")
+        elif self.confirmation.diff is not None:
+            operation = "Create" if self.confirmation.diff.is_new_file else "Modify"
+            path = self.confirmation.diff.path
+            if self.cwd is not None:
+                try:
+                    path = Path(path).resolve().relative_to(self.cwd.resolve())
+                except (OSError, ValueError):
+                    pass
+            line = Text(f"{operation} {path}", style="secondary")
+        elif self.command:
+            line = Text("Review the command before approving.", style="warning")
+        else:
+            description = self.description
+            for prefix in ("Execute (DANGEROUS): ", "Execute: "):
+                if description.startswith(prefix):
+                    description = ""
+            line = Text(description or "Review the requested operation.", style="secondary")
+        line.truncate(max(1, width), overflow="ellipsis")
+        return line
 
-        if not desc:
-            return None
-
-        text = Text(desc, style="muted")
-
-        smart = describe_command(self.command)
-        if smart:
-            text.append(f"  - {smart}", style="info")
-
-        return text
-
-    def _shell_info(self) -> Text:
+    def _context(self) -> Text:
         info = Text()
-        info.append("in ", style="muted")
-        if self.cwd:
-            cwd_display = display_path_relative_to_cwd(str(self.cwd), self.cwd)
-            info.append(cwd_display or ".", style="muted")
+        if self.confirmation.tool_name == "bash":
+            info.append(SHELL_LABELS.get(self.shell_type, "Unknown shell"), style="muted")
+            info.append(" in ", style="muted")
+            info.append(str(self.cwd) if self.cwd else ".", style="muted")
+        elif self.confirmation.diff is not None:
+            info.append("Target ", style="muted")
+            info.append(str(self.confirmation.diff.path), style="code")
+        elif self.confirmation.affected_paths:
+            info.append("Target ", style="muted")
+            info.append(", ".join(map(str, self.confirmation.affected_paths)), style="code")
         else:
-            info.append(".", style="muted")
+            info.append("Workspace ", style="muted")
+            info.append(str(self.cwd) if self.cwd else ".", style="muted")
         return info
-
-    def _command_preview(self) -> Syntax | None:
-        if not self.command.strip():
-            return None
-
-        if self.shell_type == ShellType.POWERSHELL:
-            lexer = "powershell"
-        elif self.shell_type == ShellType.CMD:
-            lexer = "bat"
-        else:
-            lexer = "bash"
-
-        return Syntax(
-            self.command,
-            lexer,
-            theme=KRYTH_SYNTAX,
-            word_wrap=True,
-            background_color="default",
-            padding=0,
-        )
 
     def _menu(self) -> Text:
         menu = Text()
         for i, (key, label, style, _action) in enumerate(APPROVAL_OPTIONS):
             if i > 0:
-                menu.append("  |  ", style="dim")
+                menu.append("  ", style="dim")
             is_selected = i == self.selected
             if is_selected:
-                menu.append("> ", style="bold accent")
-                menu.append(f"{key.upper()} {label}", style=f"bold {style}")
+                menu.append(f"> [{key.upper()}] {label}", style=f"bold {style}")
             else:
-                menu.append(f"{key.upper()} {label}", style=style)
+                menu.append(f"[{key.upper()}] {label}", style=style)
         return menu
+
+    def _session_scope(self) -> str:
+        if self.command:
+            return "This KRYTH session: this exact command only."
+        return f"This KRYTH session: future {self.confirmation.tool_name} requests."
+
+    def _details(self, width: int) -> tuple[Any, ...]:
+        blocks: list[Any] = [Text("DETAILS", style="bold accent")]
+        if self.cwd:
+            blocks.append(Text(f"Working directory: {self.cwd}", style="muted"))
+        blocks.append(Text(f"Tool: {self.confirmation.tool_name}", style="muted"))
+        blocks.append(Text(f"Risk: {self._risk_label}", style=self._risk_style))
+        blocks.append(Text(f"Approval scope: {self._session_scope()}", style="muted"))
+        if self.command.strip():
+            lexer = "powershell" if self.shell_type == ShellType.POWERSHELL else "bat" if self.shell_type == ShellType.CMD else "bash"
+            blocks.extend((
+                Text("FULL COMMAND", style="muted"),
+                Syntax(
+                    self.command,
+                    lexer,
+                    theme=KRYTH_SYNTAX,
+                    word_wrap=True,
+                    background_color="default",
+                    padding=0,
+                ),
+            ))
+        params = dict(self.confirmation.params)
+        params.pop("command", None)
+        if params:
+            blocks.extend((Text("ARGUMENTS", style="muted"), render_args_table(self.confirmation.tool_name, params)))
+        if self.confirmation.diff:
+            blocks.append(diff_viewer(
+                self.confirmation.diff.create_diff(),
+                str(self.confirmation.diff.path),
+                max_lines=max(8, min(40, width // 2)),
+            ))
+        blocks.append(Text("Ctrl+O to collapse", style="dim"))
+        return tuple(blocks)
+
+    def move(self, delta: int) -> None:
+        self.selected = max(0, min(2, self.selected + delta))
+
+    def toggle_details(self) -> None:
+        self.expanded = not self.expanded
+
+    @property
+    def selected_action(self) -> ApprovalAction:
+        return APPROVAL_OPTIONS[self.selected][3]
 
     def _hints(self) -> Text:
         return Text(
-            "Up/Down choose | Enter select | Esc cancel",
+            "Up/Down select  Enter confirm  Ctrl+O command details  Esc cancel",
             style="dim",
         )
 
@@ -363,5 +426,5 @@ def render_approval_choices(selected: int = 0) -> Text:
         else:
             parts.append((style, f"{key.upper()} {label}"))
         if i < len(APPROVAL_OPTIONS) - 1:
-            parts.append(("dim", "  ·  "))
+            parts.append(("dim", "      "))
     return Text.assemble(*parts)

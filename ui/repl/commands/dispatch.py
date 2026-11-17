@@ -34,6 +34,13 @@ COMMAND_HINTS: dict[str, str] = {
     "save": "Alias for /checkpoint",
     "checkpoints": "List checkpoints in this session",
     "rewind": "Roll the conversation back",
+    "compact": "Compact conversation context",
+    "mode": "Show or set execution mode (/auto, /manual, /plan, /accept-edits)",
+    "auto": "Set execution mode to AUTO",
+    "manual": "Set execution mode to MANUAL",
+    "plan": "Set execution mode to PLAN",
+    "accept-edits": "Set execution mode to ACCEPT EDITS",
+    "approval": "Show or set approval policy (on_request, on_fail, auto, auto_edit, never, yolo)",
     "setup": "Run the setup wizard to configure a provider",
     "providers": "List available AI providers",
     "doctor": "Run diagnostics and health check",
@@ -45,8 +52,9 @@ COMMAND_HINTS: dict[str, str] = {
 class SlashCommands(HelpCommands, SettingsCommands, SessionCommands, InspectCommands):
     """Everything typed after a `/`, routed to the group that handles it."""
 
-    def __init__(self, config: Config, console: Console) -> None:
+    def __init__(self, config: Config, console: Console, tui=None) -> None:
         CommandGroup.__init__(self, config, console)
+        self.tui = tui
 
         self._handlers: dict[str, Handler] = {
             "help": self.show_help,
@@ -64,6 +72,13 @@ class SlashCommands(HelpCommands, SettingsCommands, SessionCommands, InspectComm
             "save": self.save_checkpoint,
             "checkpoints": self.list_checkpoints,
             "rewind": self.rewind,
+            "compact": self.compact_context,
+            "mode": self.mode_command,
+            "auto": self.mode_command,
+            "manual": self.mode_command,
+            "plan": self.mode_command,
+            "accept-edits": self.mode_command,
+            "approval": self.approval_command,
             "setup": self.run_setup,
             "providers": self.list_providers,
             "doctor": self.run_doctor,
@@ -120,7 +135,7 @@ class SlashCommands(HelpCommands, SettingsCommands, SessionCommands, InspectComm
         providers = wizard.list_known_providers()
 
         self.console.print()
-        self.console.print(Text("Available providers:", style="bold #E8FF3A"))
+        self.console.print(Text("Available providers:", style="bold primary"))
         for i, p in enumerate(providers, 1):
             defaults = wizard.select_provider_defaults(p)
             ptype = defaults.get("type", "openai")
@@ -157,7 +172,7 @@ class SlashCommands(HelpCommands, SettingsCommands, SessionCommands, InspectComm
             )
             return
 
-        self.console.print(Text(f"Available models for {provider}:", style="bold #E8FF3A"))
+        self.console.print(Text(f"Available models for {provider}:", style="bold primary"))
         for i, m in enumerate(models[:50], 1):
             marker = " (current)" if m == self.config.model_name else ""
             self.console.print(f"  {i}. {m}{marker}", style="muted")
@@ -170,7 +185,7 @@ class SlashCommands(HelpCommands, SettingsCommands, SessionCommands, InspectComm
         from rich.table import Table
 
         self.console.print()
-        self.console.print(Text("KRYTH Doctor — System Diagnostics", style="bold #E8FF3A"))
+        self.console.print(Text("KRYTH Doctor — System Diagnostics", style="bold primary"))
         self.console.print()
 
         table = Table(show_header=False, box=None)
@@ -215,3 +230,214 @@ class SlashCommands(HelpCommands, SettingsCommands, SessionCommands, InspectComm
             self.console.print("[success]Configuration looks good![/success]")
 
         self.console.print()
+
+    async def compact_context(self, agent: Agent, args: list[str]) -> None:
+        """Compact conversation context into a structured continuation summary.
+
+        Usage: /compact [additional preservation instructions]
+        """
+        from rich.panel import Panel
+        from rich.text import Text
+
+        from context.compaction import ChatCompactor
+
+        session = agent.session
+        context_manager = session.context_manager
+
+        if context_manager is None:
+            self.console.print(
+                "[error]Context manager not initialized.[/error]"
+            )
+            return
+
+        if context_manager.message_count == 0:
+            self.console.print(
+                Text("Nothing to compact — conversation is empty.", style="muted")
+            )
+            return
+
+        # Parse optional preservation instructions.
+        preservation_instructions = " ".join(args).strip() or None
+
+        # Gather task snapshot from the development supervisor.
+        ds = session.development_supervisor
+        task_snapshot = ds.state.get("task_checkpoint") or {}
+
+        # Show progress panel.
+        self.console.print()
+        self.console.print(
+            Panel(
+                Text("KRYTH CONTEXT MANAGER", style="bold primary"),
+                border_style="primary",
+            )
+        )
+
+        # Show progress steps.
+        steps = [
+            "Analyzing conversation",
+            "Preserving task state",
+            "Generating continuation summary",
+            "Rebuilding context",
+            "Verifying new context budget",
+        ]
+        for step in steps:
+            self.console.print(f"  {step}...", style="muted")
+
+        # Estimate previous context.
+        from utils.text import estimate_request_tokens
+
+        previous_messages = context_manager.get_messages()
+        previous_estimate = estimate_request_tokens(
+            previous_messages,
+            None,
+            model=self.config.model_name,
+            tokenizer_encoding=self.config.effective_tokenizer_encoding,
+        )
+        context_window = self.config.effective_context_window
+        previous_utilization = (
+            previous_estimate / context_window if context_window else 0.0
+        )
+
+        # Run compaction.
+        compactor = ChatCompactor(session.client, self.config)
+        result = await compactor.compact(
+            context_manager,
+            preservation_instructions=preservation_instructions,
+            task_snapshot=task_snapshot if task_snapshot.get("task_id") else None,
+        )
+
+        # Display results.
+        self.console.print()
+        if result.succeeded:
+            self.console.print(
+                Text(
+                    f"Context compacted: {previous_utilization:.1%} → "
+                    f"{result.new_utilization:.1%}",
+                    style="success",
+                )
+            )
+            self.console.print(
+                Text(
+                    f"Previous estimate: {result.previous_estimate:,} tokens · "
+                    f"New estimate: {result.new_estimate:,} tokens",
+                    style="muted",
+                )
+            )
+            self.console.print(
+                Text(
+                    f"Messages compacted: {result.messages_compacted} · "
+                    f"Messages preserved: {result.messages_preserved}",
+                    style="muted",
+                )
+            )
+            if result.task_checkpoint and result.task_checkpoint.get("task_id"):
+                status = result.task_checkpoint.get("status", "unknown")
+                self.console.print(
+                    Text(
+                        f"Task checkpoint: {result.task_checkpoint['task_id']} "
+                        f"({status})",
+                        style="muted",
+                    )
+                )
+            self.console.print(
+                Text("Compaction succeeded. Resuming current task...", style="success")
+            )
+        else:
+            self.console.print(
+                Text(f"Compaction failed: {result.error}", style="error")
+            )
+
+        self.console.print()
+
+    def mode_command(self, agent: Agent, args: list[str]) -> None:
+        """Show or set the execution mode.
+
+        Usage: /mode              - show current mode
+               /mode auto         - set AUTO mode
+               /mode manual       - set MANUAL mode
+               /mode plan         - set PLAN mode
+               /mode accept-edits - set ACCEPT EDITS mode
+        """
+        from config.config import ExecutionMode
+
+        mode_map: dict[str, ExecutionMode] = {
+            "auto": ExecutionMode.AUTO,
+            "manual": ExecutionMode.MANUAL,
+            "plan": ExecutionMode.PLAN,
+            "accept-edits": ExecutionMode.ACCEPT_EDITS,
+            "accept_edits": ExecutionMode.ACCEPT_EDITS,
+        }
+
+        if not args:
+            mode = self.config.execution_mode
+            self.console.print(
+                f"[muted]Execution mode: {mode.label} — {mode.summary}[/muted]"
+            )
+            self.console.print(
+                "[muted]Use /mode <auto|manual|plan|accept-edits> to change, "
+                "or Shift+Tab to cycle.[/muted]"
+            )
+            return
+
+        name = args[0].lower()
+        if name not in mode_map:
+            self.console.print(f"[error]Unknown mode: {name}[/error]")
+            self.console.print(
+                "[muted]Available: auto, manual, plan, accept-edits[/muted]"
+            )
+            return
+
+        self.config.execution_mode = mode_map[name]
+        mode = self.config.execution_mode
+        self.console.print(
+            f"[success]Execution mode set to {mode.label}.[/success] "
+            f"[muted]{mode.summary}[/muted]"
+        )
+
+    def approval_command(self, agent: Agent, args: list[str]) -> None:
+        """Show or set the approval policy.
+
+        Usage: /approval                    - show current policy
+               /approval on_request         - confirm every mutating tool
+               /approval on_fail            - ask only after a failure
+               /approval auto               - approve everything except dangerous
+               /approval auto_edit          - edit freely, confirm bash commands
+               /approval never              - reject anything not known safe
+               /approval yolo               - approve everything, including dangerous
+        """
+        from config.config import ApprovalPolicy
+
+        policy_map: dict[str, ApprovalPolicy] = {
+            "on_request": ApprovalPolicy.ON_REQUEST,
+            "on_fail": ApprovalPolicy.ON_FAIL,
+            "auto": ApprovalPolicy.AUTO,
+            "auto_edit": ApprovalPolicy.AUTO_EDIT,
+            "never": ApprovalPolicy.NEVER,
+            "yolo": ApprovalPolicy.YOLO,
+        }
+
+        if not args:
+            policy = self.config.approval
+            self.console.print(
+                f"[muted]Approval policy: {policy.label} — {policy.summary}[/muted]"
+            )
+            self.console.print(
+                "[muted]Use /approval <on_request|on_fail|auto|auto_edit|never|yolo> "
+                "to change.[/muted]"
+            )
+            return
+
+        name = args[0].lower()
+        if name not in policy_map:
+            self.console.print(f"[error]Unknown policy: {name}[/error]")
+            self.console.print(
+                "[muted]Available: on_request, on_fail, auto, auto_edit, never, yolo[/muted]"
+            )
+            return
+
+        self.config.approval = policy_map[name]
+        policy = self.config.approval
+        self.console.print(
+            f"[success]Approval policy set to {policy.label}.[/success] "
+            f"[muted]{policy.summary}[/muted]"
+        )

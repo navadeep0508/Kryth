@@ -6,6 +6,7 @@ from pathlib import Path
 def status_bar(
     model_name: str,
     approval_label: str,
+    mode_label: str | None,
     context_ratio: float | None,
     cwd: Path | str | None,
     width: int,
@@ -21,11 +22,14 @@ def status_bar(
     model = model_name.rsplit("/", 1)[-1] if model_name else "No model"
     workspace = Path(cwd).name if cwd else ""
     approval = approval_label.removeprefix("approval:").strip()
+    mode = mode_label.removeprefix("mode:").strip() if mode_label else ""
     state = "READY" if not agent_state or agent_state == "idle" else agent_state.upper()
     context_label = f"CONTEXT {context_ratio * 100:.0f}%" if context_ratio is not None else None
     parts = [part for part in ("KRYTH", state, model, workspace, git_branch, context_label, provider) if part]
     if approval:
         parts.append(f"APPROVAL {approval.upper()}")
+    if mode:
+        parts.append(f"MODE {mode.upper()}")
 
     style = "status"
     if context_ratio is not None:
@@ -36,7 +40,7 @@ def status_bar(
 
     text = " | ".join(parts)
     # Preserve model and workspace first; trim secondary metadata as width shrinks.
-    for optional in (f"APPROVAL {approval.upper()}" if approval else None, provider, context_label, git_branch, workspace):
+    for optional in (f"MODE {mode.upper()}" if mode else None, f"APPROVAL {approval.upper()}" if approval else None, provider, context_label, git_branch, workspace):
         if len(text) <= width:
             break
         if optional and optional in parts and optional not in {"KRYTH", state, model}:

@@ -1,6 +1,6 @@
 # KRYTH brand and terminal design
 
-KRYTH's terminal opening uses a six-row block wordmark: K, R, T, and H in primary white, with Y in KRYTH lime. The returning-session lockup uses a compact geometric K beside the wordmark. Unicode art has an ASCII fallback, and all color is optional so the interface remains legible in monochrome terminals. The SVG files in [`assets/brand/`](../assets/brand/) are the source artwork for web, documentation, and app use.
+KRYTH's terminal opening uses a six-row block wordmark in Acid Gold (`#E8FF3A`). The returning-session lockup uses a compact geometric K beside the wordmark. Unicode art has an ASCII fallback, and color can be disabled for monochrome terminals. The SVG files in [`assets/brand/`](../assets/brand/) are the source artwork for web, documentation, and app use.
 
 ## Logo files
 

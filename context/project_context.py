@@ -62,12 +62,53 @@ class ProjectContext:
         return self.workspace.path
 
     @property
+    def active_project_root(self) -> Path:
+        return self.workspace.path
+
+    @property
     def current_working_directory(self) -> Path:
         return self.workspace.path
 
     @property
     def active_project(self) -> str | None:
         return self.workspace.path.name if self.workspace.has_project else None
+
+    @property
+    def kryth_runtime_root(self) -> Path:
+        """Location of the loaded KRYTH runtime, independent of the active project."""
+        return Path(__file__).resolve().parents[1]
+
+    @property
+    def is_kryth_source(self) -> bool:
+        """True only when KRYTH's source markers exist inside the active workspace."""
+        root = self.workspace.path
+        manifest = root / "pyproject.toml"
+        entry = root / "agent" / "agent.py"
+        if not manifest.is_file() or not entry.is_file():
+            return False
+        try:
+            return "name = \"kryth\"" in manifest.read_text(encoding="utf-8").lower()
+        except OSError:
+            return False
+
+    @property
+    def browser_infrastructure_root(self) -> Path | None:
+        """Report browser infrastructure only when it is inside this workspace."""
+        candidate = (self.workspace.path / "browser").resolve()
+        try:
+            candidate.relative_to(self.workspace.path.resolve())
+        except ValueError:
+            return None
+        return candidate if candidate.is_dir() else None
+
+    @property
+    def external_integrations(self) -> list[str]:
+        """List configured providers and MCP servers without scanning outside the workspace."""
+        if self.config is None:
+            return []
+        integrations = [f"provider:{name}" for name in self.config.providers.providers]
+        integrations.extend(f"mcp:{name}" for name in self.config.mcp_servers)
+        return sorted(integrations)
 
     # --- Derived booleans ---
     @property

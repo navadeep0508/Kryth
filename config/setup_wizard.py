@@ -10,6 +10,7 @@ import asyncio
 import httpx
 from dataclasses import dataclass, field
 from typing import Any
+from rich.console import Console
 
 from config.config import Config, ProviderConfig
 from config.keyring_store import (

@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.live import Live
 
 SPINNER_FRAMES = [".", "o", "O", "o"]
-SPINNER_INTERVAL = 0.04
+SPINNER_INTERVAL = 0.1
 
 REASONING_FRAMES = [".", "o", "*", "o"]
 REASONING_SPEED = 0.25
@@ -48,21 +48,40 @@ class Spinner:
         frame = int(self.frame * REASONING_SPEED)
         return REASONING_FRAMES[frame % len(REASONING_FRAMES)]
 
-    def start(self, render: Callable[[], Any]) -> None:
+    def start(
+        self,
+        render: Callable[[], Any],
+        *,
+        transient: bool = True,
+        live_static: bool = False,
+    ) -> None:
         self.stop()
         self.frame = 0
         self._render = render
-        if not self.enabled:
-            self.console.print(render())
+        if not self.enabled and not live_static:
+            if self.console.is_terminal and transient:
+                self.console.print(render())
             return
         self._live = Live(
             render(),
             console=self.console,
             refresh_per_second=1 / SPINNER_INTERVAL,
-            transient=True,
+            transient=transient,
+            auto_refresh=self.enabled,
         )
         self._live.start()
-        self._task = asyncio.create_task(self._animate())
+        if self.enabled:
+            self._task = asyncio.create_task(self._animate())
+
+    def update(self, renderable: Any | None = None) -> None:
+        """Apply an event-driven update when animation is disabled."""
+        if self._live is None:
+            return
+        value = renderable if renderable is not None else (
+            self._render() if self._render is not None else None
+        )
+        if value is not None:
+            self._live.update(value, refresh=True)
 
     def stop(self) -> None:
         if self._task is not None:

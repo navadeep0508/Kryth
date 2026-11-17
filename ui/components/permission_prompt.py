@@ -3,9 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from rich.box import ROUNDED
 from rich.console import Group
-from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -27,7 +25,7 @@ def permission_prompt(
 
     border = "error" if confirmation.is_dangerous else "warning"
     title = Text.assemble(
-        ("⏵ ", border),
+        ("", border),
         (confirmation.tool_name, "highlight"),
         ("  permission required", "subtitle"),
     )
@@ -53,7 +51,7 @@ def permission_prompt(
     return [
         title,
         Text(description, style="muted"),
-        Panel(body, box=ROUNDED, border_style=border, padding=(0, 1)),
+        body,
     ]
 
 
@@ -67,19 +65,19 @@ def _file_permission_prompt(
     )
     label = "Update" if confirmation.tool_name == "edit" else "Write"
     header = Text.assemble(
-        ("● ", "success"),
+        ("", "success"),
         (f"{label}({path})", "tool"),
     )
 
     if confirmation.diff.is_new_file:
         line_count = len(confirmation.diff.new_content.splitlines())
-        summary = Text(f"└  Creates file · {line_count} lines", style="muted")
+        summary = Text(f"Creates file | {line_count} lines", style="muted")
     elif added and not removed:
-        summary = Text(f"└  Adds {added} lines", style="muted")
+        summary = Text(f"Adds {added} lines", style="muted")
     elif removed and not added:
-        summary = Text(f"└  Removes {removed} lines", style="muted")
+        summary = Text(f"Removes {removed} lines", style="muted")
     else:
-        summary = Text(f"└  Changes +{added} / -{removed} lines", style="muted")
+        summary = Text(f"Changes +{added} / -{removed} lines", style="muted")
 
     blocks: list[Any] = [header, summary]
     language = guess_language(path)

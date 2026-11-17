@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from rich.panel import Panel
+from typing import Any
+
+from rich.console import Group
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -13,8 +15,8 @@ def diff_viewer(
     path: str | None = None,
     *,
     max_lines: int | None = None,
-) -> Panel:
-    """Render a labeled, syntax-highlighted unified diff."""
+) -> Any:
+    """Render a labeled, syntax-highlighted unified diff without a frame."""
 
     lines = diff.splitlines()
     if max_lines is not None and len(lines) > max_lines:
@@ -23,7 +25,8 @@ def diff_viewer(
     title = Text(path or "diff", style="highlight")
     title.append("  ")
     title.append_text(diff_stat_text(diff))
-    return Panel(
+    return Group(
+        title,
         Syntax(
             "\n".join(lines).strip(),
             "diff",
@@ -31,7 +34,4 @@ def diff_viewer(
             word_wrap=True,
             background_color="default",
         ),
-        title=title,
-        border_style="border",
-        padding=(0, 1),
     )

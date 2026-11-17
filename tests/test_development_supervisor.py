@@ -36,3 +36,37 @@ def test_supervisor_redacts_common_inline_secrets(tmp_path):
     persisted = json.loads(supervisor.path.read_text(encoding="utf-8"))
     assert "abc123" not in json.dumps(persisted)
     assert "[redacted]" in persisted["commands_executed"][0]["command"]
+
+
+def test_task_checkpoint_persists_steps_and_refuses_incomplete_completion(tmp_path):
+    supervisor = DevelopmentSupervisor(tmp_path)
+    task_id = supervisor.begin_task("Migrate the module")
+    supervisor.add_task_step("inspect", "Inspect current API")
+    supervisor.add_task_step("migrate", "Update imports")
+
+    restored = DevelopmentSupervisor(tmp_path)
+    checkpoint = restored.state["task_checkpoint"]
+    assert checkpoint["task_id"] == task_id
+    assert checkpoint["status"] == "in_progress"
+    assert checkpoint["pending_steps"] == ["Inspect current API", "Update imports"]
+    assert "in progress" in (restored.resume_summary() or "")
+    with pytest.raises(ValueError, match="pending or failed"):
+        restored.complete_task_checkpoint()
+
+    restored.verify_task_step("inspect", "Read API definition and call sites")
+    assert restored.state["task_checkpoint"]["status"] == "in_progress"
+    restored.verify_task_step("migrate", "Import check passed")
+    assert restored.state["task_checkpoint"]["status"] == "completed"
+    restored.complete_task_checkpoint()
+
+
+def test_failed_task_step_blocks_task_completion_and_keeps_recovery(tmp_path):
+    supervisor = DevelopmentSupervisor(tmp_path)
+    supervisor.begin_task("Repair browser")
+    supervisor.add_task_step("navigate", "Navigate to target")
+    supervisor.fail_task_step("navigate", "Connection lost", "Reconnect and inspect current tab")
+    with pytest.raises(ValueError, match="pending or failed"):
+        supervisor.complete_task_checkpoint()
+    checkpoint = DevelopmentSupervisor(tmp_path).state["task_checkpoint"]
+    assert checkpoint["failed_steps"] == ["Navigate to target"]
+    assert checkpoint["recovery_information"] == "Reconnect and inspect current tab"

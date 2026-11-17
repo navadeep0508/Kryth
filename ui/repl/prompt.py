@@ -1,29 +1,31 @@
 from __future__ import annotations
 
+import os
+
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.styles import Style
 
 from ui.components import PROMPT_MARK, status_bar
 from ui.theme import hex_colour
 
-PROMPT_WIDTH = 4  # "| > " inside the responsive composer frame
-COMPOSER_MIN_WIDTH = 60
+PROMPT_WIDTH = 2
+COMPOSER_MIN_WIDTH = 1
 
-PROMPT_STYLE = Style.from_dict(
+PROMPT_STYLE = Style.from_dict({}) if "NO_COLOR" in os.environ else Style.from_dict(
     {
-        "prompt": f"{hex_colour('accent')} bold",
+        "prompt": f"{hex_colour('bright')} bold",
         "frame": hex_colour("graphite"),
         "bottom-toolbar": "noreverse",
         "bottom-toolbar.text": f"noreverse {hex_colour('silver')}",
         "approval": f"noreverse {hex_colour('silver')}",
-        "approval.warn": f"noreverse {hex_colour('amber')}",
-        "approval.danger": f"noreverse bold {hex_colour('red')}",
+        "approval.warn": f"noreverse {hex_colour('silver')}",
+        "approval.danger": f"noreverse bold {hex_colour('bright')}",
         "status": f"noreverse {hex_colour('silver')}",
-        "status.warn": f"noreverse {hex_colour('amber')}",
-        "status.danger": f"noreverse bold {hex_colour('red')}",
+        "status.warn": f"noreverse {hex_colour('silver')}",
+        "status.danger": f"noreverse bold {hex_colour('bright')}",
         "completion-menu": "",
         "completion-menu.completion": f"{hex_colour('bright')}",
-        "completion-menu.completion.current": f"{hex_colour('accent')} bold",
+        "completion-menu.completion.current": f"{hex_colour('bright')} bold",
         "completion-menu.meta.completion": f"{hex_colour('silver')}",
         "completion-menu.meta.completion.current": f"{hex_colour('silver')}",
     }
@@ -62,6 +64,7 @@ def status_readout(
     context_ratio: float | None,
     width: int,
     approval_label: str = "",
+    mode_label: str | None = None,
     cwd: str | None = None,
     provider: str | None = None,
     agent_state: str | None = None,
@@ -71,6 +74,7 @@ def status_readout(
     return status_bar(
         model_name,
         approval_label,
+        mode_label,
         context_ratio,
         cwd,
         width,
@@ -87,26 +91,16 @@ def prompt_fragments(
     placeholder: bool = False,
 ) -> StyleAndTextTuples:
     parts = [*(expansion or [])]
-    if width >= COMPOSER_MIN_WIDTH:
-        actions = "KRYTH  |  Enter sends  |  / commands"
-        if width >= 78:
-            actions = "KRYTH  |  Enter sends  |  Ctrl+J new line  |  / commands"
-        parts.append(("class:frame", _frame_line(width, actions) + "\n"))
-        parts.extend([("class:frame", "| "), ("class:prompt", f"{PROMPT_MARK} ")])
-        if placeholder:
-            hint = "Ask KRYTH to build, debug, or improve..."
-            parts.append(("class:status", hint[: max(0, width - PROMPT_WIDTH - 2)]))
-    else:
-        parts.append(("class:prompt", f"{PROMPT_MARK} "))
-        if placeholder and width > PROMPT_WIDTH + 4:
-            hint = "Ask KRYTH to build, debug, or improve..."
-            parts.append(("class:status", hint[: width - PROMPT_WIDTH]))
+    if parts and not parts[-1][1].endswith("\n"):
+        parts.append(("", "\n"))
+    parts.append(("class:prompt", f"{PROMPT_MARK} "))
+    if placeholder and width > PROMPT_WIDTH + 4:
+        hint = "Describe your task..."
+        parts.append(("class:status", hint[: width - PROMPT_WIDTH]))
     return parts
 
 
 def continuation_fragments(width: int) -> StyleAndTextTuples:
-    if width >= COMPOSER_MIN_WIDTH:
-        return [("class:frame", "|   ")]
     return [("", " " * (len(PROMPT_MARK) + 1))]
 
 

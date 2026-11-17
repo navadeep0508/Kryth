@@ -29,16 +29,18 @@ _LETTERS = {
 }
 _UNICODE_SYMBOL = ("┃╲", "┣━╸", "┃╱")
 _ASCII_SYMBOL = ("|\\", "|-", "|/")
-_PRIMARY = PALETTE["primary"]
-_ACCENT = PALETTE["accent"]
+_ACCENT = PALETTE["brand"]
+_LIGHT = PALETTE["primary"]
+_Y_START = 16
+_Y_END = 25
 
 
 def small_wordmark(justify: str = "left") -> Text:
-    """The compact wordmark preserves the banner's white and lime treatment."""
+    """Render KRYTH in white with its Y picked out in Acid Gold."""
     text = Text(no_wrap=True, justify=justify)
-    text.append("KR", style=f"bold {_PRIMARY}")
+    text.append("KR", style=f"bold {_LIGHT}")
     text.append("Y", style=f"bold {_ACCENT}")
-    text.append("TH", style=f"bold {_PRIMARY}")
+    text.append("TH", style=f"bold {_LIGHT}")
     return text
 
 
@@ -50,9 +52,9 @@ def logo_lines(*, unicode: bool = True) -> list[Text]:
         if not unicode:
             row = row.translate(_ASCII_TRANSLATION)
         line = Text(no_wrap=True)
-        line.append(row[:16], style=f"bold {_PRIMARY}")
-        line.append(row[16:24], style=f"bold {_ACCENT}")
-        line.append(row[24:], style=f"bold {_PRIMARY}")
+        line.append(row[:_Y_START], style=f"bold {_LIGHT}")
+        line.append(row[_Y_START:_Y_END], style=f"bold {_ACCENT}")
+        line.append(row[_Y_END:], style=f"bold {_LIGHT}")
         rows.append(line)
     return rows
 

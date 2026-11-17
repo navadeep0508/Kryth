@@ -23,6 +23,7 @@ from ui.setup_tui import SetupTUI
 import asyncio
 import click
 import json
+import shutil
 import subprocess
 from importlib.metadata import PackageNotFoundError, version as installed_version
 from urllib.error import URLError
@@ -153,6 +154,136 @@ def main(ctx: click.Context, cwd: Path | None, setup: bool, resume: str | None, 
     # Bare `kryth` with no subcommand launches the interactive TUI.
     if ctx.invoked_subcommand is None:
         ctx.invoke(run, prompt=None, setup=setup)
+
+
+def _create_browser_manager(config: Config):
+    """Create the same browser tool manager used by agent sessions."""
+    from tools.browser_plugin import BrowserPluginManager
+
+    manager = BrowserPluginManager(config)
+    manager.discover()
+    return manager
+
+
+def _browser_probe(manager) -> dict[str, object]:
+    """Read local KUBA readiness without starting a browser or changing settings."""
+    from tools.kuba_browser_engine import KUBABrowserEngine
+
+    probe: dict[str, object] = {
+        "engine": type(manager.engine).__name__ if manager.engine else "unavailable",
+        "browser": "Chrome or Edge",
+        "browser_path": None,
+        "daemon_running": False,
+        "cdp_ready": False,
+        "remote_debugging_enabled": False,
+    }
+    if not isinstance(manager.engine, KUBABrowserEngine):
+        probe["browser_path"] = shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("msedge")
+        return probe
+
+    try:
+        import kuba_browser.admin as admin
+
+        probe["daemon_running"] = bool(admin.daemon_alive())
+        probe["cdp_ready"] = bool(admin.daemon_browser_ready())
+        from kuba_browser.daemon import remote_debugging_toggle_profiles
+
+        probe["remote_debugging_enabled"] = bool(remote_debugging_toggle_profiles())
+        if sys.platform == "win32":
+            path = admin._windows_browser_binary("chrome") or admin._windows_browser_binary("msedge")
+            probe["browser_path"] = str(path) if path else None
+            probe["browser"] = "Chrome" if path and "chrome" in str(path).lower() else "Edge"
+        else:
+            path = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chrome") or shutil.which("microsoft-edge")
+            probe["browser_path"] = path
+            if path and "edge" in path.lower():
+                probe["browser"] = "Edge"
+    except Exception as exc:
+        probe["probe_error"] = str(exc)
+    return probe
+
+
+@main.group("browser", invoke_without_command=True)
+@click.pass_context
+def browser(ctx: click.Context):
+    """Set up and diagnose KRYTH's built-in KUBA browser operator."""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.parent.get_help() if ctx.parent else ctx.get_help())
+
+
+@browser.command("doctor")
+def browser_doctor():
+    """Check browser configuration and local Chrome/Edge readiness."""
+    console.print("KUBA browser setup check")
+    try:
+        config = load_config(cwd=None)
+        console.print(f"Browser integration: {'enabled' if config.browser_plugin.enabled else 'disabled'}")
+        if config.allowed_tools and not {"browser", "browser_connect", "browser_disconnect", "browser_status"}.intersection(config.allowed_tools):
+            console.print("Browser tools: excluded by allowed_tools")
+        if not config.browser_plugin.enabled:
+            console.print("Next: set [browser_plugin] enabled = true in your KRYTH config")
+            return
+        manager = _create_browser_manager(config)
+        probe = _browser_probe(manager)
+        console.print(f"Python: {sys.version_info.major}.{sys.version_info.minor}")
+        console.print(f"Engine: {probe['engine']}")
+        console.print(f"Browser: {probe['browser']} ({probe['browser_path'] or 'not found on PATH/known install locations'})")
+        console.print(f"KUBA daemon: {'running' if probe['daemon_running'] else 'not running'}")
+        console.print(f"Browser connection: {'ready' if probe['cdp_ready'] else 'not connected'}")
+        console.print(f"Chrome remote debugging: {'enabled' if probe['remote_debugging_enabled'] else 'not enabled'}")
+        if probe.get("probe_error"):
+            console.print(f"Diagnostic note: {probe['probe_error']}")
+        if probe["cdp_ready"]:
+            console.print("KUBA is ready. You can ask KRYTH to use the browser.")
+        else:
+            console.print("Next: run `kryth browser setup` to connect and finish first-run browser approval.")
+        shutdown = getattr(manager, "shutdown", None)
+        if shutdown:
+            asyncio.run(shutdown())
+    except Exception as exc:
+        raise click.ClickException(f"Could not inspect KUBA browser setup: {exc}") from exc
+
+
+@browser.command("setup")
+def browser_setup():
+    """Connect KUBA to a visible Chrome/Edge instance and verify the session."""
+    try:
+        config = load_config(cwd=None)
+    except Exception as exc:
+        raise click.ClickException(f"Could not load KRYTH configuration: {exc}") from exc
+    if not config.browser_plugin.enabled:
+        raise click.ClickException("Browser integration is disabled. Set [browser_plugin] enabled = true in your KRYTH config, then retry.")
+    if config.allowed_tools and not {"browser", "browser_connect", "browser_disconnect", "browser_status"}.intersection(config.allowed_tools):
+        raise click.ClickException("Browser tools are excluded by allowed_tools in your KRYTH config.")
+
+    manager = _create_browser_manager(config)
+    if not manager.tools or manager.engine is None:
+        raise click.ClickException("KUBA browser tools could not load. Reinstall KRYTH with `python -m pip install --upgrade kryth`, then run `kryth browser doctor`.")
+    try:
+        result = asyncio.run(asyncio.wait_for(manager.engine.connect(), timeout=config.browser_plugin.timeout_seconds))
+        if isinstance(result, dict) and result.get("connected") is False:
+            raise RuntimeError(result.get("error") or "Browser engine did not connect")
+        tabs = result.get("tab_count", "unknown") if isinstance(result, dict) else "unknown"
+        console.print(f"KUBA browser is ready (tabs={tabs}).")
+        console.print("Browser actions will use this visible session. KRYTH approvals still apply to page changes.")
+    except Exception as exc:
+        message = str(exc)
+        if "remote-debugging-setup:" in message:
+            console.print("Chrome has opened chrome://inspect/#remote-debugging.")
+            console.print("Enable 'Allow remote debugging for this browser instance' and click Allow.")
+            console.print("Then rerun `kryth browser setup` and approve Chrome's connection prompt if shown.")
+            raise click.ClickException("Browser setup needs your confirmation in Chrome.") from exc
+        if "daemon" in message.lower() and "didn't come up" in message.lower():
+            console.print("KUBA could not start its browser helper. Check that Chrome or Edge is installed and closed cleanly.")
+            console.print("See `%USERPROFILE%\\.config\\kuba-browser\\tmp\\bu-default.log` for the startup details.")
+        raise click.ClickException(f"KUBA browser setup failed: {message}\nRun `kryth browser doctor` for local diagnostics.") from exc
+    finally:
+        try:
+            shutdown = getattr(manager, "shutdown", None)
+            if shutdown:
+                asyncio.run(shutdown())
+        except Exception:
+            pass
 
 
 @main.command(

@@ -1,4 +1,8 @@
 import tiktoken
+import json
+import math
+from dataclasses import dataclass
+from typing import Any
 
 def get_tokenizer(model: str):
     try:
@@ -16,6 +20,62 @@ def count_tokens(text: str, model: str = "") -> int:
 
 def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) # on avg 1 token is ~ 4 characters
+
+
+@dataclass(frozen=True)
+class RequestSizeEstimate:
+    estimated_tokens: int
+    serialized_bytes: int
+    estimator: str
+
+
+def estimate_serialized_request(
+    payload: dict[str, Any],
+    *,
+    model: str = "",
+    tokenizer_encoding: str | None = None,
+) -> RequestSizeEstimate:
+    """Estimate the complete API body, using a known tokenizer or a byte bound."""
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    serialized_bytes = len(serialized.encode("utf-8"))
+    try:
+        if tokenizer_encoding:
+            tokenizer = tiktoken.get_encoding(tokenizer_encoding)
+            estimator = f"tiktoken:{tokenizer_encoding}"
+        elif model:
+            tokenizer = tiktoken.encoding_for_model(model)
+            estimator = f"tiktoken:model:{model}"
+        else:
+            tokenizer = None
+            estimator = "utf8-byte-upper-bound"
+    except (KeyError, ValueError):
+        tokenizer = None
+        estimator = "utf8-byte-upper-bound"
+
+    messages = payload.get("messages", [])
+    tools = payload.get("tools", [])
+    if tokenizer is None:
+        estimated = serialized_bytes + len(messages) * 8 + len(tools) * 16 + 64
+    else:
+        token_count = len(tokenizer.encode(serialized))
+        framing = len(messages) * 8 + len(tools) * 16 + 64
+        estimated = math.ceil(token_count * 1.10) + framing
+    return RequestSizeEstimate(estimated, serialized_bytes, estimator)
+
+
+def estimate_request_tokens(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    *,
+    model: str = "",
+    tokenizer_encoding: str | None = None,
+) -> int:
+    payload: dict[str, Any] = {"messages": messages}
+    if tools:
+        payload["tools"] = tools
+    return estimate_serialized_request(
+        payload, model=model, tokenizer_encoding=tokenizer_encoding
+    ).estimated_tokens
 
 def truncate_text(
         text: str, 

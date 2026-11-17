@@ -14,7 +14,7 @@ AGENT_THEME = Theme(
         "dim": "dim",
         "muted": PALETTE["muted"],
         "subtitle": PALETTE["silver"],
-        "border": PALETTE["graphite"],
+        "border": PALETTE["border"],
         "highlight": f"bold {PALETTE['accent']}",
 
         "user": f"bold {PALETTE['bright']}",

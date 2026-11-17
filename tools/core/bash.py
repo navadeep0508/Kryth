@@ -12,7 +12,7 @@ from tools.core.shells import (
     select_shell, validate_command_shell, ShellMismatchError,
     parse_directory_change,
 )
-from tools.core.long_running import detect_long_running
+from tools.core.long_running import LongRunningInfo, detect_long_running
 from tools.core.persistent_terminal import get_terminal_manager, TerminalStatus
 from tools.core.tool_supervisor import should_prefer_native, recommend_native_tool
 from utils.development_supervisor import DevelopmentSupervisor

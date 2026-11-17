@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.4,<9",
+    "cdp-use==1.4.5",
     "ddgs>=9.14,<10",
     "fastmcp>=3.4,<4",
     "httpx>=0.28,<1",
@@ -52,5 +53,12 @@ kryth = "main:main"
 [tool.setuptools]
 py-modules = ["main"]
 
+[tool.setuptools.package-dir]
+kuba_browser = "browser/src/kuba_browser"
+
 [tool.setuptools.packages.find]
-include = ["agent*", "client*", "config*", "context*", "hooks*", "kryth*", "prompts*", "safety*", "tools*", "ui*", "utils*"]
+where = [".", "browser/src"]
+include = ["agent*", "client*", "config*", "context*", "hooks*", "kryth*", "prompts*", "safety*", "tools*", "ui*", "utils*", "kuba_browser*"]
+
+[tool.setuptools.package-data]
+kuba_browser = ["SKILL.md", "video-template.html"]

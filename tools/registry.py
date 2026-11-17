@@ -81,6 +81,7 @@ class ToolRegistry:
             hook_system: HookSystem,
             approval_manager: ApprovalManager | None = None,
             progress_callback: Callable[[str], None] | None = None,
+            call_id: str | None = None,
         ) -> ToolResult:
         tool = self.get(name)
         if tool is None:
@@ -111,6 +112,7 @@ class ToolRegistry:
         invocation = ToolInvocation(
             params=params,
             cwd=cwd,
+            call_id=call_id,
             confirmation_callback=(
                 approval_manager.confirmation_callback if approval_manager else None
             ),

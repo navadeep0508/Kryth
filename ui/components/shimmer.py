@@ -4,7 +4,7 @@ from ui.format import split_tool_name
 from ui.theme.palette import hex_colour, rgb_parts
 
 SHIMMER_BASE = rgb_parts("silver")
-SHIMMER_PEAK = rgb_parts("accent")  # acid lime #E8FF3A
+SHIMMER_PEAK = rgb_parts("accent")
 SHIMMER_WIDTH = 3.0
 SHIMMER_SPEED = 0.4
 SHIMMER_GAP = 10

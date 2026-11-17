@@ -190,6 +190,7 @@ class PersistentTerminal:
             process_options: dict[str, Any] = {
                 "stdout": asyncio.subprocess.PIPE,
                 "stderr": asyncio.subprocess.STDOUT,
+                "stdin": asyncio.subprocess.PIPE,
                 "cwd": work_dir,
                 "env": shell_env,
             }

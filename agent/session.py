@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import Callable
+from typing import Any, Callable
 
 from agent.store import (
     Checkpoint,
@@ -13,7 +13,7 @@ from agent.store import (
 from utils.development_supervisor import DevelopmentSupervisor
 from client.llm_client import LLMClient
 from client.response import TokenUsage
-from config.config import Config
+from config.config import Config, ExecutionMode
 from config.loader import get_data_dir
 from context.compaction import ChatCompactor
 from context.loop_detector import LoopDetector
@@ -25,6 +25,7 @@ from context.project_context import (
 from context.workspace import validate_workspace
 from hooks.hook_system import HookSystem
 from safety.approval import ApprovalManager
+from tools.browser_plugin import BrowserPluginManager
 from tools.discovery import ToolDiscoveryManager
 from tools.mcp.manager import MCPManager
 from tools.registry import create_default_registry
@@ -46,14 +47,17 @@ class Session:
         self.mcp_manager = MCPManager(
             self.config
         )
-        self.chat_compactor = ChatCompactor(self.client)
+        self.chat_compactor = ChatCompactor(self.client, config)
         self.approval_manager = ApprovalManager(
-            self.config.approval, 
-            self.config.cwd, 
+            self.config.approval,
+            self.config.cwd,
+            execution_mode=self.config.execution_mode,
         )
         self.loop_detector = LoopDetector()
         self.hook_system = HookSystem(config)
+        self.browser_plugin_manager = BrowserPluginManager(config)
         self.session_id = str(uuid.uuid4()) # Unique identifiers to resume sessions
+        self.execution_mode: ExecutionMode = self.config.execution_mode
         self.workspace = validate_workspace(config.cwd)
         self.project_context = None  # set during initalize()
         self.project_context_hint: str | None = None  # ambiguity hint, if any
@@ -67,6 +71,7 @@ class Session:
         self.last_usage: TokenUsage | None = None
 
         self.turn_usage = TokenUsage()
+        self.context_budget_history: list[dict[str, Any]] = []
 
         self._turn_count = 0
 
@@ -85,6 +90,10 @@ class Session:
         self.mcp_manager.register_tools(self.tool_registry)
         _step("discovering tools")
         self.discovery_manager.discover()
+        _step("discovering browser plugins")
+        browser_tools = self.browser_plugin_manager.discover()
+        for tool in browser_tools:
+            self.tool_registry.register(tool)
         _step("building context manager")
         self.context_manager = ContextManager(
             config=self.config,
@@ -237,6 +246,7 @@ class Session:
         self.loop_detector = LoopDetector()
         self.last_usage = None
         self.turn_usage = TokenUsage()
+        self.context_budget_history.clear()
         self.resumed_from = record
 
         return restored
@@ -253,6 +263,7 @@ class Session:
         self._saved_signature = None
         self.last_usage = None
         self.turn_usage = TokenUsage()
+        self.context_budget_history.clear()
         self.loop_detector = LoopDetector()
 
         if self.context_manager is not None:

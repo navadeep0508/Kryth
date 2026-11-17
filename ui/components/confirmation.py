@@ -3,16 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from rich.box import ROUNDED
 from rich.console import Group
-from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
 from tools.base import ToolConfirmation
 from ui.components.args_table import render_args_table
 from ui.components.diff_viewer import diff_viewer
-from ui.components.permission_prompt import permission_prompt
 from ui.components.terminal_approval import TerminalApprovalPanel
 from utils.paths import display_path_relative_to_cwd
 
@@ -57,42 +53,22 @@ def confirmation_body(
 def confirmation_request(
     confirmation: ToolConfirmation, cwd: Path | str | None = None
 ) -> list[Any]:
-    """Build the approval prompt for a tool requiring user permission.
-
-    Terminal (bash) commands use the rich TerminalApprovalPanel with risk
-    classification, shell detection, and command preview. All other tools
-    use the classic permission prompt.
-    """
-
-    # Terminal commands get the new rich approval panel.
-    if confirmation.tool_name == "bash":
-        return [TerminalApprovalPanel(confirmation, cwd)]
-
-    return permission_prompt(confirmation, cwd)
+    """Build the shared approval selector for every permission request."""
+    return [TerminalApprovalPanel(confirmation, cwd)]
 
 
-def confirmation_choices(badge: str) -> Panel:
-    """Render approval shortcuts as a compact, keyboard-focused choice card."""
+def confirmation_choices(badge: str) -> Group:
+    """Render approval shortcuts as a compact, keyboard-focused line."""
 
     def choice(key: str, label: str, key_style: str) -> Text:
         return Text.assemble((f"[{key}] ", key_style), (label, "primary"))
 
-    options = Table.grid(padding=(0, 3))
-    options.add_column(no_wrap=True)
-    options.add_column(no_wrap=True)
-    options.add_row(
-        choice("Y", "Allow once", "success"),
-        choice("A", "Allow for session", "info"),
-    )
-    options.add_row(
-        choice("N", "Reject", "error"),
-        choice("Esc", "Cancel", "subtitle"),
-    )
-
-    return Panel(
-        Group(options, Text(badge, style="muted")),
-        title=Text("Approval", style="warning"),
-        border_style="warning",
-        box=ROUNDED,
-        padding=(0, 1),
-    )
+    options = Text()
+    for index, (key, label) in enumerate((
+        ("Y", "Allow once"), ("A", "Allow for session"),
+        ("N", "Reject"), ("Esc", "Cancel"),
+    )):
+        if index:
+            options.append("  |  ", style="muted")
+        options.append_text(choice(key, label, "subtitle"))
+    return Group(options, Text(badge, style="muted"))

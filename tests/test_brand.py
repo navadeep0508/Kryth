@@ -20,13 +20,19 @@ def render(renderable, width: int) -> str:
 
 
 def test_brand_tokens_match_the_kryth_palette():
-    assert hex_colour("obsidian") == "#101114"
-    assert hex_colour("graphite") == "#1d2025"
-    assert hex_colour("surface") == "#252930"
-    assert hex_colour("muted") == "#858b91"
-    assert hex_colour("primary") == "#ecedef"
-    assert hex_colour("secondary") == "#a1a5ad"
-    assert hex_colour("accent") == "#dfff00"
+    assert [hex_colour(key) for key in ("obsidian", "graphite", "muted", "secondary", "primary")] == [
+        "#090909", "#171717", "#737373", "#a3a3a3", "#f5f5f5"
+    ]
+    assert {
+        key: hex_colour(key) for key in ("blue", "green", "amber", "red", "violet")
+    } == {
+        "blue": "#7890a4",
+        "green": "#8baf88",
+        "amber": "#d6aa65",
+        "red": "#d77a7a",
+        "violet": "#a3a3a3",
+    }
+    assert hex_colour("brand") == "#e8ff3a"
 
 
 def test_terminal_mark_has_unicode_and_ascii_fallbacks():
@@ -45,25 +51,26 @@ def test_terminal_mark_has_unicode_and_ascii_fallbacks():
 def test_banner_uses_the_user_supplied_outline_style():
     rows = logo(unicode=True).plain.splitlines()
 
-    assert len(rows) == 6
-    assert rows[0].startswith("██╗  ██╗")
-    assert rows[1].startswith("██║ ██╔╝")
-    assert rows[2].startswith("█████╔╝")
-    assert rows[3].startswith("██╔═██╗")
-    assert rows[4].startswith("██║  ██╗")
-    assert rows[5].startswith("╚═╝  ╚═╝")
+    assert rows == [
+        "██╗  ██╗██████╗ ██╗   ██╗████████╗██╗  ██╗",
+        "██║ ██╔╝██╔══██╗╚██╗ ██╔╝╚══██╔══╝██║  ██║",
+        "█████╔╝ ██████╔╝ ╚████╔╝    ██║   ███████║",
+        "██╔═██╗ ██╔══██╗  ╚██╔╝     ██║   ██╔══██║",
+        "██║  ██╗██║  ██║   ██║      ██║   ██║  ██║",
+        "╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝",
+    ]
 
 
-def test_kryth_banner_uses_lime_only_on_the_y_letter():
+def test_kryth_wordmark_uses_white_letters_with_an_acid_gold_y():
     rows = logo_lines()
-    lime = rows[0].spans
 
     assert len(rows) == 6
-    assert any("223,255,0" in str(span.style) for span in lime)
+    assert all(any("#F5F5F5" in str(span.style) for span in row.spans) for row in rows)
+    assert all(any("#E8FF3A" in str(span.style) for span in row.spans) for row in rows)
     assert all(len(row.plain) == LOGO_WIDTH for row in rows)
 
 
-def test_welcome_contains_live_context_and_existing_actions():
+def test_welcome_is_compact_and_shows_model_and_workspace():
     rendered = render(
         welcome_screen(
             model="provider/model-x",
@@ -75,7 +82,12 @@ def test_welcome_contains_live_context_and_existing_actions():
         90,
     )
 
-    for value in ("KRYTH", "MODEL", "model-x", "WORKSPACE", "saas-platform", "SESSION", "1f2f9968", "VERSION", "BRANCH", "main", "/help", "/model", "/sessions"):
+    for value in (
+        "██╗  ██╗", "AUTONOMOUS INTELLIGENCE",
+        "Your workspace. Your agent. Your next build.", "MODEL", "model-x",
+        "WORKSPACE", "saas-platform", "SESSION", "VERSION", "/help",
+        "/model", "/sessions", "/config",
+    ):
         assert value in rendered
 
 
@@ -92,7 +104,7 @@ def test_welcome_drops_tagline_and_optional_branch_when_narrow():
         40,
     )
 
-    assert "Autonomous intelligence" not in rendered
+    assert "AUTONOMOUS INTELLIGENCE" in rendered
     assert "BRANCH" not in rendered
     assert "MODEL" in rendered
     assert "WORKSPACE" in rendered
@@ -118,7 +130,7 @@ def test_short_terminal_hides_optional_welcome_content():
     assert "WORKSPACE" in rendered
 
 
-def test_very_narrow_welcome_uses_wordmark_and_short_labels():
+def test_very_narrow_welcome_remains_small():
     rendered = render(
         welcome_screen(
             model="model-x",
@@ -132,9 +144,8 @@ def test_very_narrow_welcome_uses_wordmark_and_short_labels():
     )
 
     assert "KRYTH" in rendered
-    assert "M" in rendered
-    assert "WORK" in rendered
-    assert "VER" in rendered
+    assert "MODEL" in rendered
+    assert "WORKSPACE" in rendered
 
 
 def test_horizontal_logo_renders_wordmark_and_descriptor():
@@ -178,11 +189,7 @@ def test_welcome_hides_missing_runtime_metadata():
         90,
     )
 
-    assert "MODEL" not in rendered
-    assert "WORKSPACE" not in rendered
-    assert "BRANCH" not in rendered
-    assert "SESSION" not in rendered
-    assert "VERSION" in rendered
+    assert "not configured" in rendered
 
 
 def test_returning_session_uses_compact_identity_and_last_task():
@@ -199,8 +206,8 @@ def test_returning_session_uses_compact_identity_and_last_task():
         90,
     )
 
-    assert "KRYTH" in rendered
-    assert "Improve tool rendering" in rendered
+    assert "██╗  ██╗" in rendered
+    assert "Improve tool rendering" not in rendered
     assert "What are we building today?" not in rendered
 
 
@@ -208,32 +215,14 @@ def test_truecolor_and_monochrome_logo_output():
     colored = Console(record=True, theme=AGENT_THEME, width=80, color_system="truecolor")
     colored.print(logo())
     ansi = colored.export_text(styles=True)
-    assert "38;2;223;255;0" in ansi
+    assert "38;2;232;255;58" in ansi
 
     monochrome = render(logo(), 80)
-    assert "KRYTH" not in monochrome
+    assert "██╗" in monochrome
     assert "█" in monochrome
 
 
-def test_reduced_motion_disables_startup_reveal(monkeypatch):
-    from config.config import Config
-    from ui.motion import animations_enabled
-    from ui.repl.banner import _should_reveal_banner
-
-    console = Console(file=StringIO(), force_terminal=True, width=100, height=30)
-    config = Config()
-    assert _should_reveal_banner(console, config, fresh=True)
-
-    monkeypatch.setenv("KRYTH_REDUCED_MOTION", "1")
-    assert not animations_enabled(config)
-    assert not _should_reveal_banner(console, config, fresh=True)
-
-    monkeypatch.delenv("KRYTH_REDUCED_MOTION")
-    monkeypatch.setenv("KRYTH_NO_ANIMATION", "true")
-    assert not animations_enabled(config)
-
-
-def test_disabled_animation_still_renders_complete_banner(monkeypatch):
+def test_startup_renders_wordmark_and_session_information():
     from config.config import Config
     from ui.repl.banner import render_banner
 
@@ -246,7 +235,6 @@ def test_disabled_animation_still_renders_complete_banner(monkeypatch):
         color_system=None,
         theme=AGENT_THEME,
     )
-    monkeypatch.setenv("KRYTH_NO_ANIMATION", "1")
     render_banner(
         console,
         Config(cwd=ROOT),
@@ -256,6 +244,9 @@ def test_disabled_animation_still_renders_complete_banner(monkeypatch):
     )
     rendered = output.getvalue()
 
-    assert "KRYTH" in rendered
+    assert "██╗  ██╗" in rendered
+    assert "Your workspace. Your agent. Your next build." in rendered
     assert "What are we building today?" in rendered
-    assert "12345678" in rendered
+    assert all(command in rendered for command in ("/help", "/model", "/sessions", "/config"))
+    assert "SESSION" in rendered
+    assert "VERSION" in rendered

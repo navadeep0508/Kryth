@@ -19,7 +19,8 @@ class ModelConfig(BaseModel):
         le=2.0
     ) # clarity of the model
 
-    context_window: int = 256_000
+    context_window: int = Field(default=256_000, gt=0)
+    max_output_tokens: int = Field(default=8_192, gt=0)
 
 class ReasoningConfig(BaseModel):
     """How much the model thinks, and whether that thinking is shown."""
@@ -62,6 +63,17 @@ class UIConfig(BaseModel):
     """Terminal presentation preferences."""
 
     animations: bool = True
+    show_startup_tips: bool = True
+    startup_tip_interval: float = Field(default=3.0, gt=0)
+
+
+class BrowserPluginConfig(BaseModel):
+    """KUBA in-process CDP browser engine configuration."""
+
+    enabled: bool = True
+    headless: bool = False
+    timeout_seconds: float = 90.0
+    allowed_domains: list[str] = Field(default_factory=list)
 
 
 class BashEnvironmentConfig(BaseModel):
@@ -147,6 +159,37 @@ _APPROVAL_LABELS: dict[ApprovalPolicy, tuple[str, str]] = {
     ApprovalPolicy.YOLO: ("yolo", "approve everything, including dangerous commands"),
 }
 
+
+class ExecutionMode(str, Enum):
+    """Agent execution autonomy level.
+
+    A separate concern from ApprovalPolicy: the mode governs how freely the
+    agent may act, while the policy governs which individual actions need
+    confirmation. The two are integrated via the policy matrix in
+    ApprovalManager.check_approval().
+    """
+
+    AUTO = "auto"
+    MANUAL = "manual"
+    PLAN = "plan"
+    ACCEPT_EDITS = "accept_edits"
+
+    @property
+    def label(self) -> str:
+        return _EXECUTION_MODE_LABELS[self][0]
+
+    @property
+    def summary(self) -> str:
+        return _EXECUTION_MODE_LABELS[self][1]
+
+
+_EXECUTION_MODE_LABELS: dict[ExecutionMode, tuple[str, str]] = {
+    ExecutionMode.AUTO: ("AUTO", "autonomous execution within approval policy"),
+    ExecutionMode.MANUAL: ("MANUAL", "request approval before every tool"),
+    ExecutionMode.PLAN: ("PLAN", "read-only analysis and planning only"),
+    ExecutionMode.ACCEPT_EDITS: ("ACCEPT EDITS", "auto-approve workspace file edits"),
+}
+
 class HookTrigger(str, Enum):
 
     BEFORE_AGENT = 'before_agent'
@@ -193,8 +236,11 @@ class Config(BaseModel):
 
     session: SessionConfig = Field(default_factory=SessionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
+    browser_plugin: BrowserPluginConfig = Field(default_factory=BrowserPluginConfig)
 
     approval: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
+    default_execution_mode: ExecutionMode = ExecutionMode.AUTO
+    execution_mode: ExecutionMode = ExecutionMode.AUTO
 
     allowed_tools: list[str] | None = Field(
         None,
@@ -208,7 +254,13 @@ class Config(BaseModel):
     mcp_servers: dict[str, MCPServerConfig] = Field(
         default_factory=dict
     )
-    max_tool_output_tokens: int = 50_000
+    max_tool_output_tokens: int = Field(default=50_000, gt=0)
+
+    # Context compaction settings.
+    auto_compact_enabled: bool = Field(default=True)
+    auto_compact_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    auto_compact_target: float = Field(default=0.45, ge=0.0, le=1.0)
+    emergency_compact_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
 
     developer_instructions: str | None = None
     user_instructions: str | None = None
@@ -250,6 +302,17 @@ class Config(BaseModel):
     @property
     def model_name(self) -> str:
         return self.model.name
+
+    @property
+    def effective_context_window(self) -> int:
+        """Use the active provider's declared limit when it is known."""
+        provider = self.providers.get(self.providers.active_name) if self.providers.active_name else None
+        return provider.context_window if provider and provider.context_window else self.model.context_window
+
+    @property
+    def effective_tokenizer_encoding(self) -> str | None:
+        provider = self.providers.get(self.providers.active_name) if self.providers.active_name else None
+        return provider.tokenizer_encoding if provider else None
     
     @model_name.setter
     def model_name(self, value: str) -> None:

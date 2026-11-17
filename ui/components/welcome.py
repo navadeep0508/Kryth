@@ -1,20 +1,25 @@
-"""Responsive opening layouts for fresh and returning KRYTH sessions."""
+"""Responsive KRYTH startup screen."""
 
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
+
 from rich.align import Align
 from rich.console import Group
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from ui.components.logo import KRYTH_VERSION, horizontal_logo, logo, small_wordmark
+from ui.components.logo import KRYTH_VERSION, LOGO_WIDTH, logo_lines, small_wordmark
+from ui.theme.palette import PALETTE
 
 
 def welcome_parts(
     *,
     model: str | None,
     workspace: str | None,
-    session_id: str | None,
+    provider: str | None = None,
+    session_id: str | None = None,
     branch: str | None,
     width: int,
     height: int = 24,
@@ -22,127 +27,99 @@ def welcome_parts(
     fresh: bool = True,
     last_task: str | None = None,
 ) -> list[object]:
-    """Build the opening page from live metadata, adapting to the terminal."""
+    """Build the centered wordmark, workspace details, and quick-start hints."""
+    del provider, branch
     width = max(12, width)
-    height = max(8, height)
-    full_hero = fresh and width >= 54 and height >= 23
-    very_short = height < 18
-    parts: list[object] = []
+    model_name = model.rsplit("/", 1)[-1] if model else "not configured"
+    workspace_name = _workspace_name(workspace)
+    full_layout = fresh and width >= 70 and height >= 22
 
-    if full_hero:
-        parts.append(Align.center(logo(unicode=unicode), width=width))
-        parts.append(Align.center(Text("AUTONOMOUS INTELLIGENCE", style="muted"), width=width))
-        parts.append(
-            Align.center(
-                Text("Your workspace. Your agent. Your next build.", style="assistant"),
-                width=width,
-            )
-        )
-        parts.append(_divider(width, unicode))
-    elif fresh:
-        parts.append(
-            horizontal_logo(
-                unicode=unicode,
-                tagline=width >= 54 and height >= 20,
-            )
-        )
-        if width >= 48 and not very_short:
-            parts.append(Align.center(Text("AUTONOMOUS INTELLIGENCE", style="muted"), width=width))
-            parts.append(
-                Align.center(
-                    Text("Your workspace. Your agent. Your next build.", style="assistant"),
-                    width=width,
-                )
-            )
+    if width >= LOGO_WIDTH + 4:
+        wordmark = [Align.center(line, width=width) for line in logo_lines(unicode=unicode)]
     else:
-        parts.append(horizontal_logo(unicode=unicode, tagline=False))
+        wordmark = [Align.center(small_wordmark(), width=width)]
 
-    fields: list[tuple[str, str]] = []
-    if model and model.strip():
-        fields.append(("MODEL", model.rsplit("/", 1)[-1]))
-    if workspace and workspace.strip():
-        fields.append(("WORKSPACE", workspace))
-    if fresh and branch and width >= 54 and height >= 23:
-        fields.append(("BRANCH", branch))
-    if session_id:
-        fields.append(("SESSION", session_id[:8]))
-    if not very_short:
-        fields.append(("VERSION", KRYTH_VERSION))
-    if not fresh and last_task:
-        fields.append(("LAST TASK", last_task))
+    parts: list[object] = [*wordmark]
+    parts.append(Align.center(Text("AUTONOMOUS INTELLIGENCE", style="muted"), width=width))
 
-    if very_short:
-        fields = fields[:2]
+    if not full_layout:
+        parts.extend((
+            Text(),
+            Align.center(_metadata(model_name, workspace_name, width), width=width),
+        ))
+        if fresh and height >= 16:
+            parts.extend((Text(), Align.center(Text("What are we building today?", style="primary"), width=width)))
+        return parts
 
-    if fields:
-        metadata = _metadata_table(fields, width)
-        if full_hero:
-            parts.append(Align.center(metadata, width=width))
-            parts.append(_divider(width, unicode))
-        else:
-            parts.append(metadata)
-
-    if fresh and not very_short and height >= 14:
-        parts.append(
-            Align.center(
-                Text("What are we building today?", style="bold primary"),
-                width=width,
-            )
-        )
-        if width >= 46:
-            support = "Describe your task. KRYTH will plan, execute, and verify."
-        else:
-            support = "Describe a task. KRYTH plans and verifies."
-        parts.append(Align.center(Text(support, style="muted"), width=width))
-        if width >= 68 and height >= 23:
-            parts.extend(_actions(width))
-        elif width >= 36:
-            parts.append(Align.center(Text("/help   /model   /sessions   /config", style="muted"), width=width))
-
+    parts.extend((
+        Align.center(
+            Text("Your workspace. Your agent. Your next build.", style="primary"),
+            width=width,
+        ),
+        Rule(style="border", characters="─" if unicode else "-"),
+        Text(),
+        Align.center(_metadata(model_name, workspace_name, width, session_id), width=width),
+        Rule(style="border", characters="─" if unicode else "-"),
+        Text(),
+        Align.center(Text("What are we building today?", style="primary"), width=width),
+        Align.center(
+            Text("Describe your task. KRYTH will plan, execute, and verify.", style="muted"),
+            width=width,
+        ),
+        Text(),
+        Align.center(_command_hints(), width=width),
+    ))
     return parts
 
 
 def welcome_screen(**kwargs: object) -> Group:
-    """Return a Rich group suitable for capture and terminal rendering."""
     return Group(*welcome_parts(**kwargs))
 
 
-def _metadata_table(fields: list[tuple[str, str]], width: int) -> Table:
-    compact = width < 34
-    labels = {"MODEL": "M", "WORKSPACE": "WORK", "SESSION": "SESSION", "VERSION": "VER", "BRANCH": "BR"} if compact else {}
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style="muted", no_wrap=True)
-    table.add_column(style="primary", overflow="ellipsis")
-    max_value = max(6, width - (14 if compact else 22))
-    for key, value in fields:
-        label = labels.get(key, key)
-        table.add_row(label, _clip(value, max_value))
+def _workspace_name(workspace: str | None) -> str:
+    if not workspace:
+        return "."
+    return PureWindowsPath(workspace.rstrip("\\/")).name or workspace
+
+
+def _metadata(model: str, workspace: str, width: int, session_id: str | None = None) -> Table:
+    table = Table.grid(padding=(0, 2), expand=False)
+    table.add_column(width=9, justify="right", no_wrap=True)
+    value_width = max(4, width - 14)
+    table.add_column(no_wrap=True, max_width=value_width)
+    rows = [("MODEL", _clip(model, value_width)), ("WORKSPACE", _clip(workspace, value_width))]
+    if session_id is not None:
+        rows.extend((
+            ("SESSION", _clip(session_id[:8] or "new", value_width)),
+            ("VERSION", KRYTH_VERSION),
+        ))
+    for label, value in rows:
+        table.add_row(
+            Text(label, style=PALETTE["muted"]),
+            Text(value, style=PALETTE["primary"]),
+        )
     return table
 
 
-def _actions(width: int) -> list[object]:
-    table = Table.grid(padding=(0, 3))
-    table.add_column(no_wrap=True)
-    table.add_column(style="muted", no_wrap=True)
-    actions = [
+def _command_hints() -> Table:
+    hints = Table.grid(padding=(0, 3), expand=False)
+    hints.add_column(justify="right", no_wrap=True)
+    hints.add_column(no_wrap=True)
+    for command, description in (
         ("/help", "Explore commands"),
         ("/model", "Choose your model"),
         ("/sessions", "Continue previous work"),
-    ]
-    if width >= 82:
-        actions.append(("/config", "Configure KRYTH"))
-    for command, description in actions:
-        table.add_row(Text(command, style="highlight"), description)
-    return [Align.center(table, width=width)]
-
-
-def _divider(width: int, unicode: bool) -> Align:
-    char = "─" if unicode else "-"
-    length = min(72, max(12, width - 16))
-    return Align.center(Text(char * length, style="border"), width=width)
+        ("/config", "Configure KRYTH"),
+    ):
+        hints.add_row(
+            Text(command, style=f"bold {PALETTE['accent']}"),
+            Text(description, style=PALETTE["muted"]),
+        )
+    return hints
 
 
 def _clip(value: str, width: int) -> str:
+    width = max(1, width)
     if len(value) <= width:
         return value
     if width <= 3:

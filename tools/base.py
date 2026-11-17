@@ -19,6 +19,47 @@ class ToolKind(str, Enum):
     GIT = "git"
     SUBAGENT = "subagent"
 
+
+class ExecutionStatus(str, Enum):
+    ACTION_EXECUTED = "ACTION_EXECUTED"
+    STATE_VERIFIED = "STATE_VERIFIED"
+    TASK_COMPLETED = "TASK_COMPLETED"
+    ACTION_FAILED = "ACTION_FAILED"
+    VERIFICATION_FAILED = "VERIFICATION_FAILED"
+
+
+class InterruptionType(str, Enum):
+    """Why an execution was interrupted, so resumption can resume from the right step."""
+
+    USER_CANCELLED = "USER_CANCELLED"
+    TOOL_TIMEOUT = "TOOL_TIMEOUT"
+    CONNECTION_FAILED = "CONNECTION_FAILED"
+    CONTEXT_LIMIT_REACHED = "CONTEXT_LIMIT_REACHED"
+    EXECUTION_INTERRUPTED = "EXECUTION_INTERRUPTED"
+    TASK_COMPLETED = "TASK_COMPLETED"
+
+
+class ContextBudgetExceeded(Exception):
+    """Raised when the model context window would be exceeded by the current request.
+
+    Distinct from MemoryError (process RAM exhaustion) and from provider-side
+    request rejection. Preserves the original request estimate and context window
+    so the caller can decide whether to compress, prune, or surface the error.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        estimated_tokens: int | None = None,
+        context_window: int | None = None,
+        cause: str | None = None,
+    ):
+        super().__init__(message)
+        self.estimated_tokens = estimated_tokens
+        self.context_window = context_window
+        self.cause = cause  # "provider_rejection" | "local_exhaustion" | None
+
 @dataclass
 class FileDiff:
     path: Path
@@ -63,6 +104,47 @@ class ToolResult:
     truncated: bool = False
     diff: FileDiff | None = None
     exit_code: int | None = None
+    execution_status: ExecutionStatus | None = None
+    verification: dict[str, Any] = field(default_factory=dict)
+    action_executed: bool | None = None
+    state_changed: bool | None = None
+    expected_state_verified: bool = False
+    user_objective_completed: bool = False
+
+    def __post_init__(self) -> None:
+        if self.execution_status is None:
+            self.execution_status = (
+                ExecutionStatus.ACTION_EXECUTED if self.success else ExecutionStatus.ACTION_FAILED
+            )
+        if self.action_executed is None:
+            explicit = self.metadata.get("action_executed")
+            if isinstance(explicit, bool):
+                self.action_executed = explicit
+            else:
+                self.action_executed = self.execution_status in {
+                    ExecutionStatus.ACTION_EXECUTED,
+                    ExecutionStatus.STATE_VERIFIED,
+                    ExecutionStatus.TASK_COMPLETED,
+                    ExecutionStatus.VERIFICATION_FAILED,
+                }
+        if self.state_changed is None:
+            changed = self.verification.get("state_changed")
+            self.state_changed = changed if isinstance(changed, bool) else None
+        if self.verification.get("expected_state_verified") is True:
+            self.expected_state_verified = True
+        if self.verification.get("user_objective_completed") is True:
+            self.user_objective_completed = True
+        if self.execution_status == ExecutionStatus.TASK_COMPLETED and self.verification.get("passed") is True:
+            self.user_objective_completed = True
+        if self.execution_status in {ExecutionStatus.STATE_VERIFIED, ExecutionStatus.TASK_COMPLETED}:
+            evidence_present = (
+                self.verification.get("verified") is True
+                or self.verification.get("passed") is True
+            )
+            if not self.success or not evidence_present:
+                self.success = False
+                self.execution_status = ExecutionStatus.VERIFICATION_FAILED
+                self.error = self.error or "Verification evidence is missing or unsuccessful."
 
     @classmethod
     def error_result(
@@ -95,6 +177,9 @@ class ToolResult:
         if self.success:
             return self.output
 
+        if self.execution_status == ExecutionStatus.VERIFICATION_FAILED:
+            return f"Verification failed after the action executed: {self.error}\n\n{self.output}"
+
         return f"Error: {self.error}\n\nOutput:\n{self.output}"
 
 
@@ -114,6 +199,7 @@ class ToolConfirmation:
 class ToolInvocation:
     params: dict[str, Any]
     cwd: Path
+    call_id: str | None = None
     # Parent session's confirmation callback, so tools that spawn nested
     # agents (subagents) keep routing approvals through the user.
     confirmation_callback: Callable[['ToolConfirmation'], Awaitable[bool]] | None = None

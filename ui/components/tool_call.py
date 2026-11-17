@@ -23,7 +23,7 @@ from ui.format import (
 from ui.theme import KRYTH_SYNTAX
 from utils.text import truncate_text
 
-TOOL_ICON = "●"
+TOOL_ICON = "Completed"
 
 MAX_BLOCK_TOKENS = 2400
 MAX_DIFF_TOKENS = 4000
@@ -73,7 +73,7 @@ class ToolOutcome:
 
 def _joined(parts: list[Any]) -> Text | None:
     parts = [str(part) for part in parts if part is not None]
-    return Text(" ┈ ".join(parts), style="muted") if parts else None
+    return Text(" | ".join(parts), style="muted") if parts else None
 
 
 def _read(outcome: ToolOutcome) -> Blocks:
@@ -116,14 +116,10 @@ def _written(outcome: ToolOutcome) -> Blocks:
 
     if is_new:
         line_count = line_count if line_count is not None else added
-        label = f"Wrote {line_count} lines to {path}"
-    elif added:
-        label = f"Added {added} lines"
-    elif removed:
-        label = f"Removed {removed} lines"
+        label = f"Created {path} | {line_count} lines"
     else:
-        label = outcome.output.strip() or f"Updated {path}"
-    summary.append(Text(f"└  {label}", style="muted"))
+        label = f"Updated {path} | +{added} -{removed} lines"
+    summary.append(Text(label, style="muted"))
 
     if diff:
         language = guess_language(path)
@@ -133,40 +129,10 @@ def _written(outcome: ToolOutcome) -> Blocks:
                 for line in diff.splitlines()
                 if line.startswith("+") and not line.startswith("+++")
             ]
-            visible = code_lines[:10]
-            if visible:
-                summary.append(
-                    Syntax(
-                        "\n".join(visible),
-                        language,
-                        theme=KRYTH_SYNTAX,
-                        line_numbers=True,
-                        start_line=1,
-                        word_wrap=False,
-                        background_color="default",
-                    )
-                )
-            hidden = len(code_lines) - len(visible)
-            if hidden:
-                summary.append(Text(f"   … +{hidden} lines", style="muted"))
-            remaining = code_lines[len(visible):]
-            if remaining:
-                details.append(
-                    Syntax(
-                        "\n".join(remaining),
-                        language,
-                        theme=KRYTH_SYNTAX,
-                        line_numbers=True,
-                        start_line=len(visible) + 1,
-                        word_wrap=False,
-                        background_color="default",
-                    )
-                )
+            details.append(diff_viewer(
+                truncate_text(diff, outcome.model_name, MAX_DIFF_TOKENS), path
+            ))
         else:
-            preview, hidden = edit_preview_rows(diff, language)
-            summary.extend(preview)
-            if hidden:
-                summary.append(Text(f"   … +{hidden} lines", style="muted"))
             details.append(
                 diff_viewer(
                     truncate_text(diff, outcome.model_name, MAX_DIFF_TOKENS), path
@@ -334,23 +300,23 @@ def _plan(outcome: ToolOutcome) -> Blocks:
     total = outcome.count("total")
     if completed is not None and total:
         summary.append(Text(f"{completed}/{total} completed", style="muted"))
-    summary.append(render_plan(outcome.metadata))
-    return summary, []
+    if not summary:
+        summary.append(Text("Plan updated", style="muted"))
+    return summary, [render_plan(outcome.metadata)]
 
 
 def _memory(outcome: ToolOutcome) -> Blocks:
     action = outcome.metadata.get("action")
     count = outcome.count("count")
-    summary: list[Any] = [
+    summary = [
         _joined(
             [
-                action if isinstance(action, str) else None,
+                action if isinstance(action, str) else "Memory updated",
                 f"{count} stored" if count is not None else None,
             ]
-        ),
-        render_memory(outcome.metadata),
+        )
     ]
-    return summary, []
+    return summary, [render_memory(outcome.metadata)]
 
 
 def _failure(outcome: ToolOutcome) -> Blocks:
@@ -398,14 +364,33 @@ def _subagent(outcome: ToolOutcome) -> Blocks:
 
 
 def _fallback(outcome: ToolOutcome) -> Blocks:
-    if not outcome.output.strip():
-        return [], []
-
-    first_line = outcome.output.strip().splitlines()[0]
-    return (
-        [Text(first_line, style="muted")],
-        [Text(truncate_text(outcome.output, "", MAX_BLOCK_TOKENS), style="code")],
+    args = outcome.args
+    subject = next((str(args[key]) for key in ("query", "path", "url", "command", "name", "pattern") if args.get(key)), "")
+    lowered = outcome.name.lower()
+    categories = (
+        (("python", "execute_python", "python_exec"), "Python", {"python"}),
+        (("git",), "Git", {"git"}),
+        (("lsp", "language_server"), "LSP", {"lsp", "language", "server"}),
+        (("ast",), "AST", {"ast"}),
+        (("vector", "memory"), "Memory", {"vector", "memory"}),
+        (("mcp", "__"), "MCP", {"mcp", "server"}),
+        (("vision", "image"), "Vision", {"vision", "image"}),
+        (("desktop", "computer"), "Desktop", {"desktop", "computer"}),
     )
+    match = next((item for item in categories if any(marker in lowered for marker in item[0])), None)
+    if match:
+        _markers, category, ignored = match
+        action = [part for part in lowered.replace("__", "_").split("_") if part and part not in ignored]
+        label = " ".join([category, *action]).strip()
+    else:
+        label = outcome.name.replace("_", " ").capitalize()
+    preview = outcome.output.strip().splitlines()
+    count = len(preview)
+    summary = f"{label}{f' | {subject}' if subject else ''}"
+    if count:
+        summary += f" | {count} lines"
+    details = [Text(truncate_text(outcome.output, outcome.model_name, MAX_BLOCK_TOKENS), style="code")] if outcome.output.strip() else []
+    return [Text(summary, style="muted")], details
 
 
 RENDERERS: dict[str, Callable[[ToolOutcome], Blocks]] = {
@@ -431,6 +416,11 @@ RENDERERS: dict[str, Callable[[ToolOutcome], Blocks]] = {
     "terminal_list": _terminal,
 }
 
+
+def register_renderer(name: str, renderer: Callable[[ToolOutcome], Blocks]) -> None:
+    """Register a concise renderer for a built-in, MCP, or custom tool."""
+    RENDERERS[name] = renderer
+
 # These two render their arguments themselves, in prettier form.
 ARGS_TABLE_EXEMPT = {"plan", "memory"}
 
@@ -449,6 +439,9 @@ def tool_blocks(outcome: ToolOutcome) -> Blocks:
 
     if not summary and not details:
         summary.append(Text("(no output)", style="muted"))
+    elif not summary:
+        fallback_summary, _ = _fallback(outcome)
+        summary.extend(fallback_summary)
     if outcome.truncated:
         summary.append(Text("Tool output was truncated", style="warning"))
 
@@ -486,7 +479,12 @@ def tool_header(
     label, variant = split_tool_name(name)
     if name == "edit":
         label = "Update"
-    left = Text.assemble((f"{icon} ", icon_style), (label.replace("_", " ").capitalize(), "tool"))
+    spacing = "  " if icon in {"Completed", "Failed", "Cancelled", "Running", "Queued"} else " "
+    left = Text()
+    if icon:
+        left.append(icon, style=icon_style)
+        left.append(spacing, style="tool")
+    left.append(label.replace("_", " ").capitalize(), style="tool")
     if variant:
         left.append(": ", style="muted")
         left.append(variant, style="muted")

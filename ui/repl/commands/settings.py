@@ -19,7 +19,7 @@ class SettingsCommands(CommandGroup):
         rows = [
             ("Model", self.config.model_name),
             ("Temperature", str(self.config.temperature)),
-            ("Context window", f"{self.config.model.context_window:,}"),
+            ("Context window", f"{self.config.effective_context_window:,}"),
             ("Directory", str(self.config.cwd)),
             ("Approval", f"{policy.label} - {policy.summary}"),
             ("Thinking", self._thinking_summary()),

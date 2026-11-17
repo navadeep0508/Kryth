@@ -13,7 +13,9 @@ HELP_TEXT = """\
 - `/clear` - Clear conversation history for a fresh start (old session is still saved)
 - `/config` - Show current configuration options and their values
 - `/model <name>` - Change the model mid-session (e.g. `/model gpt-4o` or `/model anthropic/claude-sonnet-4.5`)
-- `Shift+Tab` - Cycle approval mode (ask → on fail → auto → auto-edit → read-only → yolo)
+- `Shift+Tab` - Cycle execution mode (auto → manual → plan → accept edits)
+- `/mode` - Show or set the execution mode (/auto, /manual, /plan, /accept-edits)
+- `/approval` - Show or set the approval policy (on_request, on_fail, auto, auto_edit, never, yolo)
 - `/thinking [on|off|low|medium|high]` - Show or configure model reasoning (e.g. `/thinking high`)
 - `/stats` - Show session statistics (token counts, time elapsed, tool calls)
 - `/tools` - List available tools the agent can use
@@ -30,6 +32,7 @@ HELP_TEXT = """\
 - `/checkpoints` - List checkpoints in this session
 - `/rewind` - Roll back to a checkpoint interactively (scroll ↑↓, Enter to pick)
 - `/rewind <n|id>` - Roll back to a checkpoint by number or id prefix
+- `/compact [instructions]` - Compact conversation context into a structured continuation summary, preserving task state. Optional instructions specify what to preserve.
 
 ## Tips
 

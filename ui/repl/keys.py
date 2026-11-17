@@ -12,6 +12,7 @@ from prompt_toolkit.input import create_input
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
+from ui.components.terminal_approval import ApprovalAction
 from ui.tui import TUI
 
 EXPAND_KEY = "c-o"
@@ -125,7 +126,7 @@ def build_key_bindings(tui: TUI, repl: Any = None) -> KeyBindings:
 
     @bindings.add("s-tab")
     def _(event) -> None:
-        tui.cycle_approval_policy()
+        tui.cycle_execution_mode()
         app = event.app
         app.renderer.erase()
         app.renderer.reset()
@@ -159,6 +160,10 @@ def turn_keys(tui: TUI, task: asyncio.Task):
     def on_keys() -> None:
         for key_press in device.read_keys():
             if tui.feed_confirmation_key(key_press):
+                # A confirmation is pending: Ctrl+C must cancel both the
+                # approval and the whole turn so the user is never stuck.
+                if key_press.key == Keys.ControlC:
+                    task.cancel()
                 continue
             if key_press.key == Keys.ControlO:
                 tui.toggle_expansion()
@@ -167,11 +172,16 @@ def turn_keys(tui: TUI, task: asyncio.Task):
             elif key_press.key == Keys.Escape:
                 task.cancel()
             elif key_press.key == Keys.BackTab:
-                tui.cycle_approval_policy()
+                tui.cycle_execution_mode()
 
     tui.external_keys = True
     try:
         with device.raw_mode(), device.attach(on_keys):
             yield
     finally:
+        # If a confirmation was awaiting a decision when the turn ends,
+        # fail it closed so the approval future is never left dangling.
+        pending = tui._pending_confirmation
+        if pending is not None and not pending.done():
+            pending.set_result(ApprovalAction.CANCELLED)
         tui.external_keys = False

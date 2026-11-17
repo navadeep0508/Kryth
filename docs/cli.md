@@ -87,4 +87,12 @@ The slash suggestions list only commands with registered handlers. Run `/help` f
 
 Single-shot mode runs the same agent loop as the TUI, including tools and approvals — so pair it with an approval policy that will not block on a prompt nobody is there to answer. See [Approvals](approvals.md).
 
+### Activity stream and approvals
+
+Tool calls appear as compact, borderless activity rows. A running row updates in place with its latest progress, then settles into one concise result. Press `Ctrl+O` to expand the most recent activity and inspect bounded output, source previews, diffs, terminal logs, or diagnostics. The TUI retains a bounded set of recent activities. Noninteractive runs print only the final activity, without a live animation.
+
+Approval-required actions use one keyboard-first selector. Use `Up` and `Down` to select a decision, `Enter` to confirm, `Ctrl+O` to inspect command details, and `Y`, `A`, or `N` as shortcuts for allow once, allow for this session, or reject. `Esc` and `Ctrl+C` cancel without executing the action.
+
+At the end of a turn, KRYTH shows a completion summary with only counters it could derive from tool results. Missing counts are omitted.
+
 Sessions started from either mode land in the same place. See [Sessions](sessions.md).

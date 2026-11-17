@@ -95,6 +95,8 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     model: str = ""
     organization: str | None = None
+    context_window: int | None = Field(default=None, gt=0)
+    tokenizer_encoding: str | None = None
     extra_headers: dict[str, str] = Field(default_factory=dict)
     is_default: bool = False
 

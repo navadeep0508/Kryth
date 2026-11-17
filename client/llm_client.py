@@ -1,10 +1,15 @@
 import math
 import asyncio
 import random
+import logging
+from collections import deque
 from openai import AsyncOpenAI, RateLimitError, APIConnectionError, APIError, APIStatusError
 from typing import Any, AsyncGenerator
 from client.response import TextDelta, TokenUsage, StreamEvent, StreamEventType, ToolCallDelta, ToolCall, parse_tool_call_arguments
 from config.config import Config
+from utils.text import estimate_serialized_request
+
+logger = logging.getLogger(__name__)
 
 
 def _token_usage(usage: Any) -> TokenUsage:
@@ -123,6 +128,7 @@ class LLMClient:
         self._client: AsyncOpenAI | None = None
         self._max_retries: int = 5
         self.config = config
+        self.context_budget_history: deque[dict[str, Any]] = deque(maxlen=32)
 
     def get_client(self) -> AsyncOpenAI:
         if self._client is None:
@@ -172,8 +178,6 @@ class LLMClient:
             stream: bool = True
     ) -> AsyncGenerator[StreamEvent, None]:
 
-        client = self.get_client()
-
         kwargs = {
             "model": self.config.model_name,
             "messages": messages,
@@ -189,11 +193,45 @@ class LLMClient:
             kwargs['tools'] = self._build_tools(tools)
             kwargs['tool_choice'] = 'auto'
 
-        # OpenRouter's own extension, so it rides along in extra_body. Models
-        # that cannot reason ignore it.
+        context_limit = self.config.effective_context_window
+        output_reserve = min(self.config.model.max_output_tokens, max(1, context_limit // 4))
+        kwargs["max_tokens"] = output_reserve
         reasoning = self.config.reasoning.to_request_payload()
         if reasoning:
             kwargs['extra_body'] = {'reasoning': reasoning}
+
+        request_size = estimate_serialized_request(
+            kwargs,
+            model=self.config.model_name,
+            tokenizer_encoding=self.config.effective_tokenizer_encoding,
+        )
+        estimated_input = request_size.estimated_tokens
+        input_budget = context_limit - output_reserve
+        telemetry = {
+            "estimated_input_tokens": estimated_input,
+            "serialized_bytes": request_size.serialized_bytes,
+            "estimator": request_size.estimator,
+            "context_window": context_limit,
+            "input_budget": input_budget,
+            "reserved_output_tokens": output_reserve,
+            "status": "rejected" if estimated_input > input_budget else "admitted",
+        }
+        self.context_budget_history.append(telemetry)
+        logger.debug("LLM request context budget: %s", telemetry)
+        if estimated_input > input_budget:
+            unit = "tokens" if request_size.estimator.startswith("tiktoken:") else "bytes"
+            yield StreamEvent(
+                type=StreamEventType.ERROR,
+                error=(f"Request blocked before sending: conservative prompt estimate is "
+                       f"{estimated_input:,} {unit}, above the {input_budget:,}-token "
+                       f"input budget after reserving {output_reserve:,} output tokens. Reduce or "
+                       "summarize conversation history and retry."),
+                context_budget=telemetry,
+            )
+            return
+
+        yield StreamEvent(type=StreamEventType.CONTEXT_BUDGET, context_budget=telemetry)
+        client = self.get_client()
 
         for attempt in range(self._max_retries + 1):
             emitted = False

@@ -15,6 +15,7 @@ from config.config import Config
 from config.setup_wizard import SetupWizard
 from ui.components import echo_user_message
 from ui.components.notification import notification
+from ui.components.tips import StartupTips
 from ui.console import get_console
 from ui.repl.banner import render_banner
 from ui.repl.commands import SlashCommands
@@ -24,7 +25,6 @@ from ui.repl.prompt import (
     bottom_fragments,
     continuation_fragments,
     prompt_fragments,
-    status_readout,
 )
 from ui.setup_tui import SetupTUI
 from ui.stream import stream_turn
@@ -52,7 +52,7 @@ class Repl:
         self.upgrade_notice = upgrade_notice
         self.console = get_console()
         self.tui = TUI(config, self.console)
-        self.commands = SlashCommands(config, self.console)
+        self.commands = SlashCommands(config, self.console, self.tui)
         self._completion_index = 0
         self._completion_scroll = 0
         self.session: PromptSession[str] = PromptSession(
@@ -107,6 +107,7 @@ class Repl:
             self.tui.print_block(Text("Keep this id to resume the session.", style="border"))
 
     def _reset_plan(self, agent: Agent) -> None:
+        self.tui.reset_plan_view()
         tool = agent.session.tool_registry.get("plan")
         if tool is not None and hasattr(tool, "reset"):
             tool.reset()
@@ -119,8 +120,21 @@ class Repl:
                 await task
         except asyncio.CancelledError:
             self.tui.stop_thinking()
+            self.tui.cancel_active_panel()
             self.tui.gap()
-            self.tui.print_block(Text("Interrupted, what should kryth do instead?", style="warning"))
+            interruption_type = getattr(agent, 'interruption_type', None)
+            interruption_reason = getattr(agent, 'interruption_reason', None)
+            interruption_exc = getattr(agent, 'interruption_exception', None)
+            if interruption_type:
+                label = str(interruption_type).replace("_", " ").title()
+                detail = interruption_reason or "Inspect current state before resuming."
+                if interruption_exc is not None:
+                    detail += f" ({type(interruption_exc).__name__}: {interruption_exc})"
+                self.tui.print_block(
+                    Text(f"Interrupted ({label}). {detail}", style="muted")
+                )
+            else:
+                self.tui.print_block(Text("Cancelled | Interrupted. What should KRYTH do instead?", style="muted"))
         except Exception as exc:
             self.tui.stop_thinking()
             self.tui.gap()
@@ -192,22 +206,31 @@ class Repl:
         return continuation_fragments(width)
 
     def _bottom_fragments(self) -> StyleAndTextTuples:
-        return bottom_fragments(
-            self.console.width,
-            self.tui.approval_badge(),
-            self.config.approval.risk,
-            status_readout(
-                self.config.model_name,
-                self.tui.context_ratio,
-                self.console.width,
-                self.config.approval.label,
-                str(self.config.cwd),
-                provider=self.config.providers.active_name,
-                agent_state=self.tui.agent_state,
-                turn_tokens=self.tui.turn_tokens,
-                git_branch=self.git_branch,
-            ),
-        )
+        if self.tui.awaiting_confirmation:
+            return bottom_fragments(
+                self.console.width, self.tui.approval_badge(), self.config.approval.risk
+            )
+        parts = []
+        mode = self.tui.execution_mode_badge()
+        parts.append(mode)
+        context_tokens = self.tui.context_tokens
+        context_window = self.config.effective_context_window
+        context_state = self.tui.context_state
+        if context_state == "overflow":
+            parts.append(
+                f"Context {context_tokens:,}/{context_window:,} overflow"
+            )
+        elif context_tokens is not None and context_window:
+            percent = context_tokens / context_window * 100
+            parts.append(
+                f"Context {context_tokens:,}/{context_window:,} ({percent:.1f}%)"
+            )
+        if self.tui.turn_tokens is not None:
+            turn_label = "Turn" if self.tui.agent_state != "idle" else "Last turn"
+            parts.append(f"{turn_label} {self.tui.turn_tokens:,} tokens")
+        parts.extend(("/help shortcuts", "Ctrl+C interrupt"))
+        text = " | ".join(parts)
+        return [("class:bottom-toolbar.text", " " + text[: max(0, self.console.width - 1)])]
 
     async def _read_input(self) -> str:
         self.tui.gap()
@@ -237,56 +260,63 @@ class Repl:
         )
 
     async def run(self) -> None:
-        async with Agent(
-            self.config,
-            confirmation_callback=self.tui.confirm_tool,
-            progress_callback=self.tui.tool_progress,
-            resume=self.resume,
-        ) as agent:
-            context = agent.session.project_context
-            self.git_branch = context.git_branch if context else None
-            # First-launch detection: run setup wizard when no provider is configured.
-            if SetupWizard(self.config).is_first_launch():
-                self.console.print(
-                    Text("No provider configured — let's set one up.", style="bold")
-                )
-                setup = SetupTUI(self.config, self.console)
-                result = await setup.run()
-                if not result.success:
+        tips = StartupTips(self.console, self.config)
+        if self.config.ui.show_startup_tips:
+            await tips.start()
+        try:
+            async with Agent(
+                self.config,
+                confirmation_callback=self.tui.confirm_tool,
+                progress_callback=self.tui.tool_progress,
+                resume=self.resume,
+            ) as agent:
+                tips.stop()
+                context = agent.session.project_context
+                self.git_branch = context.git_branch if context else None
+                # First-launch detection: run setup wizard when no provider is configured.
+                if SetupWizard(self.config).is_first_launch():
                     self.console.print(
-                        Text(
-                            "Setup cancelled. Some features will be unavailable until you run /setup.",
-                            style="warning",
-                        )
+                        Text("No provider configured — let's set one up.", style="bold")
                     )
+                    setup = SetupTUI(self.config, self.console)
+                    result = await setup.run()
+                    if not result.success:
+                        self.console.print(
+                            Text(
+                                "Setup cancelled. Some features will be unavailable until you run /setup.",
+                                style="warning",
+                            )
+                        )
 
-            self._banner(agent)
-            if self.resume:
-                self._resume_notice(agent)
-            try:
-                while True:
-                    try:
-                        message = await self._read_input()
-                    except KeyboardInterrupt:
-                        continue
-                    except EOFError:
-                        break
-
-                    message = message.strip()
-                    if not message:
-                        continue
-
-                    self._echo(message)
-
-                    if self.commands.is_command(message):
-                        self.tui.gap()
-                        keep_going = await self.commands.execute(agent, message)
-                        self.tui.mark_dirty()
-                        if not keep_going:
+                self._banner(agent)
+                if self.resume:
+                    self._resume_notice(agent)
+                try:
+                    while True:
+                        try:
+                            message = await self._read_input()
+                        except KeyboardInterrupt:
+                            continue
+                        except EOFError:
                             break
-                        continue
 
-                    self._reset_plan(agent)
-                    await self._run_turn(agent, message)
-            finally:
-                self._farewell(agent)
+                        message = message.strip()
+                        if not message:
+                            continue
+
+                        self._echo(message)
+
+                        if self.commands.is_command(message):
+                            self.tui.gap()
+                            keep_going = await self.commands.execute(agent, message)
+                            self.tui.mark_dirty()
+                            if not keep_going:
+                                break
+                            continue
+
+                        self._reset_plan(agent)
+                        await self._run_turn(agent, message)
+                finally:
+                    self._farewell(agent)
+        finally:
+            tips.stop()

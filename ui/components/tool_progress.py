@@ -17,7 +17,7 @@ def tool_progress_panel(
 ) -> Text:
     """Render a quiet single-line status while a tool is running."""
 
-    line = Text.assemble((f"{spinner} ", "tool"))
+    line = Text.assemble(("Running  ", "tool"), (f"{spinner} " if spinner else "", "muted"))
     if shimmers(tool_kind):
         line.append_text(shimmer_tool_label(name, frame))
     else:

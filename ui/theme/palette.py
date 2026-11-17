@@ -1,30 +1,35 @@
 """KRYTH's restrained terminal palette. Backgrounds stay terminal-owned."""
 
 NEUTRALS = {
-    "obsidian": "rgb(16,17,20)",
-    "graphite": "rgb(29,32,37)",
-    "surface": "rgb(37,41,48)",
-    "muted": "rgb(133,139,145)",
-    "primary": "rgb(236,237,239)",
-    "secondary": "rgb(161,165,173)",
-    "accent": "rgb(223,255,0)",
+    "obsidian": "#090909",
+    "surface_primary": "#111111",
+    "graphite": "#171717",
+    "surface": "#171717",
+    "border": "#292929",
+    "muted": "#737373",
+    "subtle": "#525252",
+    "primary": "#F5F5F5",
+    "secondary": "#A3A3A3",
+    "accent": "#E8FF3A",
+    "brand": "#E8FF3A",
+    "white": "#FFFFFF",
     # Compatibility aliases used by existing Rich components.
-    "bright": "rgb(236,237,239)",
-    "silver": "rgb(161,165,173)",
-    "black": "rgb(16,17,20)",
-    "slate": "rgb(37,41,48)",
+    "bright": "#F5F5F5",
+    "silver": "#A3A3A3",
+    "black": "#090909",
+    "slate": "#171717",
 }
 
 HUES = {
-    "blue": "rgb(133,139,145)",
-    "green": "rgb(139,175,136)",
-    "amber": "rgb(214,170,101)",
-    "teal": "rgb(133,139,145)",
-    "violet": "rgb(133,139,145)",
-    "lilac": "rgb(133,139,145)",
-    "orange": "rgb(133,139,145)",
-    "magenta": "rgb(133,139,145)",
-    "red": "rgb(215,122,122)",
+    "blue": "#7890A4",
+    "green": "#8BAF88",
+    "amber": "#D6AA65",
+    "teal": "#A3A3A3",
+    "violet": "#A3A3A3",
+    "lilac": "#A3A3A3",
+    "orange": "#A3A3A3",
+    "magenta": "#A3A3A3",
+    "red": "#D77A7A",
 }
 
 PALETTE = {**NEUTRALS, **HUES}
@@ -37,8 +42,10 @@ TOOL_COLOURS = {
 
 
 def rgb_parts(name: str) -> tuple[int, int, int]:
-    r, g, b = (int(part) for part in PALETTE[name][4:-1].split(","))
-    return r, g, b
+    value = PALETTE[name]
+    if value.startswith("#"):
+        return tuple(int(value[index:index + 2], 16) for index in (1, 3, 5))  # type: ignore[return-value]
+    return tuple(int(part) for part in value[4:-1].split(","))  # type: ignore[return-value]
 
 
 def hex_colour(name: str) -> str:

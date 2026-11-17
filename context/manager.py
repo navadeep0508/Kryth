@@ -4,8 +4,11 @@ from prompts import get_system_prompt
 from dataclasses import dataclass, field
 from tools.base import Tool
 from utils.text import count_tokens
+from utils.text import estimate_request_tokens, truncate_text
 from typing import Any
 from datetime import datetime
+from uuid import uuid4
+from config.loader import get_data_dir
 
 EMPTY_TOOL_OUTPUT = "(no output)"
 
@@ -81,6 +84,7 @@ class ContextManager:
             tools: list[Tool] | None = None,
             ) -> None:
         self._system_prompt = get_system_prompt(config, user_memory, tools)
+        self._task_context: str | None = None
         self.config = config
         self._model_name = self.config.model_name
         self._messages: list[MessageItem] = []
@@ -211,11 +215,14 @@ class ContextManager:
     def get_messages(self) -> list[dict[str, Any]]:
         messages = []
 
-        if self._system_prompt:
+        system_prompt = self._system_prompt
+        if self._task_context:
+            system_prompt = f"{system_prompt}\n\n{self._task_context}"
+        if system_prompt:
             messages.append(
                 {
                 'role': 'system',
-                'content': self._system_prompt
+                'content': system_prompt
                 }
             )
         
@@ -223,17 +230,34 @@ class ContextManager:
             messages.append(item.to_dict())
         
         return messages
+
+    def set_task_context(self, context: str | None) -> None:
+        self._task_context = context
     
     def add_tool_result(
             self, 
             tool_call_id: str, 
             content: str
             ) -> None:
+        max_output_tokens = min(
+            self.config.max_tool_output_tokens,
+            max(256, self.config.effective_context_window // 16),
+        )
+        token_count = count_tokens(content, self._model_name)
+        if token_count > max_output_tokens:
+            output_ref = self._save_tool_output(tool_call_id, content)
+            suffix = f"\nTool output truncated for context. Full output saved at: {output_ref}"
+            content = truncate_text(
+                content, self._model_name, max_output_tokens,
+                suffix=suffix, preserve_lines=True,
+            )
+            token_count = count_tokens(content, self._model_name)
+
         item = MessageItem(
             role='tool',
             content=content,
             tool_call_id=tool_call_id,
-            token_count=count_tokens(content, self._model_name)
+            token_count=token_count
         )
 
         self._messages.append(item)
@@ -248,12 +272,22 @@ class ContextManager:
     def total_usage(self) -> TokenUsage:
         return self._total_usage
 
-    def needs_compression(self) -> bool:
+    def needs_compression(self, tools: list[dict[str, Any]] | None = None) -> bool:
+        estimate = estimate_request_tokens(
+            self.get_messages(),
+            tools,
+            model=self._model_name,
+            tokenizer_encoding=self.config.effective_tokenizer_encoding,
+        )
+        return estimate > (self.config.effective_context_window * 0.70)
 
-        context_lim = self.config.model.context_window
-        current_tokens = self._latest_usage.total_tokens
-
-        return current_tokens > (context_lim * 0.8)
+    @staticmethod
+    def _save_tool_output(tool_call_id: str, content: str) -> str:
+        output_dir = get_data_dir() / "tool-outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / f"{uuid4().hex}.txt"
+        path.write_text(content, encoding="utf-8")
+        return str(path)
 
     def replace_with_summary(self, summary: str) -> None:
 
@@ -338,7 +372,15 @@ I'll continue with the REMAINING tasks only, starting from where we left off."""
 
         for message in to_prune:
             before = message.token_count or 0
-            message.content = '[Old tool result content cleared]'
+            reference_marker = "Full output saved at: "
+            reference = (
+                message.content.split(reference_marker, 1)[1].strip()
+                if reference_marker in message.content
+                else None
+            )
+            message.content = "[Old tool result content cleared]"
+            if reference:
+                message.content += f" Full output remains at: {reference}"
             message.token_count = count_tokens(message.content, self._model_name)
             message.pruned_at = datetime.now()
             reclaimed_tokens += before - message.token_count

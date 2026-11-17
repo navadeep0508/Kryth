@@ -1,6 +1,6 @@
 """Polished setup TUI for KRYTH first-launch onboarding.
 
-Rich panels with Acid Gold (#E8FF3A) branding, prompt_toolkit inputs with
+Rich panels with neutral branding, prompt_toolkit inputs with
 tab completion and masked API key entry, model discovery via the provider's
 /models endpoint, and a spinner animation during model loading and
 connection testing. Designed to be launched both from the CLI (`kryth setup`)
@@ -29,7 +29,7 @@ from config.setup_wizard import SetupWizard, WizardResult
 from ui.components.spinner import Spinner
 from ui.theme.palette import hex_colour
 
-KRYTH_GOLD = hex_colour("accent")
+KRYTH_GOLD = hex_colour("brand")
 
 # Local providers that do not require an API key.
 LOCAL_PROVIDERS = {"ollama", "lmstudio"}
@@ -134,7 +134,7 @@ class SetupTUI:
                 defaults = self.wizard.select_provider_defaults(p)
                 ptype = defaults.get("type", ProviderType.OPENAI)
                 if i == state["selected"]:
-                    result.append(("bold #E8FF3A reverse", f"  ▸ {p} ({ptype.value})\n"))
+                    result.append((f"bold {KRYTH_GOLD} reverse", f"  > {p} ({ptype.value})\n"))
                 else:
                     result.append(("", f"    {p} ({ptype.value})\n"))
             result.append(
@@ -304,7 +304,7 @@ class SetupTUI:
             for i in range(scroll, min(scroll + vcount, len(filtered))):
                 m = filtered[i]
                 if i == selected:
-                    result.append(("bold #E8FF3A reverse", f"  ▸ {i+1}. {m}\n"))
+                    result.append((f"bold {KRYTH_GOLD} reverse", f"  > {i+1}. {m}\n"))
                 else:
                     result.append(("", f"    {i+1}. {m}\n"))
 

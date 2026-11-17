@@ -7,7 +7,6 @@ from rich.text import Text
 
 from ui.components.gutter import Gutter
 from ui.components.markdown import render_inline
-from ui.components.tool_call import TOOL_ICON
 
 TRANSCRIPT_MESSAGES = 12
 TRANSCRIPT_LINES = 6
@@ -67,4 +66,4 @@ def render_transcript(
 
         for tool_call in message.tool_calls or []:
             name = tool_call.get("function", {}).get("name", "tool")
-            console.print(Text(f"  {TOOL_ICON} {name}", style="dim"))
+            console.print(Text(f"Completed  {name}", style="muted"))

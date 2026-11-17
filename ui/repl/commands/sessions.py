@@ -27,6 +27,13 @@ class SessionCommands(CommandGroup):
         session.context_manager.set_latest_usage(TokenUsage())
         self._listed_checkpoints = []
 
+        # Reset the TUI usage display so the bottom toolbar no longer shows
+        # stale token counts from the cleared conversation.
+        if self.tui is not None:
+            self.tui.reset_usage()
+            self.tui.reset_plan_view()
+            self.tui.panels.clear()
+
         self.console.clear()
         self.console.print(Text("Conversation history cleared.", style="muted"))
         if saved:

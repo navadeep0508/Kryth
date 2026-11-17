@@ -1,0 +1,1156 @@
+{
+  "created_at": "2026-11-16T20:16:53.085101+00:00",
+  "engine": "KUBABrowserEngine",
+  "browser_kind": "checked-in KUBA helper daemon/CDP adapter",
+  "safety": "Search and read only; no purchase, order, message, or financial action.",
+  "initial_tabs": [
+    {
+      "targetId": "499FBE711144A16ADE2A5BD29CEA453E",
+      "target_id": "499FBE711144A16ADE2A5BD29CEA453E",
+      "title": "🐴 Amazon.com : python programming books",
+      "url": "https://www.amazon.com/s?k=python+programming+books"
+    },
+    {
+      "targetId": "DA3CB08CEC300C582BDF645137E7AA13",
+      "target_id": "DA3CB08CEC300C582BDF645137E7AA13",
+      "title": "#0 Python for Beginners | Programming Tutorial - YouTube",
+      "url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8"
+    },
+    {
+      "targetId": "45DB8774EAE0E5CB4F22F3D4D9C672F5",
+      "target_id": "45DB8774EAE0E5CB4F22F3D4D9C672F5",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    },
+    {
+      "targetId": "5B2BBD59989240CF7CE9D213D566C067",
+      "target_id": "5B2BBD59989240CF7CE9D213D566C067",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    },
+    {
+      "targetId": "DB8E3CDBD7252E3FC094BC0298BCCD6A",
+      "target_id": "DB8E3CDBD7252E3FC094BC0298BCCD6A",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    },
+    {
+      "targetId": "D121AE0A1FAA9F3A35A80C5CB5BC235D",
+      "target_id": "D121AE0A1FAA9F3A35A80C5CB5BC235D",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    }
+  ],
+  "google": {
+    "search_page": {
+      "url": "https://www.google.com/search?q=Python+programming+tutorial",
+      "title": "🐴 Python programming tutorial - Google Search",
+      "ready_state": "complete",
+      "visible_text_preview": "Skip to main content\nAccessibility help\nAI Mode\nAll\nVideos\nImages\nShort videos\nShopping\nForums\nMore\nTools\nSearch Results\nWeb results\nPython Tutorial\n\nW3Schools\nhttps://www.w3schools.com › python\nPython is a popular programming language. Python can be used on a server to create web applications. Free on iOS and Android. Download on the App Store\nPython Tutorial\n\nGeeksforGeeks\nhttps://www.geeksforgeeks.org › python › python-prog...\n3 days ago — Python Tutorial ; Functions. Learn how to organize co",
+      "visible_text_chars": 8000,
+      "visible_text_sha256": "caae1c2da6d2820695095ec176d9d27354248de3feeb43124f23f98911081655",
+      "observed_links": [
+        {
+          "name": "Skip to main content",
+          "href": "https://www.google.com/search?q=Python+programming+tutorial"
+        },
+        {
+          "name": "Accessibility help",
+          "href": "https://support.google.com/websearch/answer/181196"
+        },
+        {
+          "name": "Go to Google Home",
+          "href": "https://www.google.com/webhp"
+        },
+        {
+          "name": "Google apps",
+          "href": "https://www.google.co.in/intl/en/about/products"
+        },
+        {
+          "name": "AI Mode",
+          "href": "https://www.google.com/search?q=Python+programming+tutorial"
+        },
+        {
+          "name": "All",
+          "href": "https://www.google.com/search?q=Python+programming+tutorial"
+        },
+        {
+          "name": "Videos",
+          "href": "https://www.google.com/search?q=Python+programming+tutorial"
+        },
+        {
+          "name": "Images",
+          "href": "https://www.google.com/search?q=Python+programming+tutorial"
+        },
+        {
+          "name": "Short videos",
+          "href": "https://www.google.com/search?q=Python+programming+tutorial"
+        },
+        {
+          "name": "Shopping",
+          "href": "https://www.google.com/search?q=Python+programming+tutorial"
+        }
+      ]
+    },
+    "destination": {
+      "url": "https://docs.python.org/3/tutorial/index.html",
+      "title": "🐴 The Python Tutorial — Python 3.15.2 documentation",
+      "ready_state": "complete",
+      "visible_text_preview": "index\nmodules |\nnext |\nprevious |\n Python » \nGerman | Deutsch\nGreek | Ελληνικά\nEnglish\nSpanish | español\nPersian | فارسی\nFrench | français\nItalian | italiano\nJapanese | 日本語\nKorean | 한국어\nPunjabi | ਪੰਜਾਬੀ\nPolish | polski\nBrazilian Portuguese | Português brasileiro\nRomanian | Românește\nRussian | Русский\nTurkish | Türkçe\nSimplified Chinese | 简体中文\nTraditional Chinese | 繁體中文\ndev (3.16)\n3.15.2\n3.14\n3.13\n3.12\n3.11\n3.10\n3.9\n3.8\n3.7\n3.6\n3.5\n3.4\n3.3\n3.2\n3.1\n3.0\n2.7\n2.6\n 3.15.2 documentation » The Python Tu",
+      "visible_text_chars": 2000,
+      "visible_text_sha256": "c49d4a4870ff44e61c020836058e6a9a4767f99ea7f7015af9eab62dd1d420a9",
+      "observed_links": [
+        {
+          "name": "index",
+          "href": "https://docs.python.org/3/genindex.html"
+        },
+        {
+          "name": "modules",
+          "href": "https://docs.python.org/3/py-modindex.html"
+        },
+        {
+          "name": "next",
+          "href": "https://docs.python.org/3/tutorial/appetite.html"
+        },
+        {
+          "name": "previous",
+          "href": "https://docs.python.org/3/whatsnew/changelog.html"
+        },
+        {
+          "name": "Python",
+          "href": "https://www.python.org/"
+        },
+        {
+          "name": "3.15.2 documentation",
+          "href": "https://docs.python.org/3/index.html"
+        },
+        {
+          "name": "The Python Tutorial",
+          "href": "https://docs.python.org/3/tutorial/index.html"
+        },
+        {
+          "name": "https://www.python.org/",
+          "href": "https://www.python.org/"
+        },
+        {
+          "name": "Python built-ins reference",
+          "href": "https://docs.python.org/3/builtins/index.html#builtins-index"
+        },
+        {
+          "name": "The Python standard library",
+          "href": "https://docs.python.org/3/library/index.html#library-index"
+        }
+      ]
+    },
+    "passed": true
+  },
+  "youtube": {
+    "passed": true,
+    "search_page": {
+      "url": "https://www.youtube.com/results?search_query=Python+tutorial+for+beginners",
+      "title": "Python tutorial for beginners - YouTube",
+      "ready_state": "complete",
+      "visible_text_preview": "All\nUnwatched\nVideos\nRecently uploaded\nLive\nFilters\nPyCharm. Feel the difference in data science and AI/ML workflows. Get it for free!\nThe only Python IDE you need to build data models and AI agents. Get it free now.\nSponsored\nJetBrains\nWatch\nDownload\n54 videos\nPython Tutorial 2026 | Complete Python Course (Beginner to Advanced) | Telusko\nTelusko\nPlaylist\nPython Tutorial 2026 · 5:21\nFirst Code in Python | 2 · 4:00\nView full playlist\nWelcome to the Python Tutorial 2026 playlist — a complete step-",
+      "visible_text_chars": 5075,
+      "visible_text_sha256": "05b744be7a7a95d942a4663962c85454cb7a96546d02348e8783692f38f018b2",
+      "observed_links": [
+        {
+          "name": "PyCharm. Feel the difference in data science and AI/ML workflows. Get it for free!",
+          "href": "https://www.googleadservices.com/pagead/aclk"
+        },
+        {
+          "name": "The only Python IDE you need to build data models and AI agents. Get it free now.",
+          "href": "https://www.googleadservices.com/pagead/aclk"
+        },
+        {
+          "name": "Watch",
+          "href": "https://www.youtube.com/watch?v=DM8r7XL3fjw"
+        },
+        {
+          "name": "Download",
+          "href": "https://www.googleadservices.com/pagead/aclk"
+        },
+        {
+          "name": "54 videos",
+          "href": "https://www.youtube.com/watch?v=YZkyL-f-YXY&list=PLsyeobzWxl7omDoEYrrf3oXvXxa6MPgek"
+        },
+        {
+          "name": "Python Tutorial 2026 | Complete Python Course (Beginner to Advanced) | Telusko",
+          "href": "https://www.youtube.com/watch?v=YZkyL-f-YXY&list=PLsyeobzWxl7omDoEYrrf3oXvXxa6MPgek"
+        },
+        {
+          "name": "Telusko",
+          "href": "https://www.youtube.com/@Telusko"
+        },
+        {
+          "name": "Playlist",
+          "href": "https://www.youtube.com/@Telusko"
+        },
+        {
+          "name": "Python Tutorial 2026 · 5:21",
+          "href": "https://www.youtube.com/watch?v=YZkyL-f-YXY&list=PLsyeobzWxl7omDoEYrrf3oXvXxa6MPgek"
+        },
+        {
+          "name": "First Code in Python | 2 · 4:00",
+          "href": "https://www.youtube.com/watch?v=koL06y7HpKo&list=PLsyeobzWxl7omDoEYrrf3oXvXxa6MPgek"
+        }
+      ]
+    },
+    "video": {
+      "url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8",
+      "title": "🐴 #0 Python for Beginners | Programming Tutorial - YouTube",
+      "ready_state": "complete",
+      "visible_text_preview": "0:00 / 1:05",
+      "visible_text_chars": 11,
+      "visible_text_sha256": "007fb6313c0bc88abc64daa1ba23da80356504bc797427c936b128487835ae0d",
+      "observed_links": []
+    }
+  },
+  "amazon": {
+    "passed": true,
+    "search_page": {
+      "url": "https://www.amazon.com/s?k=python+programming+books",
+      "title": "🐴 Amazon.com : python programming books",
+      "ready_state": "complete",
+      "visible_text_preview": "Skip to\nMain content\nResults\nFilters\nKeyboard shortcuts\nSearch\nalt\n+\n/\nCart\nshift\n+\nalt\n+\nC\nHome\nshift\n+\nalt\n+\nH\nOrders\nshift\n+\nalt\n+\nO\nShow/Hide shortcuts\nshift\n+\nalt\n+\nZ\nTo move between items, use your keyboard's up or down arrows.\nDeliver to\nIndia\nAll\nAll Departments\nArts & Crafts\nAutomotive\nBaby\nBeauty & Personal Care\nBooks\nBoys' Fashion\nComputers\nDeals\nDigital Music\nElectronics\nGirls' Fashion\nHealth & Household\nHome & Kitchen\nIndustrial & Scientific\nKindle Store\nLuggage\nMen's Fashion\nMovies",
+      "visible_text_chars": 8000,
+      "visible_text_sha256": "f737a5768189ff3f291074decdb4df44d87b55ebb026506513087801762564c0",
+      "observed_links": [
+        {
+          "name": "main content",
+          "href": "https://www.amazon.com/s?k=python+programming+books#skippedLink"
+        },
+        {
+          "name": "Results",
+          "href": "https://www.amazon.com/.s-asin%20a:has(h2)"
+        },
+        {
+          "name": "Filters",
+          "href": "https://www.amazon.com/s?k=python+programming+books#s-refinements%20%3E%20div.a-section%20%3E%20div:first-child"
+        },
+        {
+          "name": "Search, alt, forward slash",
+          "href": "javascript:void(0)"
+        },
+        {
+          "name": "Cart, shift, alt, c",
+          "href": "javascript:void(0)"
+        },
+        {
+          "name": "Home, shift, alt, h",
+          "href": "javascript:void(0)"
+        },
+        {
+          "name": "Your orders, shift, alt, o",
+          "href": "javascript:void(0)"
+        },
+        {
+          "name": "Amazon",
+          "href": "https://www.amazon.com/ref=nav_logo"
+        },
+        {
+          "name": "Deliver to India",
+          "href": "https://www.amazon.com/s?k=python+programming+books"
+        },
+        {
+          "name": "Choose a language for shopping in Amazon United States. The current selection is English (EN).",
+          "href": "https://www.amazon.com/customer-preferences/edit"
+        }
+      ]
+    },
+    "listing_count": 8,
+    "listings": [
+      {
+        "title": "Python 3: The Comprehensive Guide to Hands-On Python Programming (Second Edition) (Rheinwerk Computing)",
+        "price": "INR 6,146.58",
+        "rating": "5.0 out of 5 stars, rating details",
+        "url": ""
+      },
+      {
+        "title": "Python Programming for Beginners: The Complete Guide to Mastering Python in 7 Days with Hands-On Exercises – Top Secret Coding Tips to Get an Unfair Advantage and Land Your Dream Job!",
+        "price": "INR 2,356.24",
+        "rating": "4.4 out of 5 stars, rating details",
+        "url": ""
+      },
+      {
+        "title": "Python Crash Course, 3rd Edition: A Hands-On, Project-Based Introduction to Programming",
+        "price": "INR 2,827.67",
+        "rating": "4.8 out of 5 stars, rating details",
+        "url": ""
+      },
+      {
+        "title": "Python 3: The Comprehensive Guide to Hands-On Python Programming (Second Edition) (Rheinwerk Computing)",
+        "price": "INR 6,146.58",
+        "rating": "5.0 out of 5 stars, rating details",
+        "url": ""
+      },
+      {
+        "title": "Python Programming Language: a QuickStudy Laminated Reference Guide",
+        "price": "INR 843.87",
+        "rating": "4.6 out of 5 stars, rating details",
+        "url": ""
+      },
+      {
+        "title": "Python Programming for Beginners: The Complete Python Coding Crash Course - Boost Your Growth with an Innovative Ultra-Fast Learning Framework and Exclusive Hands-On Interactive Exercises & Projects",
+        "price": "INR 2,347.75",
+        "rating": "4.5 out of 5 stars, rating details",
+        "url": ""
+      },
+      {
+        "title": "Python and SQL Bible: From Beginner to World Expert: Unleash the full potential of data analysis and manipulation by mastering Python and SQL",
+        "price": "INR 3,443.37",
+        "rating": "4.4 out of 5 stars, rating details",
+        "url": ""
+      },
+      {
+        "title": "Learning Python: Powerful Object-Oriented Programming",
+        "price": "INR 5,059.45",
+        "rating": "4.5 out of 5 stars, rating details",
+        "url": ""
+      }
+    ],
+    "comparison": {
+      "visible_listing_count": 8,
+      "lowest_visible_price": {
+        "title": "Python Programming Language: a QuickStudy Laminated Reference Guide",
+        "displayed_price": "INR 843.87",
+        "numeric_value": 843.87
+      },
+      "highest_visible_rating": {
+        "title": "Python 3: The Comprehensive Guide to Hands-On Python Programming (Second Edition) (Rheinwerk Computing)",
+        "displayed_rating": "5.0 out of 5 stars, rating details",
+        "numeric_value": 5.0
+      },
+      "limitations": "Only values visible in the current search results were compared; review counts and product-page details were not inferred."
+    }
+  },
+  "tab_recovery": {
+    "passed": true
+  },
+  "status": "passed",
+  "evaluation": {
+    "metrics": {
+      "executed_cases": 5,
+      "task_completion_rate": 1.0,
+      "verification_accuracy": 1.0,
+      "recovery_success_rate": 1.0,
+      "duplicate_action_rate": 0.0,
+      "false_completion_rate": 0.0,
+      "total_tokens": null,
+      "average_execution_seconds": 1.38
+    },
+    "samples": [
+      {
+        "case_id": "browser-navigation",
+        "executed": true,
+        "objective_met": true,
+        "verification_correct": true,
+        "recovery_attempted": false,
+        "recovery_succeeded": null,
+        "duplicate_actions": 0,
+        "false_completion": false,
+        "tokens": null,
+        "duration_seconds": 2.776
+      },
+      {
+        "case_id": "browser-search",
+        "executed": true,
+        "objective_met": true,
+        "verification_correct": true,
+        "recovery_attempted": false,
+        "recovery_succeeded": null,
+        "duplicate_actions": 0,
+        "false_completion": false,
+        "tokens": null,
+        "duration_seconds": 1.853
+      },
+      {
+        "case_id": "browser-multi-tab",
+        "executed": true,
+        "objective_met": true,
+        "verification_correct": true,
+        "recovery_attempted": false,
+        "recovery_succeeded": null,
+        "duplicate_actions": 0,
+        "false_completion": false,
+        "tokens": null,
+        "duration_seconds": 0.109
+      },
+      {
+        "case_id": "browser-recovery",
+        "executed": true,
+        "objective_met": true,
+        "verification_correct": true,
+        "recovery_attempted": true,
+        "recovery_succeeded": true,
+        "duplicate_actions": 0,
+        "false_completion": false,
+        "tokens": null,
+        "duration_seconds": 0.02
+      },
+      {
+        "case_id": "browser-video",
+        "executed": true,
+        "objective_met": true,
+        "verification_correct": true,
+        "recovery_attempted": false,
+        "recovery_succeeded": null,
+        "duplicate_actions": 0,
+        "false_completion": false,
+        "tokens": null,
+        "duration_seconds": 2.142
+      }
+    ],
+    "unexecuted_catalog_cases": [
+      "file-operations",
+      "code-editing",
+      "terminal-execution",
+      "test-execution",
+      "context-overflow",
+      "multi-step-recovery"
+    ],
+    "note": "Only live cases actually executed in this browser workflow are measured; other benchmark cases remain unrun.",
+    "duplicate_state_changing_calls": 0
+  },
+  "tool_steps": {
+    "browser_connect": {
+      "executed": true,
+      "success": true,
+      "duration_seconds": 0.009,
+      "status": {
+        "connected": true,
+        "browser_kind": "kuba-cdp",
+        "tab_count": 6,
+        "current_tab": {
+          "targetId": "499FBE711144A16ADE2A5BD29CEA453E",
+          "target_id": "499FBE711144A16ADE2A5BD29CEA453E",
+          "url": "https://www.amazon.com/s?k=python+programming+books",
+          "title": "🐴 Amazon.com : python programming books"
+        }
+      }
+    },
+    "google_search": {
+      "executed": true,
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": true,
+      "verification": {
+        "action": "navigate",
+        "verified": true,
+        "requested_url": "https://www.google.com/search?q=Python+programming+tutorial",
+        "url": "https://www.google.com/search?q=Python+programming+tutorial",
+        "title": "🐴 Python programming tutorial - Google Search",
+        "document_ready": true,
+        "visible_text_length": 2000,
+        "visible_text_preview": "Skip to main content\nAccessibility help\nAI Mode\nAll\nVideos\nImages\nShort videos\nShopping\nForums\nMore\nTools\nSearch Results\nWeb results\nPython Tutorial\n\nW3Schools\n",
+        "expected_outcome": {
+          "action_executed": true,
+          "state_changed": false,
+          "expected_state_verified": true,
+          "user_objective_completed": false,
+          "execution_status": "STATE_VERIFIED",
+          "evidence": {
+            "kind": "browser_search",
+            "query": "python programming tutorial",
+            "query_submitted": true,
+            "url": "https://www.google.com/search?q=Python+programming+tutorial",
+            "visible_results": true,
+            "result_count": 0,
+            "visible_text_chars": 7978,
+            "visible_text_sha256": "c4d1bbef34a0963897deeae826cda7f97bae2b8079ad011571b91f0778202680"
+          },
+          "error": null
+        },
+        "expected_state_verified": true
+      },
+      "duration_seconds": 1.82,
+      "query": "Python programming tutorial"
+    },
+    "google_result_open": {
+      "executed": true,
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": true,
+      "verification": {
+        "action": "click",
+        "verified": true,
+        "target_href": "https://docs.python.org/3/tutorial/index.html",
+        "verified_url": "https://docs.python.org/3/tutorial/index.html",
+        "tab_opened": false,
+        "dom_changed": false,
+        "current_url": "https://docs.python.org/3/tutorial/index.html",
+        "title": "🐴 The Python Tutorial — Python 3.15.2 documentation",
+        "expected_outcome": {
+          "action_executed": true,
+          "state_changed": null,
+          "expected_state_verified": true,
+          "user_objective_completed": false,
+          "execution_status": "STATE_VERIFIED",
+          "evidence": {
+            "kind": "browser_navigation",
+            "url": "https://docs.python.org/3/tutorial/index.html",
+            "title": "🐴 The Python Tutorial — Python 3.15.2 documentation",
+            "url_match": true,
+            "title_match": true,
+            "visible_text_match": true,
+            "visible_text_sha256": "878ac89640601bcd5bad3160da0fc07f17064c27611b5cc41bf682e1f81c9208"
+          },
+          "error": null
+        },
+        "expected_state_verified": true
+      },
+      "duration_seconds": 2.776,
+      "selected_title": "Official Python 3 Tutorial",
+      "selected_url": "https://docs.python.org/3/tutorial/index.html"
+    },
+    "youtube_tab": {
+      "executed": true,
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "verification": {
+        "action": "switch_tab",
+        "verified": true,
+        "expected_tab": "DA3CB08CEC300C582BDF645137E7AA13",
+        "current_tab": "DA3CB08CEC300C582BDF645137E7AA13"
+      },
+      "duration_seconds": 0.031,
+      "tab": {
+        "id": "DA3CB08CEC300C582BDF645137E7AA13",
+        "url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8"
+      },
+      "reused": true
+    },
+    "youtube_search": {
+      "executed": true,
+      "success": true,
+      "execution_status": "VERIFICATION_FAILED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": true,
+      "verification": {
+        "action_executed": true,
+        "state_changed": true,
+        "expected_state_verified": true,
+        "user_objective_completed": false,
+        "execution_status": "STATE_VERIFIED",
+        "evidence": {
+          "kind": "browser_search",
+          "query": "python tutorial for beginners",
+          "query_submitted": true,
+          "url": "https://www.youtube.com/results?search_query=Python+tutorial+for+beginners",
+          "visible_results": true,
+          "result_count": 0,
+          "visible_text_chars": 5075,
+          "visible_text_sha256": "05c2d535dcde816b4e9e3b73743f1d755ce6d63e3403c3bad00d9322aaf93ae3"
+        },
+        "error": null
+      },
+      "duration_seconds": 1.853,
+      "query": "Python tutorial for beginners",
+      "resumed": true,
+      "observation_poll_seconds": 15
+    },
+    "youtube_video": {
+      "executed": true,
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": true,
+      "verification": {
+        "action": "navigate",
+        "verified": true,
+        "requested_url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8",
+        "url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8",
+        "title": "🐴 #0 Python for Beginners | Programming Tutorial - YouTube",
+        "document_ready": true,
+        "visible_text_length": 11,
+        "visible_text_preview": "0:00 / 1:05",
+        "expected_outcome": {
+          "action_executed": true,
+          "state_changed": false,
+          "expected_state_verified": true,
+          "user_objective_completed": false,
+          "execution_status": "STATE_VERIFIED",
+          "evidence": {
+            "kind": "browser_video",
+            "url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8",
+            "title": "🐴 #0 Python for Beginners | Programming Tutorial - YouTube",
+            "url_match": true,
+            "title_match": true,
+            "visible_text_match": true,
+            "visible_text_sha256": "007fb6313c0bc88abc64daa1ba23da80356504bc797427c936b128487835ae0d"
+          },
+          "error": null
+        },
+        "expected_state_verified": true
+      },
+      "duration_seconds": 2.142,
+      "resumed_from_observed_video": true
+    },
+    "amazon_tab": {
+      "executed": true,
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "verification": {
+        "action": "switch_tab",
+        "verified": true,
+        "expected_tab": "499FBE711144A16ADE2A5BD29CEA453E",
+        "current_tab": "499FBE711144A16ADE2A5BD29CEA453E"
+      },
+      "duration_seconds": 0.027,
+      "reused": true,
+      "tab": {
+        "id": "499FBE711144A16ADE2A5BD29CEA453E",
+        "url": "https://www.amazon.com/s?k=python+programming+books"
+      }
+    },
+    "amazon_search": {
+      "executed": false,
+      "success": true,
+      "expected_state_verified": true,
+      "verification": {
+        "action_executed": true,
+        "state_changed": false,
+        "expected_state_verified": true,
+        "user_objective_completed": false,
+        "execution_status": "STATE_VERIFIED",
+        "evidence": {
+          "kind": "browser_search",
+          "query": "python programming books",
+          "query_submitted": true,
+          "url": "https://www.amazon.com/s?k=python+programming+books",
+          "visible_results": true,
+          "result_count": 0,
+          "visible_text_chars": 1993,
+          "visible_text_sha256": "c9494633c3acc1e1772b29bfe77e3e88c2fd444b13718214832f892e617c51d7"
+        },
+        "error": null
+      },
+      "reused_existing_results": true
+    },
+    "amazon_listings": {
+      "executed": true,
+      "success": true,
+      "count": 8,
+      "listings": [
+        {
+          "title": "Python 3: The Comprehensive Guide to Hands-On Python Programming (Second Edition) (Rheinwerk Computing)",
+          "price": "INR 6,146.58",
+          "rating": "5.0 out of 5 stars, rating details",
+          "url": ""
+        },
+        {
+          "title": "Python Programming for Beginners: The Complete Guide to Mastering Python in 7 Days with Hands-On Exercises – Top Secret Coding Tips to Get an Unfair Advantage and Land Your Dream Job!",
+          "price": "INR 2,356.24",
+          "rating": "4.4 out of 5 stars, rating details",
+          "url": ""
+        },
+        {
+          "title": "Python Crash Course, 3rd Edition: A Hands-On, Project-Based Introduction to Programming",
+          "price": "INR 2,827.67",
+          "rating": "4.8 out of 5 stars, rating details",
+          "url": ""
+        },
+        {
+          "title": "Python 3: The Comprehensive Guide to Hands-On Python Programming (Second Edition) (Rheinwerk Computing)",
+          "price": "INR 6,146.58",
+          "rating": "5.0 out of 5 stars, rating details",
+          "url": ""
+        },
+        {
+          "title": "Python Programming Language: a QuickStudy Laminated Reference Guide",
+          "price": "INR 843.87",
+          "rating": "4.6 out of 5 stars, rating details",
+          "url": ""
+        },
+        {
+          "title": "Python Programming for Beginners: The Complete Python Coding Crash Course - Boost Your Growth with an Innovative Ultra-Fast Learning Framework and Exclusive Hands-On Interactive Exercises & Projects",
+          "price": "INR 2,347.75",
+          "rating": "4.5 out of 5 stars, rating details",
+          "url": ""
+        },
+        {
+          "title": "Python and SQL Bible: From Beginner to World Expert: Unleash the full potential of data analysis and manipulation by mastering Python and SQL",
+          "price": "INR 3,443.37",
+          "rating": "4.4 out of 5 stars, rating details",
+          "url": ""
+        },
+        {
+          "title": "Learning Python: Powerful Object-Oriented Programming",
+          "price": "INR 5,059.45",
+          "rating": "4.5 out of 5 stars, rating details",
+          "url": ""
+        }
+      ],
+      "comparison": {
+        "visible_listing_count": 8,
+        "lowest_visible_price": {
+          "title": "Python Programming Language: a QuickStudy Laminated Reference Guide",
+          "displayed_price": "INR 843.87",
+          "numeric_value": 843.87
+        },
+        "highest_visible_rating": {
+          "title": "Python 3: The Comprehensive Guide to Hands-On Python Programming (Second Edition) (Rheinwerk Computing)",
+          "displayed_rating": "5.0 out of 5 stars, rating details",
+          "numeric_value": 5.0
+        },
+        "limitations": "Only values visible in the current search results were compared; review counts and product-page details were not inferred."
+      },
+      "visible_page": {
+        "url": "https://www.amazon.com/s?k=python+programming+books",
+        "title": "🐴 Amazon.com : python programming books",
+        "ready_state": "complete",
+        "visible_text_preview": "Skip to\nMain content\nResults\nFilters\nKeyboard shortcuts\nSearch\nalt\n+\n/\nCart\nshift\n+\nalt\n+\nC\nHome\nshift\n+\nalt\n+\nH\nOrders\nshift\n+\nalt\n+\nO\nShow/Hide shortcuts\nshift\n+\nalt\n+\nZ\nTo move between items, use your keyboard's up or down arrows.\nDeliver to\nIndia\nAll\nAll Departments\nArts & Crafts\nAutomotive\nBaby\nBeauty & Personal Care\nBooks\nBoys' Fashion\nComputers\nDeals\nDigital Music\nElectronics\nGirls' Fashion\nHealth & Household\nHome & Kitchen\nIndustrial & Scientific\nKindle Store\nLuggage\nMen's Fashion\nMovies",
+        "visible_text_chars": 8000,
+        "visible_text_sha256": "f737a5768189ff3f291074decdb4df44d87b55ebb026506513087801762564c0",
+        "observed_links": [
+          {
+            "name": "main content",
+            "href": "https://www.amazon.com/s?k=python+programming+books#skippedLink"
+          },
+          {
+            "name": "Results",
+            "href": "https://www.amazon.com/.s-asin%20a:has(h2)"
+          },
+          {
+            "name": "Filters",
+            "href": "https://www.amazon.com/s?k=python+programming+books#s-refinements%20%3E%20div.a-section%20%3E%20div:first-child"
+          },
+          {
+            "name": "Search, alt, forward slash",
+            "href": "javascript:void(0)"
+          },
+          {
+            "name": "Cart, shift, alt, c",
+            "href": "javascript:void(0)"
+          },
+          {
+            "name": "Home, shift, alt, h",
+            "href": "javascript:void(0)"
+          },
+          {
+            "name": "Your orders, shift, alt, o",
+            "href": "javascript:void(0)"
+          },
+          {
+            "name": "Amazon",
+            "href": "https://www.amazon.com/ref=nav_logo"
+          },
+          {
+            "name": "Deliver to India",
+            "href": "https://www.amazon.com/s?k=python+programming+books"
+          },
+          {
+            "name": "Choose a language for shopping in Amazon United States. The current selection is English (EN).",
+            "href": "https://www.amazon.com/customer-preferences/edit"
+          }
+        ]
+      },
+      "comparison_basis": [
+        "visible product title",
+        "visible price",
+        "visible rating"
+      ]
+    },
+    "switch_to_youtube": {
+      "executed": true,
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "verification": {
+        "action": "switch_tab",
+        "verified": true,
+        "expected_tab": "DA3CB08CEC300C582BDF645137E7AA13",
+        "current_tab": "DA3CB08CEC300C582BDF645137E7AA13"
+      },
+      "duration_seconds": 0.049,
+      "active_tab_verified": true
+    },
+    "switch_to_amazon": {
+      "executed": true,
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "verification": {
+        "action": "switch_tab",
+        "verified": true,
+        "expected_tab": "499FBE711144A16ADE2A5BD29CEA453E",
+        "current_tab": "499FBE711144A16ADE2A5BD29CEA453E"
+      },
+      "duration_seconds": 0.06,
+      "active_tab_verified": true
+    },
+    "browser_disconnect": {
+      "executed": true,
+      "success": true,
+      "execution_status": "ACTION_EXECUTED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "verification": {},
+      "duration_seconds": 0.0,
+      "disconnected_state": {
+        "connected": false,
+        "browser_kind": "kuba-cdp",
+        "tab_count": 0
+      }
+    },
+    "browser_reconnect": {
+      "executed": true,
+      "success": true,
+      "execution_status": "ACTION_EXECUTED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "verification": {},
+      "duration_seconds": 0.02,
+      "connected": true,
+      "tab_ids_preserved": true,
+      "tabs": [
+        {
+          "targetId": "DA3CB08CEC300C582BDF645137E7AA13",
+          "target_id": "DA3CB08CEC300C582BDF645137E7AA13",
+          "title": "#0 Python for Beginners | Programming Tutorial - YouTube",
+          "url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8"
+        },
+        {
+          "targetId": "BA2699804268EA8431BE7859A6F7C3C4",
+          "target_id": "BA2699804268EA8431BE7859A6F7C3C4",
+          "title": "The Python Tutorial — Python 3.15.2 documentation",
+          "url": "https://docs.python.org/3/tutorial/index.html"
+        },
+        {
+          "targetId": "499FBE711144A16ADE2A5BD29CEA453E",
+          "target_id": "499FBE711144A16ADE2A5BD29CEA453E",
+          "title": "🐴 Amazon.com : python programming books",
+          "url": "https://www.amazon.com/s?k=python+programming+books"
+        },
+        {
+          "targetId": "45DB8774EAE0E5CB4F22F3D4D9C672F5",
+          "target_id": "45DB8774EAE0E5CB4F22F3D4D9C672F5",
+          "title": "The Python Tutorial — Python 3.15.2 documentation",
+          "url": "https://docs.python.org/3/tutorial/index.html"
+        },
+        {
+          "targetId": "5B2BBD59989240CF7CE9D213D566C067",
+          "target_id": "5B2BBD59989240CF7CE9D213D566C067",
+          "title": "The Python Tutorial — Python 3.15.2 documentation",
+          "url": "https://docs.python.org/3/tutorial/index.html"
+        },
+        {
+          "targetId": "DB8E3CDBD7252E3FC094BC0298BCCD6A",
+          "target_id": "DB8E3CDBD7252E3FC094BC0298BCCD6A",
+          "title": "The Python Tutorial — Python 3.15.2 documentation",
+          "url": "https://docs.python.org/3/tutorial/index.html"
+        },
+        {
+          "targetId": "D121AE0A1FAA9F3A35A80C5CB5BC235D",
+          "target_id": "D121AE0A1FAA9F3A35A80C5CB5BC235D",
+          "title": "The Python Tutorial — Python 3.15.2 documentation",
+          "url": "https://docs.python.org/3/tutorial/index.html"
+        }
+      ]
+    },
+    "multi_tab_recovery": {
+      "executed": true,
+      "success": true,
+      "youtube_active_verified": true,
+      "amazon_active_verified": true,
+      "disconnect_verified": true,
+      "reconnect_verified": true,
+      "initial_tab_ids": [
+        "45DB8774EAE0E5CB4F22F3D4D9C672F5",
+        "499FBE711144A16ADE2A5BD29CEA453E",
+        "5B2BBD59989240CF7CE9D213D566C067",
+        "BA2699804268EA8431BE7859A6F7C3C4",
+        "D121AE0A1FAA9F3A35A80C5CB5BC235D",
+        "DA3CB08CEC300C582BDF645137E7AA13",
+        "DB8E3CDBD7252E3FC094BC0298BCCD6A"
+      ],
+      "recovered_tab_ids": [
+        "45DB8774EAE0E5CB4F22F3D4D9C672F5",
+        "499FBE711144A16ADE2A5BD29CEA453E",
+        "5B2BBD59989240CF7CE9D213D566C067",
+        "BA2699804268EA8431BE7859A6F7C3C4",
+        "D121AE0A1FAA9F3A35A80C5CB5BC235D",
+        "DA3CB08CEC300C582BDF645137E7AA13",
+        "DB8E3CDBD7252E3FC094BC0298BCCD6A"
+      ]
+    }
+  },
+  "tool_calls": [
+    {
+      "tool": "browser_connect",
+      "params": {},
+      "success": true,
+      "execution_status": "ACTION_EXECUTED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 0.007
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "new_tab",
+        "url": "https://www.google.com"
+      },
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 0.261
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "navigate",
+        "url": "https://www.google.com/search?q=Python+programming+tutorial",
+        "expected": {
+          "kind": "browser_search",
+          "query": "Python programming tutorial"
+        }
+      },
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": true,
+      "duration_seconds": 1.82
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "click",
+        "selector": "div#sdh_tWT7areYGKWlhvcPx_eL6AY_g89sca_4 > ul:nth-of-type(3) > div:nth-of-type(4) > li > span:nth-of-type(1) > span > span > a",
+        "expected": {
+          "kind": "browser_navigation",
+          "url_contains": "docs.python.org",
+          "text_contains": "The Python Tutorial"
+        }
+      },
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": true,
+      "duration_seconds": 2.776
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "switch_tab",
+        "target": "DA3CB08CEC300C582BDF645137E7AA13"
+      },
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 0.031
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "navigate",
+        "url": "https://www.youtube.com/results?search_query=Python+tutorial+for+beginners"
+      },
+      "success": false,
+      "execution_status": "VERIFICATION_FAILED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 1.853
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "navigate",
+        "url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8",
+        "expected": {
+          "kind": "browser_video",
+          "url_contains": "youtube.com/watch?v=",
+          "title_contains": "Python"
+        }
+      },
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": true,
+      "duration_seconds": 2.142
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "switch_tab",
+        "target": "499FBE711144A16ADE2A5BD29CEA453E"
+      },
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 0.027
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "switch_tab",
+        "target": "DA3CB08CEC300C582BDF645137E7AA13"
+      },
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 0.046
+    },
+    {
+      "tool": "browser",
+      "params": {
+        "action": "switch_tab",
+        "target": "499FBE711144A16ADE2A5BD29CEA453E"
+      },
+      "success": true,
+      "execution_status": "STATE_VERIFIED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 0.043
+    },
+    {
+      "tool": "browser_disconnect",
+      "params": {},
+      "success": true,
+      "execution_status": "ACTION_EXECUTED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 0.0
+    },
+    {
+      "tool": "browser_connect",
+      "params": {},
+      "success": true,
+      "execution_status": "ACTION_EXECUTED",
+      "action_executed": true,
+      "state_changed": null,
+      "expected_state_verified": false,
+      "duration_seconds": 0.016
+    }
+  ],
+  "approval_count": 9,
+  "approvals": [
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'new_tab' to change page state or handle browser files?",
+      "risk_level": "high"
+    },
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'navigate' to change page state or handle browser files?",
+      "risk_level": "high"
+    },
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'click' to change page state or handle browser files?",
+      "risk_level": "high"
+    },
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'switch_tab' to change page state or handle browser files?",
+      "risk_level": "high"
+    },
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'navigate' to change page state or handle browser files?",
+      "risk_level": "high"
+    },
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'navigate' to change page state or handle browser files?",
+      "risk_level": "high"
+    },
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'switch_tab' to change page state or handle browser files?",
+      "risk_level": "high"
+    },
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'switch_tab' to change page state or handle browser files?",
+      "risk_level": "high"
+    },
+    {
+      "tool": "browser",
+      "description": "Allow browser action 'switch_tab' to change page state or handle browser files?",
+      "risk_level": "high"
+    }
+  ],
+  "duration_seconds": 12.559,
+  "context_budget_stats": {
+    "requests": 0,
+    "tokens": null
+  },
+  "final_tabs": [
+    {
+      "targetId": "DA3CB08CEC300C582BDF645137E7AA13",
+      "target_id": "DA3CB08CEC300C582BDF645137E7AA13",
+      "title": "#0 Python for Beginners | Programming Tutorial - YouTube",
+      "url": "https://www.youtube.com/watch?v=QXeEoD0pB3E&list=PLsyeobzWxl7poL9JTVyndKe62ieoN-MZ3&index=8"
+    },
+    {
+      "targetId": "BA2699804268EA8431BE7859A6F7C3C4",
+      "target_id": "BA2699804268EA8431BE7859A6F7C3C4",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    },
+    {
+      "targetId": "499FBE711144A16ADE2A5BD29CEA453E",
+      "target_id": "499FBE711144A16ADE2A5BD29CEA453E",
+      "title": "🐴 Amazon.com : python programming books",
+      "url": "https://www.amazon.com/s?k=python+programming+books"
+    },
+    {
+      "targetId": "45DB8774EAE0E5CB4F22F3D4D9C672F5",
+      "target_id": "45DB8774EAE0E5CB4F22F3D4D9C672F5",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    },
+    {
+      "targetId": "5B2BBD59989240CF7CE9D213D566C067",
+      "target_id": "5B2BBD59989240CF7CE9D213D566C067",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    },
+    {
+      "targetId": "DB8E3CDBD7252E3FC094BC0298BCCD6A",
+      "target_id": "DB8E3CDBD7252E3FC094BC0298BCCD6A",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    },
+    {
+      "targetId": "D121AE0A1FAA9F3A35A80C5CB5BC235D",
+      "target_id": "D121AE0A1FAA9F3A35A80C5CB5BC235D",
+      "title": "The Python Tutorial — Python 3.15.2 documentation",
+      "url": "https://docs.python.org/3/tutorial/index.html"
+    }
+  ]
+}

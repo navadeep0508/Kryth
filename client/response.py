@@ -15,6 +15,7 @@ class StreamEventType(str, Enum):
     TEXT_DELTA = "text_delta"
     REASONING_DELTA = "reasoning_delta"
     MESSAGE_COMPLETE = "message_complete"
+    CONTEXT_BUDGET = "context_budget"
     ERROR = "error"
 
     TOOL_CALL_START = "tool_call_start"
@@ -61,6 +62,7 @@ class StreamEvent:
     tool_call_delta: ToolCallDelta | None = None
     tool_call: ToolCall | None = None
     usage: TokenUsage | None = None
+    context_budget: dict[str, Any] | None = None
 
 @dataclass
 class ToolResultMessage:

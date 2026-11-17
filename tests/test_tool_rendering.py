@@ -43,6 +43,21 @@ def test_every_builtin_tool_has_a_specific_renderer():
     assert names <= RENDERERS.keys()
 
 
+def test_all_registered_builtin_renderers_handle_success_and_failure_states():
+    from tools.core import get_all_core_tools
+    from tools.subagents.subagents import get_default_subagent_definitions
+
+    names = {tool.name for tool in get_all_core_tools()}
+    names.update(f"subagent_{item.name}" for item in get_default_subagent_definitions())
+    names.add("mcp_server__custom_tool")
+    for name in names:
+        for success in (True, False):
+            summary, _details = tool_blocks(ToolOutcome(
+                name=name, success=success, output="result line", error="failure line"
+            ))
+            assert plain(summary).strip()
+
+
 def test_directory_tool_name_maps_to_directory_renderer():
     outcome = ToolOutcome(
         name="list_directories",
@@ -103,7 +118,15 @@ def test_tool_header_uses_readable_name_and_concise_result():
     assert "1.2s" in header.plain
 
 
-def test_write_tool_shows_compact_code_preview_and_overflow_count():
+def test_tool_status_labels_completion_and_failure_with_elapsed_time():
+    completed = tool_status(True, "1.2s")
+    failed = tool_status(False, "0.4s")
+
+    assert completed.plain == "done 1.2s"
+    assert failed.plain == "failed 0.4s"
+
+
+def test_write_tool_shows_compact_filename_and_keeps_diff_expandable():
     diff = "--- /dev/null\n+++ b/demo.py\n@@ -0,0 +1,20 @@\n" + "".join(
         f"+print({line})\n" for line in range(1, 21)
     )
@@ -116,22 +139,23 @@ def test_write_tool_shows_compact_code_preview_and_overflow_count():
     ))
 
     rendered = plain(summary)
-    assert "Wrote 20 lines to demo.py" in rendered
-    assert "print(1)" in rendered
-    assert "print(10)" in rendered
+    assert "Created demo.py" in rendered
+    assert "20 lines" in rendered
+    assert "print(1)" not in rendered
+    assert "print(10)" not in rendered
     assert "print(11)" not in rendered
-    assert "+10 lines" in rendered
     assert details
+    assert "print(1)" in plain(details)
 
 
-def test_edit_tool_shows_numbered_context_and_green_additions():
+def test_edit_tool_shows_line_counts_and_keeps_diff_expandable():
     diff = (
         "--- a/demo.py\n+++ b/demo.py\n@@ -85,4 +85,6 @@\n"
         " before_one\n before_two\n"
         "+added_one\n+added_two\n"
         " after_one\n"
     )
-    summary, _details = tool_blocks(ToolOutcome(
+    summary, details = tool_blocks(ToolOutcome(
         name="edit",
         args={"path": "demo.py"},
         output="Edited demo.py",
@@ -140,10 +164,32 @@ def test_edit_tool_shows_numbered_context_and_green_additions():
     ))
 
     rendered = plain(summary)
-    assert "Added 2 lines" in rendered
-    assert "85   before_one" in rendered
-    assert "87 + added_one" in rendered
-    assert "88 + added_two" in rendered
+    assert "Updated demo.py" in rendered
+    assert "+2 -0 lines" in rendered
+    assert "before_one" not in rendered
+    assert "before_one" in plain(details)
+
+
+def test_future_or_custom_tools_get_a_compact_fallback_renderer():
+    summary, details = tool_blocks(ToolOutcome(
+        name="browser_snapshot",
+        args={"url": "https://example.test"},
+        output="Page title\nA large page result\nMore content",
+    ))
+    assert "Browser snapshot" in plain(summary)
+    assert "https://example.test" in plain(summary)
+    assert "Page title" in plain(details)
+
+
+def test_tool_failure_keeps_details_collapsible():
+    summary, details = tool_blocks(ToolOutcome(
+        name="python_exec", success=False,
+        error="Execution failed\nTraceback details",
+        output="stderr output",
+    ))
+    assert "Execution failed" in plain(summary)
+    assert "Traceback details" in plain(details)
+    assert "stderr output" in plain(details)
 
 
 def test_file_tool_headers_match_write_and_update_layout():
@@ -173,9 +219,8 @@ def test_edit_permission_prompt_uses_compact_file_change_layout(tmp_path):
     assert str(tmp_path) not in rendered
 
 
-def test_approval_choices_render_as_a_keyboard_action_card():
+def test_approval_choices_render_as_a_compact_keyboard_line():
     rendered = plain([confirmation_choices("approval: ask")])
-    assert "Approval" in rendered
     assert "[Y] Allow once" in rendered
     assert "[A] Allow for session" in rendered
     assert "[N] Reject" in rendered

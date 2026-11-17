@@ -26,7 +26,10 @@ class MemoryParams(BaseModel):
 
 class MemoryTool(Tool):
     name = 'memory'
-    description = 'Store and retrieve persistent memory, use this tool to remember user information and preferences, for example: important context, user-specific details.'
+    description = (
+        'Store and retrieve user preferences and sanitized, reusable web workflows. '
+        'Never store credentials, personal data, account-specific values, or unverified results.'
+    )
     kind = ToolKind.MEMORY
     schema = MemoryParams
 

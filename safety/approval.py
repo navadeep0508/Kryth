@@ -5,7 +5,7 @@ import re
 import shlex
 from typing import Any, Awaitable, Callable
 
-from config.config import ApprovalPolicy
+from config.config import ApprovalPolicy, ExecutionMode
 from tools.base import ToolConfirmation
 
 class ApprovalDecision(str, Enum):
@@ -155,10 +155,12 @@ class ApprovalManager:
             self,
             approval_policy: ApprovalPolicy,
             cwd: Path,
-            confimation_callback: Callable[[ToolConfirmation], Awaitable[bool]] | None = None
+            confimation_callback: Callable[[ToolConfirmation], Awaitable[bool]] | None = None,
+            execution_mode: ExecutionMode = ExecutionMode.AUTO,
     ) -> None:
 
         self.approval_policy = approval_policy
+        self.execution_mode = execution_mode
         self.cwd = cwd
         self.confirmation_callback = confimation_callback
 
@@ -199,6 +201,31 @@ class ApprovalManager:
 
         if not context.is_mutating:
             return ApprovalDecision.APPROVED
+
+        # --- Execution mode overrides -------------------------------------
+        # PLAN: read-only only — reject every mutating operation.
+        if self.execution_mode == ExecutionMode.PLAN:
+            return ApprovalDecision.REJECTED
+
+        # MANUAL: every mutating action needs explicit confirmation.
+        if self.execution_mode == ExecutionMode.MANUAL:
+            return ApprovalDecision.NEEDS_CONFIRMATION
+
+        # ACCEPT EDITS: auto-approve eligible workspace file edits;
+        # everything else falls through to the normal policy below.
+        if self.execution_mode == ExecutionMode.ACCEPT_EDITS:
+            is_file_edit = context.command is None and any(
+                p.suffix in {'.py', '.js', '.ts', '.tsx', '.jsx', '.html', '.css', '.json', '.md', '.toml', '.yaml', '.yml', '.ini', '.cfg', '.txt', '.rs', '.go', '.java', '.kt', '.swift', '.cpp', '.c', '.h', '.hpp', '.cs', '.rb', '.php', '.sh', '.bash', '.zsh', '.fish', '.sql', '.lock', '.gitignore', '.env', '.example', '.sample', ''}
+                for p in context.affected_paths
+            )
+            within_cwd = all(
+                path.is_relative_to(self.cwd) for path in context.affected_paths
+            )
+            if is_file_edit and within_cwd and not context.is_dangerous:
+                return ApprovalDecision.APPROVED
+
+        # AUTO: fall through to the normal approval policy below.
+        # ------------------------------------------------------------------
 
         if self.approval_policy == ApprovalPolicy.YOLO:
             return ApprovalDecision.APPROVED

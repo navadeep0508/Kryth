@@ -19,10 +19,10 @@ def render_memory(metadata: dict[str, Any]) -> Table | Text:
     for entry in entries:
         key = str(entry.get("key", ""))
         is_active = active_key is not None and key == active_key
-        marker_style = "highlight" if is_active else "tool.memory"
-        value_style = "highlight" if is_active else "code"
+        marker_style = "primary" if is_active else "muted"
+        value_style = "primary" if is_active else "code"
         table.add_row(
-            Text("●", style=marker_style),
+            Text("*" if is_active else "", style=marker_style),
             Text(key),
             Text(str(entry.get("value", "")), style=value_style),
         )

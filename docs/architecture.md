@@ -13,7 +13,7 @@ KRYTH is an object-oriented codebase. The agent loop, the tool layer, the safety
 | `safety/` | `ApprovalManager` and the approval policy types |
 | `config/` | Pydantic config models and the TOML loader |
 | `hooks/` | `HookSystem`, which executes lifecycle hooks |
-| `ui/` | `TUI`, `Repl`, the slash command groups, and the render components |
+| `ui/` | `TUI`, `Repl`, slash commands, rendering components, and `ui/panels/` panel state/orchestration/event adaptation |
 
 ## One abstract base class, every tool
 
