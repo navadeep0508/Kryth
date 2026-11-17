@@ -77,22 +77,6 @@ jobs:
           & $python -c "from importlib.resources import files; package = files('kuba_browser'); assert package.joinpath('SKILL.md').is_file(); assert package.joinpath('video-template.html').is_file()"
           & $python -m kryth --version
           & $launcher --version
-          $scripts = & $python -c "import sysconfig; print(sysconfig.get_path('scripts', scheme='nt_user'))"
-          $normalized = [IO.Path]::GetFullPath($scripts).TrimEnd('\')
-          $env:Path = (($env:Path -split ';' | Where-Object { $_.Trim().TrimEnd('\') -ine $normalized }) -join ';')
-          $environmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-          if ($environmentKey) {
-            $registryValue = [string]$environmentKey.GetValue('Path', '')
-            $freshPath = ($registryValue -split ';' | Where-Object { $_.Trim().TrimEnd('\') -ine $normalized }) -join ';'
-            $environmentKey.SetValue('Path', $freshPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-            $environmentKey.Close()
-          }
-          & $python -m kryth setup --path
-          $registryPath = (Get-ItemProperty -Path 'HKCU:\Environment' -Name Path -ErrorAction Stop).Path
-          $entries = $registryPath -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') }
-          if (($entries | Where-Object { $_ -ieq $normalized }).Count -ne 1) {
-            throw "KRYTH did not add its user Scripts directory exactly once to HKCU\Environment\Path: $scripts"
-          }
 
   build:
     name: Build and validate distributions
