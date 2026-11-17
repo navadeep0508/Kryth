@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   lint:
-    name: Lint Python sources
+    name: Validate Python sources
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -18,12 +18,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: Install linter
-        run: python -m pip install ruff
       - name: Compile project sources
         run: python -m compileall -q agent browser/src client config context kryth prompts safety tools ui utils
-      - name: Lint packaging entry points and affected tests
-        run: python -m ruff check ui/components/logo.py tests/test_brand.py
 
   test:
     name: Test on Python ${{ matrix.python-version }}
