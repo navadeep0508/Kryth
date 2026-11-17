@@ -20,7 +20,7 @@
   <a href="#demo">Demo</a> · <a href="#install">Install</a> · <a href="#quick-start">Quick start</a> · <a href="#features">Features</a> · <a href="#documentation">Docs</a> · <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
-KRYTH is a Python terminal AI agent for developers who want an assistant to do more than answer questions. Give it a task in plain language: it can inspect your project, make a plan, call file and terminal tools, and report what it did. Its interactive terminal UI streams activity as it works; approval policies let you control when tools can make changes. OpenRouter is the default model gateway, with additional provider configurations available. Sessions and checkpoints let you continue work later. KRYTH is an open-source coding agent built to work inside the repository you choose.
+KRYTH is a Python terminal AI agent for developers who want an assistant to do more than answer questions. Give it a task in plain language: it can inspect your project, make a plan, call file and terminal tools, and report what it did. Its interactive terminal UI streams activity as it works; approval policies let you control when tools can make changes. OpenRouter is the default model gateway, with additional provider configurations available. Sessions and checkpoints let you continue work later. KRYTH is an open-source coding agent built to work inside the repository you choose. On launch, rotating tips surface key shortcuts and commands so you can get productive quickly.
 
 ## Demo
 
@@ -99,6 +99,7 @@ For browser-based OpenRouter login or manual key entry, use `kryth login` or `kr
 | **Approval policies** | Choose confirmation, edit automation, read-only, and other policies; dangerous shell patterns are checked by the safety layer. |
 | **Interactive terminal UI** | See streaming responses, tool progress, diffs, plans, and slash commands in the Rich-based interface. |
 | **Context management** | Prune stale tool output and compact long histories into a continuation brief. |
+| **Startup tips** | Rotating tips on launch surface key shortcuts and commands to get productive quickly. |
 
 ## See the tools and controls
 
