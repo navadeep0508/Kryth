@@ -5,7 +5,7 @@ from rich.text import Text
 
 from ui.theme.palette import PALETTE
 
-KRYTH_VERSION = "0.0.38"
+KRYTH_VERSION = "0.0.44"
 
 _BLOCK = "█"
 _ROWS = (

@@ -5,12 +5,28 @@ from io import StringIO
 
 from rich.console import Console
 
-from ui.components.logo import LOGO_HEIGHT, LOGO_WIDTH, horizontal_logo, logo, logo_lines
+from ui.components.logo import (
+    KRYTH_VERSION,
+    LOGO_HEIGHT,
+    LOGO_WIDTH,
+    horizontal_logo,
+    logo,
+    logo_lines,
+)
 from ui.components.welcome import welcome_screen
 from ui.theme import AGENT_THEME, hex_colour
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_cli_version_matches_package_metadata():
+    import tomllib
+
+    with (ROOT / "pyproject.toml").open("rb") as project_file:
+        project_version = tomllib.load(project_file)["project"]["version"]
+
+    assert KRYTH_VERSION == project_version
 
 
 def render(renderable, width: int) -> str:

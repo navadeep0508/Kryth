@@ -1,21 +1,18 @@
 """Tests for the optional MCP console entry point."""
 
-import builtins
+import sys
 
 import pytest
 
+import kuba_browser
 from kuba_browser import mcp_cli
 
 
 def test_main_explains_missing_mcp_extra(monkeypatch):
-    real_import = builtins.__import__
-
-    def import_without_mcp(name, *args, **kwargs):
-        if name == "mcp_server":
-            raise ModuleNotFoundError("No module named 'mcp'", name="mcp")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", import_without_mcp)
+    monkeypatch.delitem(sys.modules, "kuba_browser.mcp_server", raising=False)
+    monkeypatch.delattr(kuba_browser, "mcp_server", raising=False)
+    monkeypatch.delitem(sys.modules, "mcp.server", raising=False)
+    monkeypatch.setitem(sys.modules, "mcp", None)
 
     with pytest.raises(SystemExit, match=r"pip install 'kuba-browser\[mcp\]'"):
         mcp_cli.main()

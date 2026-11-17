@@ -4,7 +4,7 @@
 def main() -> None:
     """Run the MCP server, or explain how to install its optional dependency."""
     try:
-        from mcp_server import main as run_server
+        from .mcp_server import main as run_server
     except ModuleNotFoundError as exc:
         if exc.name == "mcp" or (exc.name and exc.name.startswith("mcp.")):
             raise SystemExit(

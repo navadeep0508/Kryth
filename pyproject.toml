@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kryth"
-version = "0.0.43"
+version = "0.0.44"
 description = "An open-source terminal-based AI coding agent."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"
 authors = [{ name = "navadeep0508" }]
 keywords = ["ai", "agent", "cli", "coding-assistant", "tui", "openrouter"]
 classifiers = [
@@ -57,7 +57,7 @@ test = [
 kryth = "main:main"
 
 [tool.setuptools]
-py-modules = ["main", "mcp_server"]
+py-modules = ["main"]
 
 [tool.setuptools.package-dir]
 kuba_browser = "browser/src/kuba_browser"
@@ -67,4 +67,4 @@ where = [".", "browser/src"]
 include = ["agent*", "client*", "config*", "context*", "hooks*", "kryth*", "prompts*", "safety*", "tools*", "ui*", "utils*", "kuba_browser*"]
 
 [tool.setuptools.package-data]
-kuba_browser = ["SKILL.md", "video-template.html"]
+kuba_browser = ["LICENSE", "SKILL.md", "video-template.html"]

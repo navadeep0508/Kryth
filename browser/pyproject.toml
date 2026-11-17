@@ -9,7 +9,7 @@ description = "The simplest, thinnest, and most powerful harness to control your
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["src/kuba_browser/LICENSE"]
 keywords = ["agent", "automation", "browser", "cdp", "chrome", "scraping"]
 classifiers = [
     "Development Status :: 3 - Alpha",

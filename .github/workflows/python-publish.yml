@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test on Python 3.11
+  lint:
+    name: Lint Python sources
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -18,6 +18,31 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Install linter
+        run: python -m pip install ruff
+      - name: Compile project sources
+        run: python -m compileall -q agent browser/src client config context kryth prompts safety tools ui utils
+      - name: Lint packaging entry points and affected tests
+        run: >-
+          ruff check ui/components/logo.py tests/test_brand.py
+          browser/tests/unit/test_mcp_server.py browser/tests/unit/test_mcp_cli.py
+          browser/src/kuba_browser/mcp_server.py browser/src/kuba_browser/mcp_cli.py
+          browser/src/mcp_server.py
+
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
       - name: Install project and test dependencies
         run: python -m pip install -e ".[test]"
       - name: Run tests
@@ -25,6 +50,7 @@ jobs:
 
   windows-install-test:
     name: Clean Windows wheel install (Python ${{ matrix.python-version }})
+    needs: build
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -37,25 +63,30 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install build and test tools
-        run: python -m pip install --upgrade build pytest pytest-asyncio twine
-      - name: Install project dependencies for test collection
-        run: python -m pip install ".[test]"
-      - name: Build the wheel under test
-        run: python -m build --wheel
-      - name: Validate wheel metadata
-        run: python -m twine check --strict dist/kryth-*.whl
-      - name: Run automated tests
-        run: python -m pytest -q
-      - name: Install wheel into the clean runner user's Python
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-dists
+          path: dist/
+      - name: Install wheel in a clean virtual environment and verify it
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $wheel = Get-ChildItem dist\kryth-*.whl | Select-Object -First 1
           if (-not $wheel) { throw 'Built KRYTH wheel is missing.' }
-          $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts', scheme='nt_user'))"
+          $venv = Join-Path $env:RUNNER_TEMP 'kryth-wheel-venv'
+          python -m venv $venv
+          $python = Join-Path $venv 'Scripts\python.exe'
+          $launcher = Join-Path $venv 'Scripts\kryth.exe'
+          & $python -m pip install $wheel.FullName
+          & $python -m pip check
+          Set-Location $env:RUNNER_TEMP
+          & $python -c "import os, tomllib; from importlib.metadata import version; import agent, client, config, context, hooks, kryth, kuba_browser, main, prompts, safety, tools, ui, utils; project = os.path.join(os.environ['GITHUB_WORKSPACE'], 'pyproject.toml'); expected = tomllib.load(open(project, 'rb'))['project']['version']; assert version('kryth') == expected"
+          & $python -c "from importlib.resources import files; package = files('kuba_browser'); assert package.joinpath('SKILL.md').is_file(); assert package.joinpath('video-template.html').is_file()"
+          & $python -m kryth --version
+          & $launcher --version
+          $scripts = & $python -c "import sysconfig; print(sysconfig.get_path('scripts', scheme='nt_user'))"
           $normalized = [IO.Path]::GetFullPath($scripts).TrimEnd('\')
-          # Hosted Windows runners put the Python user Scripts directory on
-          # PATH by default. Remove it from both scopes to model a fresh user.
           $env:Path = (($env:Path -split ';' | Where-Object { $_.Trim().TrimEnd('\') -ine $normalized }) -join ';')
           $environmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
           if ($environmentKey) {
@@ -64,24 +95,16 @@ jobs:
             $environmentKey.SetValue('Path', $freshPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
             $environmentKey.Close()
           }
-          python -m pip uninstall -y kryth
-          python -m pip install --user $wheel.FullName
-          if (-not (Test-Path (Join-Path $scripts 'kryth.exe'))) {
-            throw "pip did not install kryth.exe into the expected user Scripts directory: $scripts"
-          }
-          Set-Location $env:RUNNER_TEMP
-          python -m kryth --version
-          python -m kryth setup --path
+          & $python -m kryth setup --path
           $registryPath = (Get-ItemProperty -Path 'HKCU:\Environment' -Name Path -ErrorAction Stop).Path
           $entries = $registryPath -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') }
           if (($entries | Where-Object { $_ -ieq $normalized }).Count -ne 1) {
-            throw "Scripts directory was not added exactly once to HKCU\Environment\Path: $scripts"
+            throw "KRYTH did not add its user Scripts directory exactly once to HKCU\Environment\Path: $scripts"
           }
-          & (Join-Path $scripts 'kryth.exe') --version
 
   build:
     name: Build and validate distributions
-    needs: [test, windows-install-test]
+    needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -89,7 +112,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.x"
+          python-version: "3.11"
       - name: Install build tools
         run: python -m pip install --upgrade build twine
       - name: Check release tag matches package version
@@ -97,7 +120,7 @@ jobs:
           python -c "import os, tomllib; version = tomllib.load(open('pyproject.toml', 'rb'))['project']['version']; tag = os.environ['GITHUB_REF_NAME'].removeprefix('v'); assert version == tag, f'Release tag {tag} does not match project version {version}'"
       - name: Check installer version matches package version
         run: >-
-          python -c "import tomllib; version = tomllib.load(open('pyproject.toml', 'rb'))['project']['version']; text = open('installer/kryth.iss', encoding='utf-8').read(); assert '#define AppVersion ' + chr(34) + version + chr(34) in text, 'installer/kryth.iss AppVersion does not match pyproject.toml'"
+          python -c "import tomllib; version = tomllib.load(open('pyproject.toml', 'rb'))['project']['version']; installer = open('installer/kryth.iss', encoding='utf-8').read(); logo = open('ui/components/logo.py', encoding='utf-8').read(); assert '#define AppVersion ' + chr(34) + version + chr(34) in installer, 'installer/kryth.iss AppVersion does not match pyproject.toml'; assert 'KRYTH_VERSION = ' + chr(34) + version + chr(34) in logo, 'CLI version does not match pyproject.toml'"
       - name: Build wheel and source distribution
         run: python -m build
       - name: Validate distribution metadata
@@ -110,19 +133,16 @@ jobs:
 
   windows-installer:
     name: Build Windows installer
-    needs: windows-install-test
+    needs: [build, windows-install-test]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/download-artifact@v6
         with:
-          python-version: "3.11"
-      - name: Install build tools
-        run: python -m pip install --upgrade build
-      - name: Build wheel bundled by installer
-        run: python -m build --wheel
+          name: release-dists
+          path: dist/
       - name: Install Inno Setup compiler
         run: choco install innosetup --version=6.7.1 --no-progress --yes
       - name: Compile installer
@@ -164,10 +184,23 @@ jobs:
         with:
           name: windows-installer
           path: dist/installer
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-dists
+          path: dist/
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/installer/KRYTH-Setup-*.exe
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/installer/KRYTH-Setup-*.exe
           fail_on_unmatched_files: true
           name: KRYTH ${{ github.ref_name }}
           body: |
-            KRYTH ${{ github.ref_name }} includes Windows PATH recovery and the Windows installer.
+            ## KRYTH ${{ github.ref_name }}
+
+            - Fix KUBA Browser MCP server packaging and its test imports.
+            - Keep the CLI-reported version synchronized with package metadata.
+            - Validate clean Windows wheel installs on Python 3.11–3.14.
+
+            This release includes the wheel, source distribution, and Windows installer.

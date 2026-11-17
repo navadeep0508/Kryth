@@ -50,7 +50,7 @@ If `kryth` is still not found, run `python -m kryth setup --path` using the same
 
 ### Linux and macOS
 
-KRYTH requires Python 3.11 or newer, as declared in the package metadata.
+KRYTH supports Python 3.11 through 3.14, as declared in the package metadata.
 
 ```bash
 python3 -m pip install kryth
@@ -140,7 +140,7 @@ The diagram follows the implementation's agent, client, tool registry, approval,
 
 ## Technology stack
 
-The package declares Python `>=3.11` and these core dependency ranges in `pyproject.toml`:
+The package declares Python `>=3.11,<3.15` and these core dependency ranges in `pyproject.toml`:
 
 | Component | Role |
 | --- | --- |

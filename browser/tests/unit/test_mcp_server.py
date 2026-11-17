@@ -1,16 +1,12 @@
 import asyncio
-import sys
-from pathlib import Path
+from contextlib import asynccontextmanager
 
 import pytest
 
 pytest.importorskip("mcp")
 
-from mcp_types import CallToolRequestParams
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-
-import mcp_server
+from mcp.types import CallToolRequestParams
+from kuba_browser import mcp_server
 
 
 def _call_tool(name: str):
@@ -40,3 +36,28 @@ def test_helper_success_remains_a_normal_tool_result(monkeypatch):
 
     assert result.is_error is False
     assert result.content[0].text == '{"url": "https://example.com"}'
+
+
+def test_main_runs_server_over_stdio(monkeypatch):
+    streams = object(), object()
+    initialization_options = object()
+    calls = []
+
+    @asynccontextmanager
+    async def fake_stdio_server():
+        yield streams
+
+    async def fake_server_run(read_stream, write_stream, options):
+        calls.append((read_stream, write_stream, options))
+
+    monkeypatch.setattr(mcp_server, "stdio_server", fake_stdio_server)
+    monkeypatch.setattr(mcp_server.SERVER, "run", fake_server_run)
+    monkeypatch.setattr(
+        mcp_server.SERVER,
+        "create_initialization_options",
+        lambda: initialization_options,
+    )
+
+    mcp_server.main()
+
+    assert calls == [(*streams, initialization_options)]

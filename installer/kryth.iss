@@ -1,5 +1,5 @@
 #define AppName "KRYTH"
-#define AppVersion "0.0.43"
+#define AppVersion "0.0.44"
 #define WheelName "kryth-" + AppVersion + "-py3-none-any.whl"
 
 [Setup]
