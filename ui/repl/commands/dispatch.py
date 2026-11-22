@@ -44,6 +44,7 @@ COMMAND_HINTS: dict[str, str] = {
     "setup": "Run the setup wizard to configure a provider",
     "providers": "List available AI providers",
     "doctor": "Run diagnostics and health check",
+    "browser": "KRYTH Browser commands (setup, doctor, status, tabs, reconnect, uninstall)",
     "exit": "Exit the agent",
     "quit": "Exit the agent",
 }
@@ -82,6 +83,7 @@ class SlashCommands(HelpCommands, SettingsCommands, SessionCommands, InspectComm
             "setup": self.run_setup,
             "providers": self.list_providers,
             "doctor": self.run_doctor,
+            "browser": self.browser_command,
         }
 
     def command_names(self) -> list[str]:
@@ -230,6 +232,52 @@ class SlashCommands(HelpCommands, SettingsCommands, SessionCommands, InspectComm
             self.console.print("[success]Configuration looks good![/success]")
 
         self.console.print()
+
+    async def browser_command(self, agent: Agent, args: list[str]) -> None:
+        """KRYTH Browser subcommands: setup, doctor, status, tabs, reconnect, uninstall.
+
+        Usage: /browser setup        Run first-run setup
+               /browser doctor       Check browser and relay readiness
+               /browser status       Show relay/extension status
+               /browser tabs         List open browser tabs
+               /browser reconnect    Restart the relay
+               /browser uninstall    Stop the relay and clear integration
+        """
+        from kryth_browser.cli_commands import (
+            run_browser_setup,
+            run_browser_doctor,
+            run_browser_status,
+            run_browser_tabs,
+            run_browser_reconnect,
+            run_browser_uninstall,
+        )
+
+        if not args:
+            self.console.print(
+                "[error]Usage: /browser <setup|doctor|status|tabs|reconnect|uninstall>[/error]"
+            )
+            return
+
+        sub = args[0].lower()
+        rest = args[1:]
+
+        try:
+            if sub == "setup":
+                await run_browser_setup(self.console, rest)
+            elif sub == "doctor":
+                await run_browser_doctor(self.console, rest)
+            elif sub == "status":
+                await run_browser_status(self.console, rest)
+            elif sub == "tabs":
+                await run_browser_tabs(self.console, rest)
+            elif sub == "reconnect":
+                await run_browser_reconnect(self.console, rest)
+            elif sub == "uninstall":
+                await run_browser_uninstall(self.console, rest)
+            else:
+                self.console.print(f"[error]Unknown browser subcommand: /browser {sub}[/error]")
+        except Exception as exc:  # noqa: BLE001
+            self.console.print(f"[error]Browser command failed: {exc}[/error]")
 
     async def compact_context(self, agent: Agent, args: list[str]) -> None:
         """Compact conversation context into a structured continuation summary.

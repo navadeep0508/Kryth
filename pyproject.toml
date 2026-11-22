@@ -60,11 +60,11 @@ kryth = "main:main"
 py-modules = ["main"]
 
 [tool.setuptools.package-dir]
-kuba_browser = "browser/src/kuba_browser"
+kryth_browser = "kryth_browser"
 
 [tool.setuptools.packages.find]
-where = [".", "browser/src"]
-include = ["agent*", "client*", "config*", "context*", "hooks*", "kryth*", "prompts*", "safety*", "tools*", "ui*", "utils*", "kuba_browser*"]
+where = [".", "kryth_browser"]
+include = ["agent*", "client*", "config*", "context*", "hooks*", "kryth*", "kryth_browser*", "prompts*", "safety*", "tools*", "ui*", "utils*"]
 
 [tool.setuptools.package-data]
-kuba_browser = ["LICENSE", "SKILL.md", "video-template.html"]
+kryth_browser = ["vendor/LICENSE", "vendor/README.md"]

@@ -67,8 +67,8 @@ class UIConfig(BaseModel):
     startup_tip_interval: float = Field(default=3.0, gt=0)
 
 
-class BrowserPluginConfig(BaseModel):
-    """KUBA in-process CDP browser engine configuration."""
+class KRYTHBrowserConfig(BaseModel):
+    """KRYTH Browser configuration (vendored anomalyco/browse relay)."""
 
     enabled: bool = True
     headless: bool = False
@@ -236,7 +236,7 @@ class Config(BaseModel):
 
     session: SessionConfig = Field(default_factory=SessionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
-    browser_plugin: BrowserPluginConfig = Field(default_factory=BrowserPluginConfig)
+    kryth_browser: KRYTHBrowserConfig = Field(default_factory=KRYTHBrowserConfig)
 
     approval: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
     default_execution_mode: ExecutionMode = ExecutionMode.AUTO

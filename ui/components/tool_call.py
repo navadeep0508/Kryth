@@ -363,6 +363,18 @@ def _subagent(outcome: ToolOutcome) -> Blocks:
     return ([summary] if summary else [], details)
 
 
+def _browser(outcome: ToolOutcome) -> Blocks:
+    """Render a KRYTH Browser tool outcome."""
+    args = outcome.args
+    action = args.get("action", "browser")
+    subject = str(args.get("url") or args.get("selector") or args.get("ref") or action)
+    summary = _joined([f"Browser: {action}", subject])
+    details = [
+        Text(truncate_text(outcome.output, outcome.model_name, MAX_BLOCK_TOKENS), style="assistant")
+    ] if outcome.output.strip() else []
+    return [summary], details
+
+
 def _fallback(outcome: ToolOutcome) -> Blocks:
     args = outcome.args
     subject = next((str(args[key]) for key in ("query", "path", "url", "command", "name", "pattern") if args.get(key)), "")
@@ -414,6 +426,10 @@ RENDERERS: dict[str, Callable[[ToolOutcome], Blocks]] = {
     "terminal_stop": _terminal,
     "terminal_restart": _terminal,
     "terminal_list": _terminal,
+    "browser": _browser,
+    "browser_connect": _browser,
+    "browser_disconnect": _browser,
+    "browser_status": _browser,
 }
 
 

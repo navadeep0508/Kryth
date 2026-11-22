@@ -1,0 +1,4 @@
+dist/
+extension/
+dist-bin/
+.cache/

@@ -1,0 +1,25 @@
+{
+  "name": "@opencode/browse",
+  "description": "browse: let your AI agents use your real browser. The MCP server and relay for the browse Chrome extension.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "browse": "dist/cli.mjs",
+    "opencode-browser": "dist/cli.mjs",
+    "opencode-browser-cli": "dist/cli.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anomalyco/browse.git",
+    "directory": "rust"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

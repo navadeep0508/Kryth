@@ -25,7 +25,7 @@ from context.project_context import (
 from context.workspace import validate_workspace
 from hooks.hook_system import HookSystem
 from safety.approval import ApprovalManager
-from tools.browser_plugin import BrowserPluginManager
+from kryth_browser.manager import BrowserManager as BrowserPluginManager
 from tools.discovery import ToolDiscoveryManager
 from tools.mcp.manager import MCPManager
 from tools.registry import create_default_registry

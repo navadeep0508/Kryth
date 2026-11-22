@@ -1,0 +1,503 @@
+export * as TabCleanup from "./tab-cleanup"
+import { DEFAULT_IDLE_MINUTES, IDLE_MINUTES_KEY, idleMinutesSetting } from "../shared/protocol"
+import { ownedGroup, TIMED_OUT, withTimeout } from "./agent-relay/wire"
+import { serialQueue } from "./serial"
+
+// Closes tabs agents opened once nobody has touched them for a while, so agent work doesn't leave a trail of
+// tabs behind. Only tabs an agent created are tracked (the relay's
+// tabs.create); tabs the user shared are never closed. A tab is "touched" when an agent sends it a
+// command or the user switches to it. A tab the user claims (pins, or drags out of the agent's group) is
+// forgotten; an ungroup the relay starts itself keeps it tracked. `cleanup()` runs every few minutes from an alarm
+// and on demand (relay `tabs.cleanup`).
+
+type Tracked = { touched: number; keepOpen?: boolean }
+
+const STORAGE_KEY = "tabCleanup"
+const SESSION_KEY = "tabCleanupSession"
+const ALARM = "opencode-browser-tab-cleanup"
+
+const tracked = new Map<number, Tracked>()
+/** Tabs a close is ungrouping; their group-change event must not drop idle tracking. */
+const closing = new Set<number>()
+/** Tabs the relay is ungrouping itself (not closing); their group-change event must not drop idle tracking either. */
+const relayUngrouping = new Set<number>()
+let restored: Promise<void> | undefined
+let saveTimer: ReturnType<typeof setTimeout> | undefined
+let writes: Promise<unknown> = Promise.resolve()
+/** Bumped when the browser starts; a restore already reading the old list must not apply it. */
+let generation = 0
+let browserSession: Promise<boolean> | undefined
+/** Touches are written at most this often; which tabs are tracked is written at once. */
+const TOUCH_SAVE_MS = 2_000
+/** How long restore() waits for the tab and group lists; Dia's tab-group API can never settle. */
+const RESTORE_QUERY_MS = 2_000
+/** A close makes several Chrome calls, any of which can hang; fail it rather than wedge every later close. */
+const CLOSE_TIMEOUT_MS = RESTORE_QUERY_MS * 5
+/** Tabs that must stay open whatever their age, for example while a handoff waits for the user or a recording runs. */
+const guards: ((tabId: number) => boolean)[] = []
+
+export type Closed = { tabId: number; title: string; idleMinutes: number }
+
+export function track(tabId: number, options: { keepOpen?: boolean } = {}) {
+  const entry = tracked.get(tabId)
+  if (entry) {
+    entry.touched = Date.now()
+    if (options.keepOpen !== undefined) entry.keepOpen = options.keepOpen || undefined
+  } else {
+    tracked.set(tabId, { touched: Date.now(), ...(options.keepOpen ? { keepOpen: true } : {}) })
+  }
+  save()
+}
+
+/** Keeps a tab out of idle cleanup (or lets it back in): `tabs new` with `keepOpen`, for a tab the agent already has. */
+export function keepOpen(tabId: number, keep: boolean) {
+  const entry = tracked.get(tabId)
+  if (!entry) return
+  entry.keepOpen = keep || undefined
+  save()
+}
+
+export function touch(tabId: number) {
+  const entry = tracked.get(tabId)
+  if (!entry) return
+  entry.touched = Date.now()
+  save({ soon: true })
+}
+
+/**
+ * A tab the user took back, or an agent gave back: idle cleanup no longer has it, and the sound browse muted it with
+ * comes back. A mute the user set stays theirs.
+ */
+export function forget(tabId: number) {
+  if (!tracked.delete(tabId)) return
+  save()
+  void unmuteIfOurs(tabId)
+}
+
+/** Whether browse's own mute is what keeps this tab quiet; a mute the user set is theirs. */
+function mutedByUs(tab: chrome.tabs.Tab) {
+  const mute = tab.mutedInfo
+  return mute?.muted === true && mute.reason === "extension" && mute.extensionId === chrome.runtime.id
+}
+
+/** Unmutes a tab only if browse muted it. */
+async function unmuteIfOurs(tabId: number) {
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+  if (tab && mutedByUs(tab)) await chrome.tabs.update(tabId, { muted: false }).catch(() => undefined)
+}
+
+/**
+ * Runs an ungroup the relay starts itself (undoing a group it made, or letting go of a tab while it reloads). A tab
+ * the relay still tracks keeps idle tracking when the group change lands: this is not the user dragging the tab out.
+ * The mark is dropped once the ungroup settles if no group change consumed it, so it never swallows a real one.
+ */
+export async function relayUngroup<T>(tabId: number, ungroup: () => Promise<T>): Promise<T> {
+  await restore()
+  if (!tracked.has(tabId)) return ungroup()
+  relayUngrouping.add(tabId)
+  try {
+    return await ungroup()
+  } finally {
+    // Let a group-change event queued by the ungroup consume the mark first.
+    setTimeout(() => relayUngrouping.delete(tabId), 0)
+  }
+}
+
+/** Whether an agent opened this tab (and it hasn't been handed to the user). */
+export async function isTracked(tabId: number) {
+  await restore()
+  return tracked.has(tabId)
+}
+
+/** A mute toggle waits for each tab's Chrome calls, but not forever: one hung call must not hold the toggles behind it. */
+const MUTE_TIMEOUT_MS = 2_000
+/** Mute toggles run one at a time: an on followed at once by an off must end unmuted, not half applied. */
+const muteSerially = serialQueue()
+
+/** Mutes every tab agents opened (the mute agent tabs setting turned on), or unmutes the ones browse muted. */
+export function setMuted(muted: boolean): Promise<void> {
+  return muteSerially(async () => {
+    await restore()
+    for (const tabId of tracked.keys()) await withTimeout(setTabMuted(tabId, muted), MUTE_TIMEOUT_MS)
+  })
+}
+
+/** Mutes a tab, or unmutes it only if browse muted it. */
+async function setTabMuted(tabId: number, muted: boolean) {
+  if (!muted) {
+    await unmuteIfOurs(tabId)
+    return
+  }
+  // A tab the user already muted keeps their mute, so turning the setting off again leaves it quiet.
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+  if (tab && tab.mutedInfo?.muted !== true) await chrome.tabs.update(tabId, { muted: true }).catch(() => undefined)
+}
+
+/** Registers a check that keeps a tab open while it returns true. */
+export function guard(check: (tabId: number) => boolean) {
+  guards.push(check)
+}
+
+/** The setting: minutes before an untouched agent tab closes, 0 for never. */
+export async function idleMinutes() {
+  return idleMinutesSetting((await chrome.storage.local.get(IDLE_MINUTES_KEY))[IDLE_MINUTES_KEY])
+}
+
+/** Agent tabs close one at a time: two closes must not each see the other's tab and leave their window empty. */
+const closeSerially = serialQueue()
+
+/**
+ * Closes an agent's tab. The last tab of the last window leaves a plain tab (or a normal window, when its own is a
+ * popup) behind first, on every platform: closing it would close the window, and with it the browser on Windows and
+ * Linux, while on macOS the browser stays running with no window and the extension loses its link to the relay, which
+ * it doesn't get back by itself. It does that before ungrouping, so a failed replacement leaves the tab and its group
+ * alone. A tab in an agent group is ungrouped before closing: Chrome keeps a saved group when its last tab is the
+ * window's last tab (closing the window keeps its groups saved), while emptying a group by ungrouping always deletes
+ * it.
+ */
+export function closeAgentTab(tabId: number): Promise<void> {
+  return closeSerially(async () => {
+    const work = closeAgentTabNow(tabId)
+    // The timeout may win; don't leave a late rejection from the work it gave up on unhandled.
+    void work.catch(() => undefined)
+    const result = await withTimeout(work, CLOSE_TIMEOUT_MS)
+    if (result === TIMED_OUT) throw new Error(`closing tab ${tabId} timed out`)
+    return result
+  })
+}
+
+async function closeAgentTabNow(tabId: number): Promise<void> {
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+  let groupId: number | undefined
+  try {
+    if (tab) await leaveLastWindowOpen(tab)
+    if (tab && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+      const group = await chrome.tabGroups.get(tab.groupId).catch(() => undefined)
+      if (group && ownedGroup(group.title)) {
+        groupId = tab.groupId
+        closing.add(tabId)
+        await chrome.tabs.ungroup(tabId).catch(() => undefined)
+      }
+    }
+    await chrome.tabs.remove(tabId)
+  } catch (error) {
+    if (groupId !== undefined) {
+      await chrome.tabs.group({ tabIds: [tabId], groupId }).catch(() => undefined)
+      closing.delete(tabId)
+    }
+    throw error
+  }
+}
+
+/** What closing a last tab needs to keep the browser open: nothing, a plain tab, or a normal window. */
+type LastTab = "none" | "tab" | "window"
+
+/**
+ * Leaves the browser something open if closing `tab` would empty the last window: a plain tab in that window, or a
+ * new normal window when its own is a popup, where Chrome doesn't reliably open a tab. Every platform needs it: macOS
+ * keeps running without a window, but the extension then loses its link to the relay.
+ */
+async function leaveLastWindowOpen(tab: chrome.tabs.Tab): Promise<void> {
+  const replacement = await lastTabReplacement(tab)
+  if (replacement === "none") return
+  if (replacement === "tab") await chrome.tabs.create({ windowId: tab.windowId })
+  else await chrome.windows.create({ focused: false, type: "normal" })
+}
+
+/**
+ * Whether closing `tab` would empty the last window, and what to leave behind. An uncertain Chrome call counts as
+ * last: a spare tab or window is better than a browser that quits.
+ */
+async function lastTabReplacement(tab: chrome.tabs.Tab): Promise<LastTab> {
+  if (tab.id === undefined) return "none"
+  const tabs = await withTimeout(chrome.tabs.query({ windowId: tab.windowId }), RESTORE_QUERY_MS)
+    .catch((): typeof TIMED_OUT => TIMED_OUT)
+  if (tabs !== TIMED_OUT && (tabs.length !== 1 || tabs[0]?.id !== tab.id)) return "none"
+  const windows = await withTimeout(
+    chrome.windows.getAll({ windowTypes: ["normal"] }),
+    RESTORE_QUERY_MS,
+  ).catch((): typeof TIMED_OUT => TIMED_OUT)
+  if (windows !== TIMED_OUT) {
+    if (windows.some((window) => window.id !== undefined && window.id !== tab.windowId)) return "none"
+    return windows.some((window) => window.id === tab.windowId) ? "tab" : "window"
+  }
+  const own = await withTimeout(chrome.windows.get(tab.windowId), RESTORE_QUERY_MS).catch((): typeof TIMED_OUT => TIMED_OUT)
+  return own === TIMED_OUT || own.type === "normal" ? "tab" : "window"
+}
+
+/**
+ * Closes tracked tabs idle for at least `minutes` (the setting by default; with the setting at never, an agent's
+ * cleanup without a time still closes only tabs idle for the default 10 minutes). Skips a tab that is the active tab
+ * of the focused window, is playing audio, or is guarded. `minutes: 0` closes every unguarded tracked tab.
+ * `own` is one agent's cleanup: its minutes apply to its own tabs, and every other tab also waits for the setting.
+ */
+export async function cleanup(options: { minutes?: number; own?: { tabIds: readonly number[]; minutes?: number } } = {}) {
+  await restore()
+  const setting = (await idleMinutes()) || DEFAULT_IDLE_MINUTES
+  const minutes = options.minutes ?? setting
+  const own = options.own
+  const threshold = (tabId: number) => {
+    if (!own) return minutes
+    const asked = own.minutes ?? setting
+    return own.tabIds.includes(tabId) ? asked : Math.max(asked, setting)
+  }
+  const now = Date.now()
+  const focused = await chrome.windows.getLastFocused().catch(() => undefined)
+  const closed: Closed[] = []
+  for (const [tabId, entry] of Array.from(tracked)) {
+    const idle = now - entry.touched
+    if (idle < threshold(tabId) * 60_000) continue
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+    if (!tab) {
+      tracked.delete(tabId)
+      continue
+    }
+    if (tab.pinned) {
+      // Pinning takes the tab back: it is the user's now, sound included.
+      forget(tabId)
+      continue
+    }
+    if (tab.active && tab.windowId === focused?.id && focused?.focused) continue
+    if (tab.audible || guards.some((check) => check(tabId))) continue
+    // `tabs new` with keepOpen: the tab stays until an agent or the user closes it.
+    if (entry.keepOpen) continue
+    const removed = await closeAgentTab(tabId).then(
+      () => true,
+      () => false,
+    )
+    // Keep a tab that failed to close, so a later cleanup retries it.
+    if (!removed) continue
+    tracked.delete(tabId)
+    closed.push({ tabId, title: tab.title || tab.url || "Untitled", idleMinutes: Math.round(idle / 60_000) })
+  }
+  save()
+  return closed
+}
+
+/**
+ * Whether the stored list is from the browser session still running. Session storage is cleared by both a browser
+ * restart and an extension reload. A browser start is handled by the onStartup listener below, which clears the list;
+ * without one, a missing marker means a reload or update, which keeps tab ids, so restore() may trust stored tabs that
+ * remain in browse's groups.
+ */
+function sameBrowserSession() {
+  browserSession ??= (async () => {
+    const stored = (await chrome.storage.session.get(SESSION_KEY).catch(() => ({}))) as Record<string, unknown>
+    if (stored[SESSION_KEY] === true) return true
+    await chrome.storage.session.set({ [SESSION_KEY]: true }).catch(() => undefined)
+    return false
+  })()
+  return browserSession
+}
+
+/** Loads the stored list once. A browser start clears it; without one, a reload trusts only ids still in a browse group. */
+function restore() {
+  const mine = generation
+  restored ??= (async () => {
+    const sameSession = await sameBrowserSession()
+    const stored = await chrome.storage.local.get(STORAGE_KEY)
+    // A startup may have cleared the list while this read was in flight.
+    if (mine !== generation) return
+    const saved = (stored[STORAGE_KEY] ?? {}) as Record<string, Tracked>
+    if (sameSession) {
+      for (const [tabId, entry] of Object.entries(saved))
+        if (!tracked.has(Number(tabId))) tracked.set(Number(tabId), entry)
+      return
+    }
+    const [queriedTabs, queriedGroups] = await Promise.all([
+      withTimeout(chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[]), RESTORE_QUERY_MS),
+      withTimeout(chrome.tabGroups.query({}).catch(() => [] as chrome.tabGroups.TabGroup[]), RESTORE_QUERY_MS),
+    ])
+    // A query that timed out counts as none, like a failed one: without its groups the stored list isn't trusted, and
+    // without its tabs none of them are known to be open.
+    const tabs = queriedTabs === TIMED_OUT ? [] : queriedTabs
+    const groups = queriedGroups === TIMED_OUT ? [] : queriedGroups
+    const open = new Map(tabs.filter((tab) => tab.id !== undefined).map((tab) => [tab.id!, tab]))
+    const ownedGroups = new Set(groups.filter((group) => ownedGroup(group.title)).map((group) => group.id))
+    const kept: Record<string, Tracked> = {}
+    /** Stored tabs that are still open but no longer tracked: the sound browse muted them with comes back. */
+    const dropped: number[] = []
+    for (const [tabId, entry] of Object.entries(saved)) {
+      const tab = open.get(Number(tabId))
+      if (!tab || tab.pinned || !ownedGroups.has(tab.groupId)) {
+        // A closed tab needs nothing.
+        if (tab) dropped.push(Number(tabId))
+        continue
+      }
+      kept[tabId] = entry
+    }
+    if (mine !== generation) return
+    await chrome.storage.local.remove(CREATING_KEY).catch(() => undefined)
+    if (mine !== generation) return
+    await chrome.storage.local.set({ [STORAGE_KEY]: kept }).catch(() => undefined)
+    if (mine !== generation) {
+      await chrome.storage.local.remove(STORAGE_KEY).catch(() => undefined)
+      return
+    }
+    for (const [tabId, entry] of Object.entries(kept))
+      if (!tracked.has(Number(tabId))) tracked.set(Number(tabId), entry)
+    for (const tabId of dropped) void unmuteIfOurs(tabId)
+  })()
+  return restored
+}
+
+/**
+ * Writes the tracked tabs to storage, so a service worker restart (or an extension reload) still knows which tabs
+ * agents opened. Tracking a tab or forgetting one is written at once; a touch within a couple of seconds. (A
+ * debounce that every touch pushed back never wrote while agents kept sending commands, so a worker restart then
+ * forgot nearly every agent tab, and idle cleanup never closed them.) Writes run in order, after the stored list was
+ * read back, so an early write can't replace tabs the worker hasn't restored yet.
+ */
+function save(options: { soon?: boolean } = {}) {
+  if (options.soon) {
+    saveTimer ??= setTimeout(flush, TOUCH_SAVE_MS)
+    return
+  }
+  flush()
+}
+
+function flush() {
+  clearTimeout(saveTimer)
+  saveTimer = undefined
+  const mine = generation
+  writes = writes
+    .then(() => restore())
+    .then(() => {
+      // The browser started while this write was queued: the startup handler removed the old list.
+      if (mine !== generation) return
+      return chrome.storage.local.set({ [STORAGE_KEY]: Object.fromEntries(tracked) })
+    })
+    .catch(() => undefined)
+}
+
+/** Resolves once every pending write has reached storage. */
+async function flushed() {
+  if (saveTimer !== undefined) flush()
+  await writes
+}
+
+const CREATING_KEY = "tabCleanupCreating"
+type Creating = { id: string; url: string; after: number; at: number; keepOpen?: boolean }
+let creatingWrites: Promise<unknown> = Promise.resolve()
+
+/**
+ * Notes a tab an agent is about to open, before chrome.tabs.create runs. A service worker that stops while the tab is
+ * being created (Chrome finishes creating it) never tracks it, and nobody would ever close it: a worker restart left
+ * such a tab behind about every other time while agents were busy. `reconcileCreates` finds and closes it.
+ */
+export async function beginCreate(url: string, keepOpen = false): Promise<string> {
+  const after = Math.max(0, ...(await chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[])).map((tab) => tab.id ?? 0))
+  const entry: Creating = { id: crypto.randomUUID(), url, after, at: Date.now(), ...(keepOpen ? { keepOpen: true } : {}) }
+  await updateCreating((list) => [...list, entry])
+  return entry.id
+}
+
+/** The tab is tracked (and stored) now, or its creation failed. */
+export async function endCreate(id: string) {
+  await flushed()
+  await updateCreating((list) => list.filter((entry) => entry.id !== id))
+}
+
+/**
+ * On a worker start: closes tabs a previous worker created for an agent but stopped before tracking. Such a tab is
+ * newer than the tabs that existed when its creation began, in the background, opened by no tab, showing the URL it
+ * was opened with, and neither tracked nor attached.
+ */
+export async function reconcileCreates(attached: (tabId: number) => boolean): Promise<Closed[]> {
+  await restore()
+  const pending = ((await chrome.storage.local.get(CREATING_KEY))[CREATING_KEY] ?? []) as Creating[]
+  if (!pending.length) return []
+  const tabs = (await chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[])).sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
+  const closed: Closed[] = []
+  const taken = new Set<number>()
+  for (const entry of pending) {
+    const tab = tabs.find(
+      (candidate) =>
+        candidate.id !== undefined &&
+        candidate.id > entry.after &&
+        !taken.has(candidate.id) &&
+        !candidate.active &&
+        candidate.openerTabId === undefined &&
+        [candidate.url, candidate.pendingUrl].includes(entry.url) &&
+        !tracked.has(candidate.id) &&
+        !attached(candidate.id),
+    )
+    if (tab?.id === undefined) continue
+    // A tab opened with keepOpen was made to be kept: never clean it up as an orphan.
+    if (entry.keepOpen) continue
+    taken.add(tab.id)
+    if (await closeAgentTab(tab.id).then(() => true, () => false)) closed.push({ tabId: tab.id, title: tab.title || tab.url || "Untitled", idleMinutes: 0 })
+  }
+  await updateCreating((list) => list.filter((entry) => !pending.some((done) => done.id === entry.id)))
+  return closed
+}
+
+/**
+ * On a worker start: closes tracked agent tabs the relay doesn't have (no debugger attachment survived or came back).
+ * The relay attaches every tab it opens right away and closes the ones it lets go, so such a tab is one whose opening
+ * the stopped worker never reported, or whose attach it cut short; nothing would use it again.
+ */
+export async function closeUnattached(attached: (tabId: number) => boolean): Promise<Closed[]> {
+  await restore()
+  const closed: Closed[] = []
+  for (const tabId of Array.from(tracked.keys())) {
+    if (attached(tabId)) continue
+    // A keepOpen tab is kept whatever happened to the worker that opened it.
+    if (tracked.get(tabId)?.keepOpen) continue
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+    tracked.delete(tabId)
+    if (tab && !tab.pinned && (await closeAgentTab(tabId).then(() => true, () => false))) {
+      closed.push({ tabId, title: tab.title || tab.url || "Untitled", idleMinutes: 0 })
+      continue
+    }
+    // A tab that stays open (pinned, or its close failed) comes back with its sound.
+    if (tab) void unmuteIfOurs(tabId)
+  }
+  save()
+  return closed
+}
+
+function updateCreating(change: (list: Creating[]) => Creating[]) {
+  const write = creatingWrites.then(async () => {
+    const list = ((await chrome.storage.local.get(CREATING_KEY))[CREATING_KEY] ?? []) as Creating[]
+    await chrome.storage.local.set({ [CREATING_KEY]: change(list) })
+  })
+  creatingWrites = write.catch(() => undefined)
+  return write.catch(() => undefined)
+}
+
+// The user switching to a tab counts as using it; a tab the user moves out of the agent's group is theirs now.
+// Kept in local storage so a service worker restart or an extension reload doesn't forget which tabs agents opened.
+// A browser start clears it instead: tab ids can be reused across a restart, so the stored ids aren't trusted then.
+chrome.runtime.onStartup.addListener(() => {
+  generation += 1
+  tracked.clear()
+  closing.clear()
+  relayUngrouping.clear()
+  void chrome.storage.local.remove([STORAGE_KEY, CREATING_KEY])
+})
+chrome.tabs.onActivated.addListener(({ tabId }) => touch(tabId))
+chrome.tabs.onRemoved.addListener((tabId) => {
+  closing.delete(tabId)
+  relayUngrouping.delete(tabId)
+  // The tab is gone: dropping it here skips the unmute forget() makes for a tab the user took back.
+  if (tracked.delete(tabId)) save()
+})
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.pinned) forget(tabId)
+  if (change.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+    // The relay's own ungroups keep tracking (it may be about to close the tab or keep using it); a tab the user
+    // moves out of the agent group is theirs now.
+    const byRelay = relayUngrouping.delete(tabId)
+    if (!byRelay && tracked.has(tabId) && !closing.has(tabId)) forget(tabId)
+  }
+})
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== ALARM) return
+  // Never (0) leaves agent tabs open until their agent or the user closes them.
+  void idleMinutes().then((minutes) => {
+    if (minutes > 0) return cleanup({ minutes })
+  })
+})
+void chrome.alarms.create(ALARM, { periodInMinutes: 1 })
+void restore()
