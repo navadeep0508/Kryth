@@ -212,13 +212,11 @@ def test_workspace_detection_uses_only_active_project_markers(tmp_path):
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "civiceye"\n', encoding="utf-8")
     (tmp_path / "agent").mkdir()
     (tmp_path / "agent" / "agent.py").write_text("# other project's agent", encoding="utf-8")
-    (tmp_path / "browser").mkdir()
     context = build_project_context(Config(cwd=tmp_path), tmp_path)
     assert context.active_project == tmp_path.name
     assert context.active_project_root == tmp_path
     assert context.is_kryth_source is False
     assert context.kryth_runtime_root != tmp_path
-    assert context.browser_infrastructure_root == tmp_path / "browser"
 
 
 def test_workspace_detection_identifies_kryth_source_only_inside_workspace(tmp_path):

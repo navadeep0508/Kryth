@@ -67,15 +67,6 @@ class UIConfig(BaseModel):
     startup_tip_interval: float = Field(default=3.0, gt=0)
 
 
-class KRYTHBrowserConfig(BaseModel):
-    """KRYTH Browser configuration (vendored anomalyco/browse relay)."""
-
-    enabled: bool = True
-    headless: bool = False
-    timeout_seconds: float = 90.0
-    allowed_domains: list[str] = Field(default_factory=list)
-
-
 class BashEnvironmentConfig(BaseModel):
     ignore_default_excludes: bool = False # for filtering keys, secrets
     exclude_patterns: list[str] = Field(
@@ -236,8 +227,6 @@ class Config(BaseModel):
 
     session: SessionConfig = Field(default_factory=SessionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
-    kryth_browser: KRYTHBrowserConfig = Field(default_factory=KRYTHBrowserConfig)
-
     approval: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
     default_execution_mode: ExecutionMode = ExecutionMode.AUTO
     execution_mode: ExecutionMode = ExecutionMode.AUTO

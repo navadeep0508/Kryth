@@ -76,10 +76,6 @@ kryth "Explain this codebase"
 kryth --continue
 ```
 
-To set up KRYTH's built-in browser operator, run `kryth browser doctor` and
-`kryth browser setup`. See the [KUBA browser setup guide](docs/kuba-browser.md)
-for Chrome permissions and troubleshooting.
-
 For browser-based OpenRouter login or manual key entry, use `kryth login` or `kryth login --paste`. `API_KEY` and `BASE_URL` environment variables override saved credentials and base URL. See [configuration](docs/configuration.md) and the [CLI reference](docs/cli.md).
 
 ## Features
@@ -166,7 +162,6 @@ Credentials can be entered through `kryth login` or the setup flow. `API_KEY` an
 | Guide | Description |
 | --- | --- |
 | [Windows installation](docs/installation.md) | Installer, pip, PATH setup, and recovery |
-| [KUBA browser setup](docs/kuba-browser.md) | Browser prerequisites, first-run permissions, configuration, and troubleshooting |
 | [CLI reference](docs/cli.md) | Commands, flags, login, and keyboard shortcuts |
 | [Configuration](docs/configuration.md) | TOML settings, providers, environment variables, hooks, MCP, and `AGENTS.md` |
 | [Tools](docs/tools.md) | Built-in tools, sub-agents, MCP, and context handling |

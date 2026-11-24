@@ -23,8 +23,6 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.4,<9",
-    "Pillow>=10.0,<12",
-    "cdp-use==1.4.5",
     "ddgs>=9.14,<10",
     "fastmcp>=3.4,<4",
     "httpx>=0.28,<1",
@@ -60,11 +58,11 @@ kryth = "main:main"
 py-modules = ["main"]
 
 [tool.setuptools.package-dir]
-kryth_browser = "kryth_browser"
+
 
 [tool.setuptools.packages.find]
-where = [".", "kryth_browser"]
-include = ["agent*", "client*", "config*", "context*", "hooks*", "kryth*", "kryth_browser*", "prompts*", "safety*", "tools*", "ui*", "utils*"]
+where = ["."]
+include = ["agent*", "client*", "config*", "context*", "hooks*", "kryth*", "prompts*", "safety*", "tools*", "ui*", "utils*"]
+
 
 [tool.setuptools.package-data]
-kryth_browser = ["vendor/LICENSE", "vendor/README.md"]

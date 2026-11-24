@@ -22,17 +22,6 @@ You have access to the following tools to accomplish your tasks:
             description = description[:100] + "..."
         guidelines += f"- **{tool.name}**: {description}\n"
 
-    if any(tool.name == "browser" for tool in regular_tools):
-        guidelines += """
-
-## Browser workflow (KUBA)
-
-- Use `observe(query=..., mode='compact')` for the first page read after navigation; request `detailed` only when the compact summary lacks needed context.
-- For a YouTube search, navigate directly to `https://www.youtube.com/results?search_query=<URL-encoded query>` instead of guessing search-box selectors. For example, `python select video` becomes `https://www.youtube.com/results?search_query=python+select+video`.
-- Do not guess selectors. For a click, pass an exact observed `role` and `name` or pass the observed `selector` alone; do not combine semantic fields and a selector. Inspect again after page changes. If an element lookup fails, do not retry alternate selectors until you re-observe.
-- A successful navigation call only reports the requested URL; it does not prove the page loaded the requested content. After navigation, call `observe` and confirm the search results match the query. Use `get_accessibility_tree` with a filter such as `video` when useful.
-- If the user asks to select or open a result, identify it from the observed results, open it, then verify the resulting watch page URL or title before reporting completion. If verification fails, report what actually happened.
-"""
 
     if subagent_tools:
         guidelines += "\n## Sub-Agents\n\n"

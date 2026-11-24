@@ -92,16 +92,6 @@ class ProjectContext:
             return False
 
     @property
-    def browser_infrastructure_root(self) -> Path | None:
-        """Report browser infrastructure only when it is inside this workspace."""
-        candidate = (self.workspace.path / "browser").resolve()
-        try:
-            candidate.relative_to(self.workspace.path.resolve())
-        except ValueError:
-            return None
-        return candidate if candidate.is_dir() else None
-
-    @property
     def external_integrations(self) -> list[str]:
         """List configured providers and MCP servers without scanning outside the workspace."""
         if self.config is None:

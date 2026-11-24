@@ -25,7 +25,6 @@ from context.project_context import (
 from context.workspace import validate_workspace
 from hooks.hook_system import HookSystem
 from safety.approval import ApprovalManager
-from kryth_browser.manager import BrowserManager as BrowserPluginManager
 from tools.discovery import ToolDiscoveryManager
 from tools.mcp.manager import MCPManager
 from tools.registry import create_default_registry
@@ -55,7 +54,6 @@ class Session:
         )
         self.loop_detector = LoopDetector()
         self.hook_system = HookSystem(config)
-        self.browser_plugin_manager = BrowserPluginManager(config)
         self.session_id = str(uuid.uuid4()) # Unique identifiers to resume sessions
         self.execution_mode: ExecutionMode = self.config.execution_mode
         self.workspace = validate_workspace(config.cwd)
@@ -90,10 +88,6 @@ class Session:
         self.mcp_manager.register_tools(self.tool_registry)
         _step("discovering tools")
         self.discovery_manager.discover()
-        _step("discovering browser plugins")
-        browser_tools = self.browser_plugin_manager.discover()
-        for tool in browser_tools:
-            self.tool_registry.register(tool)
         _step("building context manager")
         self.context_manager = ContextManager(
             config=self.config,

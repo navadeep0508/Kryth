@@ -20,7 +20,6 @@ from config.setup_wizard import SetupWizard
 from ui import TUI, Repl, get_console, stream_turn
 from ui.components.logo import KRYTH_VERSION
 from ui.setup_tui import SetupTUI
-from kryth_browser.cli_commands import browser as browser_cli_group
 import asyncio
 import click
 import json
@@ -154,9 +153,6 @@ def main(ctx: click.Context, cwd: Path | None, setup: bool, resume: str | None, 
     # Bare `kryth` with no subcommand launches the interactive TUI.
     if ctx.invoked_subcommand is None:
         ctx.invoke(run, prompt=None, setup=setup)
-
-
-main.add_command(browser_cli_group)
 
 
 @main.command(

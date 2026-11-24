@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 import re
 import sys
@@ -203,12 +204,7 @@ class Agent:
     def _phase_for_tool(name: str, arguments: dict) -> str:
         if name == "plan":
             return "PLAN"
-        action = arguments.get("action") if isinstance(arguments, dict) else None
         if name in {"read", "list_directories", "grep", "glob", "search", "fetch", "memory"}:
-            return "INSPECT"
-        if name == "browser" and action in {
-            "observe", "inspect", "get_accessibility_tree", "list_tabs", "screenshot", "domain_skills",
-        }:
             return "INSPECT"
         return "EXECUTE"
     
@@ -409,53 +405,6 @@ class Agent:
                     tool_call.name,
                     result,
                 )
-
-                # Track browser lifecycle steps in the DevelopmentSupervisor
-                # so interrupted tasks can resume from the last verified step.
-                if tool_call.name == "browser" and result.success:
-                    action = tool_call.arguments.get("action") if isinstance(tool_call.arguments, dict) else None
-                    params = tool_call.arguments.get("params", {}) if isinstance(tool_call.arguments, dict) else {}
-                    step_map = {
-                        "connect": ("browser_connect", "Connect to browser via CDP"),
-                        "observe": ("browser_observe", "Observe current page state"),
-                        "navigate": ("browser_navigate", f"Navigate to {params.get('url', 'unknown')}"),
-                        "click": ("browser_click", f"Click {params.get('selector', 'element')}"),
-                        "type": ("browser_type", "Type into field"),
-                        "fill": ("browser_fill", "Fill form field"),
-                        "press": ("browser_press", f"Press key {params.get('key', 'unknown')}"),
-                        "screenshot": ("browser_screenshot", "Capture screenshot"),
-                        "inspect": ("browser_inspect", "Inspect element"),
-                        "get_accessibility_tree": ("browser_accessibility", "Get accessibility tree"),
-                        "execute_javascript": ("browser_javascript", "Execute JavaScript"),
-                        "new_tab": ("browser_new_tab", "Open new tab"),
-                        "list_tabs": ("browser_list_tabs", "List browser tabs"),
-                        "switch_tab": ("browser_switch_tab", "Switch browser tab"),
-                        "close_tab": ("browser_close_tab", "Close browser tab"),
-                        "upload_file": ("browser_upload", "Upload file"),
-                        "download": ("browser_download", "Download file"),
-                        "domain_skills": ("browser_domain_skills", "Load domain skills"),
-                        "done": ("browser_done", "Mark browser task complete"),
-                    }
-                    if action in step_map:
-                        step_id, step_desc = step_map[action]
-                        ds = self.session.development_supervisor
-                        # Load fresh state to avoid stale reads
-                        ds.state = ds._load()
-                        task = ds.state.get("task_checkpoint") or {}
-                        if task.get("status") == "in_progress":
-                            existing_step_ids = {s.get("id") for s in task.get("steps", [])}
-                            if step_id not in existing_step_ids:
-                                ds.add_task_step(step_id, step_desc)
-                            # Verify the step if the result is verified
-                            if result.execution_status in {
-                                ExecutionStatus.STATE_VERIFIED,
-                                ExecutionStatus.TASK_COMPLETED,
-                            }:
-                                evidence = f"{action} succeeded: {result.output[:200]}"
-                                try:
-                                    ds.verify_task_step(step_id, evidence, passed=True)
-                                except ValueError:
-                                    pass  # Step may not exist yet or already verified
 
                 tool_call_results.append(
                     ToolResultMessage(

@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile project sources
-        run: python -m compileall -q agent browser/src client config context kryth prompts safety tools ui utils
+        run: python -m compileall -q agent client config context kryth prompts safety tools ui utils
 
   test:
     name: Test on Python ${{ matrix.python-version }}
@@ -73,8 +73,7 @@ jobs:
           & $python -m pip install $wheel.FullName
           & $python -m pip check
           Set-Location $env:RUNNER_TEMP
-          & $python -c "import os, tomllib; from importlib.metadata import version; import agent, client, config, context, hooks, kryth, kuba_browser, main, prompts, safety, tools, ui, utils; project = os.path.join(os.environ['GITHUB_WORKSPACE'], 'pyproject.toml'); expected = tomllib.load(open(project, 'rb'))['project']['version']; assert version('kryth') == expected"
-          & $python -c "from importlib.resources import files; package = files('kuba_browser'); assert package.joinpath('SKILL.md').is_file(); assert package.joinpath('video-template.html').is_file()"
+          & $python -c "import os, tomllib; from importlib.metadata import version; import agent, client, config, context, hooks, kryth, main, prompts, safety, tools, ui, utils; project = os.path.join(os.environ['GITHUB_WORKSPACE'], 'pyproject.toml'); expected = tomllib.load(open(project, 'rb'))['project']['version']; assert version('kryth') == expected"
           & $python -m kryth --version
           & $launcher --version
 
@@ -175,7 +174,7 @@ jobs:
           body: |
             ## KRYTH ${{ github.ref_name }}
 
-            - Fix KUBA Browser MCP server packaging and its test imports.
+            - Remove browser integration; KRYTH is browser-free.
             - Keep the CLI-reported version synchronized with package metadata.
             - Validate clean Windows wheel installs on Python 3.11–3.14.
 

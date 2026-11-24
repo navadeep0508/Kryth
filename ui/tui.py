@@ -192,7 +192,7 @@ class TUI:
         """Show completion status and counters backed by completed tool results this turn.
 
         A task is complete only when the user's requested objective is verified.
-        Files inspected, browser connected, or search results loaded do not mean completion.
+        Files inspected, search results loaded do not mean completion.
         """
         if completed:
             status_text = Text("COMPLETED", style="success")
