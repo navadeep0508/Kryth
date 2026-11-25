@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 
+from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
+
 # Ensure the project root is on sys.path so all sub-packages resolve
 # correctly regardless of the working directory or shadowing namespace packages.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -212,7 +214,14 @@ def run(ctx: click.Context, prompt: str | None, setup: bool = False):
         if result is None:
             sys.exit(1)
     else:
-        asyncio.run(Repl(config, resume=resume, upgrade_notice=_upgrade_notice()).run())
+        try:
+            asyncio.run(Repl(config, resume=resume, upgrade_notice=_upgrade_notice()).run())
+        except NoConsoleScreenBufferError as exc:
+            console.print(
+                f"[error]KRYTH requires a Windows console to run.[/error] "
+                f"Please run from cmd.exe or PowerShell directly (not Git Bash/MSYS2)."
+            )
+            sys.exit(1)
 
 
 @main.command(
