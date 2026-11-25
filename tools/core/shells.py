@@ -90,6 +90,57 @@ def validate_command_shell(command: str, shell_type: ShellType | str) -> None:
         )
 
 
+def detect_command_shell_conflict(command: str, shell_type: ShellType | str) -> str | None:
+    """Detect shell-specific syntax that may be incompatible with the target shell.
+
+    Uses command-specific compatibility checks rather than broad rejection rules.
+    Many CMD commands work in PowerShell via aliases or external executables, so
+    only truly problematic patterns are flagged.
+
+    Returns a description of the conflict, or None if no conflict is detected.
+    """
+    selected = shell_type if isinstance(shell_type, ShellType) else ShellType(shell_type)
+    lowered = command.lower().strip()
+    words = lowered.split()
+    first_word = words[0] if words else ""
+
+    if selected == ShellType.POWERSHELL:
+        # CMD-only commands with no PowerShell equivalent.
+        cmd_only = {"ver", "vol"}
+        if first_word in cmd_only:
+            return (
+                f"'{first_word}' is a CMD command; "
+                "use PowerShell equivalents ($PSVersionTable for version, "
+                "Get-Volume for volume info)."
+            )
+        # CMD environment variable syntax: set VAR=value
+        if re.match(r"^set\s+\w+=", lowered):
+            return (
+                "CMD 'set VAR=value' syntax; use PowerShell "
+                "$env:VAR = 'value' or Set-Variable."
+            )
+        # CMD variable expansion: %VAR%
+        if re.search(r"%[A-Za-z_][A-Za-z0-9_]*%", command):
+            return (
+                "CMD %VAR% expansion detected; use PowerShell $env:VAR "
+                "or the variable's PowerShell equivalent."
+            )
+
+    if selected == ShellType.CMD:
+        # PowerShell cmdlets in CMD are already caught by validate_command_shell,
+        # but also flag PowerShell-specific operators.
+        ps_operators = {"-eq", "-ne", "-lt", "-gt", "-like", "-match"}
+        for op in ps_operators:
+            if op in lowered:
+                return (
+                    f"PowerShell operator '{op}' detected; "
+                    "use CMD equivalents (==, !=, etc.)."
+                )
+                break
+
+    return None
+
+
 def parse_directory_change(command: str, shell_type: ShellType | str) -> str | None:
     """Return a target for a standalone cd/Set-Location command, if present."""
     selected = shell_type if isinstance(shell_type, ShellType) else ShellType(shell_type)
@@ -560,11 +611,21 @@ def _shell_info(shell_type: ShellType, family: ShellFamily, executable: str,
     )
 
 
+@lru_cache(maxsize=1)
 def detect_available_shells() -> list[ShellInfo]:
     """Detect all shells available on the current system.
 
+    Results are cached to avoid repeated expensive version probes
+    (e.g. ``cmd /c ver``, ``powershell -Command $PSVersionTable``,
+    ``bash --version``) on every ``select_shell()`` call.
+
     Returns a list of ShellInfo, ordered by preference for the current OS.
+    Callers should not mutate the returned list.
     """
+    return _detect_available_shells_uncached()
+
+
+def _detect_available_shells_uncached() -> list[ShellInfo]:
     os_name = detect_os()
     shells: list[ShellInfo] = []
 
@@ -703,13 +764,17 @@ def detect_configured_shell() -> ShellType | None:
                    "wsl-bash": ShellType.WSL_BASH, "wsl_bash": ShellType.WSL_BASH}
         if explicit:
             return aliases.get(explicit)
-        # Check for Git Bash / WSL indicators.
+        # Check for WSL indicator.
         if os.environ.get("WSL_DISTRO_NAME"):
             return ShellType.WSL_BASH
-        if os.environ.get("MSYSTEM") or os.environ.get("GIT_BASH"):
-            return ShellType.GIT_BASH
+        # PSModulePath is the strongest indicator that PowerShell is the
+        # configured interactive shell. Check it before MSYSTEM/GIT_BASH so
+        # that PowerShell wins when both a Git Bash environment (MSYSTEM) and
+        # PowerShell (PSModulePath) are present.
         if os.environ.get("PSModulePath"):
             return ShellType.POWERSHELL
+        if os.environ.get("MSYSTEM") or os.environ.get("GIT_BASH"):
+            return ShellType.GIT_BASH
         # Default Windows shell is CMD only when no host-shell marker exists.
         return ShellType.CMD
     shell_env = os.environ.get("SHELL", "")
@@ -874,4 +939,5 @@ __all__ = [
     "detect_shell_from_cwd",
     "select_shell",
     "infer_shell_type",
+    "detect_command_shell_conflict",
 ]

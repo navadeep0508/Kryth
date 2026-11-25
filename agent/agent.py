@@ -17,6 +17,11 @@ from tools.base import (
     InterruptionType,
     ToolConfirmation,
 )
+from utils.development_supervisor import (
+    TASK_RUNNING, TASK_COMPLETED_STATE, TASK_PENDING, TASK_FAILED,
+    TASK_BLOCKED, TASK_AWAITING_APPROVAL, TASK_VERIFICATION_REQUIRED,
+    TASK_VERIFIED,
+)
 from utils.execution_record import ExecutionRecorder
 from utils.text import estimate_request_tokens
 
@@ -53,12 +58,13 @@ class Agent:
         self.interruption_type: InterruptionType | None = None
         self.interruption_reason: str | None = None
         self.interruption_exception: BaseException | None = None
+        self._loop_finished_cleanly: bool = False
 
     async def run(self, message: str):
         await self.session.hook_system.trigger_before_agent(message)
         initial_task = self.session.development_supervisor.state.get("task_checkpoint") or {}
         initial_task_id = initial_task.get("task_id")
-        resumed_incomplete_task = initial_task.get("status") == "in_progress"
+        resumed_incomplete_task = initial_task.get("status") == TASK_RUNNING
 
         if self.session.project_context and self.session.project_context.is_ambiguous:
             if not _confirms_new_project(message):
@@ -101,42 +107,117 @@ class Agent:
         final_response: str | None = None
         finalized = False
         try:
-            self.session.inc_turn()
-            self.session.note_prompt(message)
-            self.session.reset_turn_usage()
-            self.session.context_manager.add_user_message(message)
+            # --- Continuation loop: keep turning until the task is verified
+            # complete or blocked. A single _agentic_loop() pass may not finish
+            # all requirements; the loop resumes from the last verified state.
+            max_continuations = self.config.max_continuations if hasattr(self.config, 'max_continuations') else 3
+            continuation = 0
+            continuation_prompt = ""
+            while True:
+                self.session.inc_turn()
+                self.session.note_prompt(message if continuation == 0 else
+                                         f"[continuation {continuation}] {message}")
+                self.session.reset_turn_usage()
+                self.session.context_manager.add_user_message(
+                    message if continuation == 0 else continuation_prompt
+                )
 
-            async for event in self._agentic_loop():
-                if event.type == AgentEventType.CONTEXT_BUDGET:
-                    self.execution_recorder.record_context_budget(event.data.get("context_budget") or {})
-                elif event.type == AgentEventType.USAGE:
-                    self.execution_recorder.record_usage(event.data.get("usage") or {})
-                elif event.type == AgentEventType.AGENT_ERROR:
-                    self.execution_recorder.set_phase("RECOVER")
-                    self.execution_recorder.record_error(
-                        str(event.data.get("error") or "Agent request failed"),
-                        event.data.get("details"),
+                tool_calls_made = False
+                async for event in self._agentic_loop():
+                    if event.type == AgentEventType.CONTEXT_BUDGET:
+                        self.execution_recorder.record_context_budget(event.data.get("context_budget") or {})
+                    elif event.type == AgentEventType.USAGE:
+                        self.execution_recorder.record_usage(event.data.get("usage") or {})
+                    elif event.type == AgentEventType.AGENT_ERROR:
+                        self.execution_recorder.set_phase("RECOVER")
+                        self.execution_recorder.record_error(
+                            str(event.data.get("error") or "Agent request failed"),
+                            event.data.get("details"),
+                        )
+                    elif event.type == AgentEventType.TOOL_CALL_START:
+                        tool_calls_made = True
+                        call_id = str(event.data.get("call_id", ""))
+                        name = str(event.data.get("name", "unknown"))
+                        arguments = event.data.get("arguments") or {}
+                        self.execution_recorder.set_phase(self._phase_for_tool(name, arguments))
+                        self.execution_recorder.tool_started(call_id, name, arguments)
+                        self._tool_started_at[call_id] = time.perf_counter()
+                    elif event.type == AgentEventType.TEXT_COMPLETE:
+                        final_response = event.data.get("content")
+                    yield event
+
+                await self.session.hook_system.trigger_after_agent(message, final_response)
+                self.session.save_checkpoint()
+
+                # Reload authoritative task state from disk so updates made by
+                # tools (e.g. PlanTool) are always visible to the loop.
+                supervisor = self.session.development_supervisor
+                if hasattr(supervisor, "_load"):
+                    supervisor.state = supervisor._load()
+                current_task = supervisor.state.get("task_checkpoint") or {}
+                task_status = current_task.get("status")
+                if task_status in {TASK_COMPLETED_STATE, TASK_FAILED, TASK_BLOCKED}:
+                    break
+                # If no tool calls were made this pass, there is nothing to
+                # continue with — the agent has no more actions to take.
+                if not tool_calls_made:
+                    break
+
+                pending_steps = current_task.get("pending_steps") or []
+                benchmark_phases = supervisor.state.get("benchmark_phases") or {}
+                unverified_phases = (
+                    bool(benchmark_phases)
+                    and hasattr(supervisor, "all_benchmark_phases_verified")
+                    and not supervisor.all_benchmark_phases_verified()
+                )
+                has_remaining_work = bool(pending_steps) or unverified_phases
+
+                # If the model finished its response cleanly (no pending tool
+                # calls) and no tracked plan steps or benchmark phases remain,
+                # mark the checkpoint completed and stop instead of looping.
+                if self._loop_finished_cleanly and not has_remaining_work:
+                    if (
+                        task_status == TASK_RUNNING
+                        and not current_task.get("failed_steps")
+                        and hasattr(supervisor, "set_task_status")
+                    ):
+                        supervisor.set_task_status(TASK_COMPLETED_STATE, "Completed.")
+                        current_task = supervisor.state.get("task_checkpoint") or {}
+                    break
+
+                continuation += 1
+                if continuation >= max_continuations:
+                    # Reached continuation limit without completion; report
+                    # the current state so the user can decide next steps.
+                    break
+
+                if unverified_phases:
+                    continuation_prompt = (
+                        "Continue the task. Resume from the last verified state. "
+                        "Remaining work: inspect current checkpoint and complete pending benchmark phases."
                     )
-                elif event.type == AgentEventType.TOOL_CALL_START:
-                    call_id = str(event.data.get("call_id", ""))
-                    name = str(event.data.get("name", "unknown"))
-                    arguments = event.data.get("arguments") or {}
-                    self.execution_recorder.set_phase(self._phase_for_tool(name, arguments))
-                    self.execution_recorder.tool_started(call_id, name, arguments)
-                    self._tool_started_at[call_id] = time.perf_counter()
-                elif event.type == AgentEventType.TEXT_COMPLETE:
-                    final_response = event.data.get("content")
-                yield event
+                elif pending_steps:
+                    continuation_prompt = (
+                        "Continue the task. Resume from the last verified state. "
+                        f"Remaining plan steps: {'; '.join(pending_steps)}"
+                    )
+                else:
+                    continuation_prompt = "Continue the task from the current state."
 
-            await self.session.hook_system.trigger_after_agent(message, final_response)
-            self.session.save_checkpoint()
-            current_task = self.session.development_supervisor.state.get("task_checkpoint") or {}
             task_relevant = resumed_incomplete_task or current_task.get("task_id") != initial_task_id
             task_checkpoint = current_task if task_relevant else None
             task_status = task_checkpoint.get("status") if task_checkpoint else None
-            execution_status = (
-                ExecutionStatus.TASK_COMPLETED if task_status == "completed" else None
-            )
+            _status_to_execution = {
+                TASK_COMPLETED_STATE: ExecutionStatus.TASK_COMPLETED,
+                TASK_FAILED: ExecutionStatus.ACTION_FAILED,
+                TASK_BLOCKED: ExecutionStatus.TASK_BLOCKED,
+                TASK_AWAITING_APPROVAL: ExecutionStatus.TASK_AWAITING_APPROVAL,
+                TASK_VERIFICATION_REQUIRED: ExecutionStatus.TASK_VERIFICATION_REQUIRED,
+                TASK_VERIFIED: ExecutionStatus.TASK_COMPLETED,
+            }
+            execution_status = _status_to_execution.get(task_status)
+            if task_status == TASK_PENDING or task_status == TASK_RUNNING:
+                execution_status = ExecutionStatus.TASK_PARTIAL
             self.execution_recorder.finalize(final_response, task_checkpoint=task_checkpoint)
             finalized = True
             yield AgentEvent.agent_end(
@@ -210,6 +291,7 @@ class Agent:
     
     async def _agentic_loop(self) -> AsyncGenerator[AgentEvent, None]:
 
+        self._loop_finished_cleanly = False
         max_turns = self.config.max_turns
 
         for i in range(max_turns):
@@ -353,9 +435,15 @@ class Agent:
                     self.session.context_manager.set_latest_usage(usage)
                     self.session.context_manager.add_usage(usage)
 
+                self._loop_finished_cleanly = True
                 return
             
             tool_call_results: list[ToolResultMessage] = []
+
+            # Autonomous recovery with bounded retries: track retries per
+            # tool call so transient failures are retried automatically.
+            max_retries = 3
+            retry_counts: dict[str, int] = {}
 
             for tool_call in tool_calls:
 
@@ -380,6 +468,39 @@ class Agent:
                     progress_callback=self.progress_callback,
                     call_id=tool_call.call_id,
                 )
+
+                # --- Autonomous recovery: retry failed, retryable calls.
+                retry_count = retry_counts.get(tool_call.call_id, 0)
+                if not result.success and retry_count < max_retries:
+                    error_category = result.metadata.get("error_category")
+                    recovery_stop = result.metadata.get("recovery_stop", False)
+                    # Retry only if the error is retryable and the circuit
+                    # breaker hasn't tripped.
+                    is_retryable = result.metadata.get("error_retryable", True)
+                    if is_retryable and not recovery_stop:
+                        retry_counts[tool_call.call_id] = retry_count + 1
+                        self.execution_recorder.record_retry(
+                            tool_call.call_id,
+                            f"Retry {retry_count + 1}/{max_retries} after failure: {result.error}",
+                            idempotent=True,
+                        )
+                        self.execution_recorder.set_phase("RECOVER")
+                        yield AgentEvent.tool_call_complete(
+                            tool_call.call_id,
+                            tool_call.name,
+                            result,
+                        )
+                        # Retry the same tool call.
+                        result = await self.session.tool_registry.invoke(
+                            tool_call.name,
+                            tool_call.arguments,
+                            self.config.cwd,
+                            self.session.hook_system,
+                            self.session.approval_manager,
+                            progress_callback=self.progress_callback,
+                            call_id=tool_call.call_id,
+                        )
+                        retry_counts[tool_call.call_id] = retry_counts.get(tool_call.call_id, 0) + 1
 
                 started_at = self._tool_started_at.pop(tool_call.call_id, time.perf_counter())
                 self.execution_recorder.tool_completed(

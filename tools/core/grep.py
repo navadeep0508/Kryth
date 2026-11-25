@@ -33,9 +33,9 @@ class GrepTool(Tool):
     async def execute(self, invocation: ToolInvocation) -> ToolResult:
         params = GrepParams(**invocation.params)
 
-        search_path = resolve_path(invocation.cwd, params.path)\
-        
-        if not search_path.exists() or not search_path.is_dir():
+        search_path = resolve_path(invocation.cwd, params.path)
+
+        if not search_path.exists():
             return ToolResult.error_result(
                 f'Path does not exist: {search_path}'
             )

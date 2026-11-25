@@ -4,7 +4,7 @@ from typing import Any
 from config.config import Config
 from tools.base import Tool, ToolInvocation, ToolKind, ToolResult
 from tools.base import ExecutionStatus
-from utils.development_supervisor import DevelopmentSupervisor
+from utils.development_supervisor import DevelopmentSupervisor, TASK_RUNNING
 from pydantic import BaseModel, Field
 
 PENDING = 'pending'
@@ -15,19 +15,19 @@ class PlanParams(BaseModel):
 
     action: str = Field(
         ...,
-        description="Action: 'add', 'complete', 'fail', 'list', 'clear'. Complete requires verification evidence.",
+        description="Action: 'add', 'add_phase', 'complete', 'complete_phase', 'verify_phase', 'fail', 'list', 'clear'. Complete requires verification evidence.",
     )
 
     id: str | None = Field(
         None,
-        description="A plan step ID (required for the 'complete' action)",
+        description="A plan step ID (required for the 'complete' action) or benchmark phase ID (for 'add_phase').",
     )
 
     content: str | None = Field(
         None,
-        description="The content for the 'add' action",
+        description="The content for the 'add' or 'add_phase' action.",
     )
-    verification: str | None = Field(None, description="Observed verification evidence required to complete a step.")
+    verification: str | None = Field(None, description="Observed verification evidence required to complete a step or phase.")
     passed: bool = True
     recovery: str | None = Field(None, description="Recovery instructions when a step fails.")
 
@@ -63,7 +63,7 @@ class PlanTool(Tool):
         self.supervisor = DevelopmentSupervisor(self.config.cwd)
         self._restore()
         task = self.supervisor.state.get("task_checkpoint") or {}
-        if task.get("status") != "in_progress":
+        if task.get("status") != TASK_RUNNING:
             self._steps.clear()
             self._status.clear()
 
@@ -72,6 +72,7 @@ class PlanTool(Tool):
             {'id': step_id, 'content': content, 'status': self._status[step_id]}
             for step_id, content in self._steps.items()
         ]
+        benchmark = self.supervisor.get_benchmark_progress()
         return {
             'steps': steps,
             'completed': sum(1 for step in steps if step['status'] == COMPLETED),
@@ -80,10 +81,18 @@ class PlanTool(Tool):
             'task_status': (self.supervisor.state.get("task_checkpoint") or {}).get("status", "idle"),
             'pending': sum(1 for step in steps if step['status'] == PENDING),
             'failed': sum(1 for step in steps if step['status'] == "failed"),
+            'benchmark_phases': self.supervisor.get_all_benchmark_phases(),
+            'benchmark_completed': benchmark["completed"],
+            'benchmark_total': benchmark["total"],
+            'benchmark_verified': benchmark["verified"],
+            'benchmark_pending': benchmark["pending"],
+            'benchmark_failed': benchmark["failed"],
+            'benchmark_skipped': benchmark["skipped"],
+            'benchmark_running': benchmark["running"],
         }
 
     def _listing(self) -> str:
-        if not self._steps:
+        if not self._steps and not self.supervisor.get_all_benchmark_phases():
             return "No plan steps."
 
         snapshot = self._snapshot()
@@ -93,11 +102,25 @@ class PlanTool(Tool):
             marker = {'completed': 'x', 'failed': '!', 'pending': ' '}.get(step['status'], '~')
             lines.append(f"  [{marker}] [{step['id']}] {step['content']}")
 
+        phases = snapshot.get('benchmark_phases', [])
+        if phases:
+            lines.append("")
+            lines.append(f"Benchmark phases ({snapshot['benchmark_verified']}/{snapshot['benchmark_total']} verified):")
+            phase_marker = {
+                'verified': 'x', 'completed': 'c', 'failed': '!',
+                'skipped': '-', 'running': '>', 'pending': ' ',
+            }
+            for phase in phases:
+                marker = phase_marker.get(phase['status'], '~')
+                lines.append(f"  [{marker}] [{phase['id']}] {phase['description']}")
+
         return "\n".join(lines)
 
     async def execute(self, invocation: ToolInvocation) -> ToolResult:
 
         params = PlanParams(**invocation.params)
+        self.supervisor.state = self.supervisor._load()
+        self._restore()
 
         try:
             action = params.action.lower()
@@ -110,7 +133,7 @@ class PlanTool(Tool):
 
                 step_id = str(uuid.uuid4())[:8]
                 task = self.supervisor.state.get("task_checkpoint") or {}
-                if task.get("status") != "in_progress":
+                if task.get("status") != TASK_RUNNING:
                     self.supervisor.begin_task(params.content)
 
                 self._steps[step_id] = params.content
@@ -122,12 +145,69 @@ class PlanTool(Tool):
                     metadata=self._snapshot(),
                 )
 
+            elif action == 'add_phase':
+                if not params.content:
+                    return ToolResult.error_result(
+                        "Content is required for the 'add_phase' action."
+                    )
+                if not params.id:
+                    return ToolResult.error_result(
+                        "A phase ID is required for the 'add_phase' action (e.g. 'benchmark.phase.01')."
+                    )
+                task = self.supervisor.state.get("task_checkpoint") or {}
+                if task.get("status") != TASK_RUNNING:
+                    self.supervisor.begin_task(params.content)
+                self.supervisor.add_benchmark_phase(params.id, params.content)
+                return ToolResult.success_result(
+                    f"Added benchmark phase [{params.id}]: {params.content}\n\n{self._listing()}",
+                    metadata=self._snapshot(),
+                )
+
+            elif action in {'complete_phase', 'verify_phase'}:
+                if not params.id:
+                    return ToolResult.error_result(
+                        f"A phase ID is required for the '{action}' action."
+                    )
+                if not params.verification:
+                    return ToolResult.error_result(
+                        "Verification evidence is required before a benchmark phase can be completed or verified."
+                    )
+                phases = self.supervisor.state.get("benchmark_phases") or {}
+                if params.id not in phases:
+                    return ToolResult.error_result(f"Benchmark phase not found: {params.id}")
+                if action == 'complete_phase':
+                    self.supervisor.complete_benchmark_phase(params.id, params.verification)
+                    return ToolResult.success_result(
+                        f"Completed benchmark phase [{params.id}]\n\n{self._listing()}",
+                        metadata=self._snapshot(),
+                    )
+                if phases[params.id].get("status") == "pending":
+                    self.supervisor.complete_benchmark_phase(params.id, params.verification)
+                self.supervisor.verify_benchmark_phase(params.id, params.verification)
+                return ToolResult.success_result(
+                    f"Verified benchmark phase [{params.id}]\n\n{self._listing()}",
+                    metadata=self._snapshot(),
+                )
+
             elif action == 'complete':
                 if not params.id:
                     return ToolResult.error_result(
                         "An id is required for the 'complete' action."
                     )
                 if params.id not in self._steps:
+                    phases = self.supervisor.state.get("benchmark_phases") or {}
+                    if params.id in phases:
+                        if not params.verification:
+                            return ToolResult.error_result(
+                                "Verification evidence is required before a benchmark phase can be completed."
+                            )
+                        if phases[params.id].get("status") == "pending":
+                            self.supervisor.complete_benchmark_phase(params.id, params.verification)
+                        self.supervisor.verify_benchmark_phase(params.id, params.verification)
+                        return ToolResult.success_result(
+                            f"Verified benchmark phase [{params.id}]\n\n{self._listing()}",
+                            metadata=self._snapshot(),
+                        )
                     return ToolResult.error_result(
                         f"Plan step not found: {params.id}"
                     )

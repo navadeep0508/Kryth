@@ -5,6 +5,7 @@ import asyncio
 from config.config import Config
 from tools.base import ExecutionStatus, ToolInvocation
 from tools.core.plan import PlanTool
+from utils.development_supervisor import TASK_RUNNING
 
 
 def test_plan_is_restored_across_turns_and_completes_only_after_all_steps_verified(tmp_path):
@@ -32,7 +33,7 @@ def test_plan_is_restored_across_turns_and_completes_only_after_all_steps_verifi
                     "verification": "Search page URL and result title observed"}, cwd=tmp_path
         ))
         assert verified.execution_status is ExecutionStatus.STATE_VERIFIED
-        assert verified.metadata["task_status"] == "in_progress"
+        assert verified.metadata["task_status"] == TASK_RUNNING
 
         finished = await tool.execute(ToolInvocation(
             params={"action": "complete", "id": step2,
@@ -57,7 +58,7 @@ def test_plan_verification_failure_never_marks_task_complete(tmp_path):
         ))
         assert not result.success
         assert result.execution_status is ExecutionStatus.VERIFICATION_FAILED
-        assert result.metadata["task_status"] == "in_progress"
+        assert result.metadata["task_status"] == TASK_RUNNING
         assert result.metadata["failed"] == 1
 
     asyncio.run(run())

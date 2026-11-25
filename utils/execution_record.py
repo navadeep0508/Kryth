@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from tools.base import InterruptionType, ToolResult
+
+logger = logging.getLogger(__name__)
+
+# Maximum number of attempts to persist a record to disk before falling back to
+# in-memory-only persistence. Transient file-locking failures (e.g. Windows
+# rename blocking on a handle held by antivirus or another process) are retried.
+_MAX_WRITE_RETRIES = 3
+_WRITE_RETRY_BASE_DELAY = 0.05  # seconds, multiplied by (attempt + 1)
 
 
 _MAX_EVENTS = 500
@@ -280,7 +290,9 @@ class ExecutionRecorder:
             "finished_at": _now(),
         })
         if interrupted:
-            self.record["interruption_type"] = str(interruption_type or InterruptionType.EXECUTION_INTERRUPTED)
+            fallback = InterruptionType.EXECUTION_INTERRUPTED
+            it = interruption_type if interruption_type is not None else fallback
+            self.record["interruption_type"] = it.value if hasattr(it, "value") else str(it)
             if interruption_reason:
                 self.record["interruption_reason"] = _safe(interruption_reason)
             if interruption_exception is not None:
@@ -305,9 +317,54 @@ class ExecutionRecorder:
         self._write()
 
     def _write(self) -> None:
+        """Persist the current record to disk, best-effort.
+
+        The record is always kept in memory; a disk-write failure is logged and
+        swallowed so a transient filesystem problem never crashes an otherwise
+        successful tool execution. A subsequent write retries persistence.
+
+        Atomic replacement is *not* guaranteed: on Windows, ``os.replace()``
+        fails with ``PermissionError [WinError 5]`` when the destination or the
+        temporary file is held open by another process (antivirus scanning, a
+        concurrent writer, ...). Each attempt therefore uses a unique temporary
+        name and is retried with a short backoff before giving up.
+        """
         if self.path is None or self.record is None:
             return
         self.root.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix(".tmp")
-        temp.write_text(json.dumps(self.record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(temp, self.path)
+        payload = json.dumps(self.record, indent=2, ensure_ascii=False) + "\n"
+        last_error: OSError | None = None
+        for attempt in range(_MAX_WRITE_RETRIES):
+            # Unique temp name per attempt so concurrent writers never collide on
+            # the same `{task_id}.tmp` path, and so a leftover temp file from a
+            # failed attempt cannot be confused with a fresh one.
+            temp = self.root / f"{self.path.stem}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+            try:
+                temp.write_text(payload, encoding="utf-8")
+                os.replace(temp, self.path)
+                return
+            except OSError as exc:
+                last_error = exc
+                # Best-effort cleanup of the orphaned temp file so failed
+                # attempts do not litter the executions directory.
+                try:
+                    if temp.exists():
+                        temp.unlink()
+                except OSError:
+                    pass
+                if attempt < _MAX_WRITE_RETRIES - 1:
+                    time.sleep(_WRITE_RETRY_BASE_DELAY * (attempt + 1))
+                    continue
+        # Disk persistence exhausted its retries. The record remains intact in
+        # memory (it was already mutated before _write was called), so a later
+        # write can still persist it. Do not propagate: a transient disk problem
+        # must not crash an otherwise successful tool execution.
+        logger.warning(
+            "Failed to persist execution record %s to %s after %d attempts "
+            "(last error: %s). Record retained in memory only; disk "
+            "persistence will be retried on the next write.",
+            self.path.name,
+            self.path,
+            _MAX_WRITE_RETRIES,
+            last_error,
+        )

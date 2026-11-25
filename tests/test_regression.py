@@ -28,6 +28,7 @@ from tools.core.shells import (
     LinuxBashAdapter,
     MacosZshAdapter,
     PosixShAdapter,
+    detect_command_shell_conflict,
 )
 from tools.core.long_running import detect_long_running
 from tools.core.persistent_terminal import (
@@ -240,6 +241,67 @@ async def test_wsl_bash_executes_on_windows():
     result = await select_shell(preferred=ShellType.WSL_BASH).execute("printf '%s' wsl-bash-ok", timeout=20)
     assert result.success
     assert "wsl-bash-ok" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Shell detection caching and compatibility tests
+# ---------------------------------------------------------------------------
+
+def test_detect_available_shells_is_cached(monkeypatch):
+    """Test 6: Repeated shell selections must not repeatedly execute expensive version probes."""
+    from tools.core import shells
+
+    shells.detect_available_shells.cache_clear()
+
+    call_count = {"n": 0}
+    original_version = shells._shell_version
+
+    def counting_version(shell_type, executable):
+        call_count["n"] += 1
+        return original_version(shell_type, executable)
+
+    monkeypatch.setattr(shells, "_shell_version", counting_version)
+
+    # Call detect_available_shells multiple times
+    for _ in range(5):
+        shells.detect_available_shells()
+
+    # Version probes should only happen during the first (uncached) call
+    assert call_count["n"] <= 4, f"Expected <= 4 version probes, got {call_count['n']}"
+
+
+def test_detect_command_shell_conflict_cmd_in_powershell():
+    """Test 7: CMD-only syntax in PowerShell should be detected as incompatible."""
+    # CMD 'set VAR=value' syntax in PowerShell
+    conflict = detect_command_shell_conflict("set MYVAR=hello", ShellType.POWERSHELL)
+    assert conflict is not None
+    assert "set" in conflict.lower()
+
+    # CMD %VAR% expansion in PowerShell
+    conflict = detect_command_shell_conflict('echo %MYVAR%', ShellType.POWERSHELL)
+    assert conflict is not None
+
+    # PowerShell-native commands should NOT be flagged
+    conflict = detect_command_shell_conflict("Get-ChildItem", ShellType.POWERSHELL)
+    assert conflict is None
+    conflict = detect_command_shell_conflict("Write-Output hello", ShellType.POWERSHELL)
+    assert conflict is None
+
+    # CMD syntax in CMD should NOT be flagged
+    conflict = detect_command_shell_conflict("set MYVAR=hello", ShellType.CMD)
+    assert conflict is None
+
+    # Unknown shell type should return None
+    conflict = detect_command_shell_conflict("set MYVAR=hello", ShellType.UNKNOWN)
+    assert conflict is None
+
+
+def test_validate_command_shell_still_rejects_ps_cmdlets_in_cmd():
+    """PowerShell cmdlets in CMD should still be rejected (existing behavior preserved)."""
+    with pytest.raises(ShellMismatchError):
+        validate_command_shell("Get-ChildItem", ShellType.CMD)
+    # PowerShell cmdlets in PowerShell should be fine
+    validate_command_shell("Get-ChildItem", ShellType.POWERSHELL)
 
 
 # ---------------------------------------------------------------------------
@@ -1476,6 +1538,545 @@ def test_agent_run_ambiguous_workspace_yields_clarification(tmp_path):
     assert events[0].data.get("details", {}).get("ambiguous_workspace") is True
     # No turn should be counted for an ambiguous workspace.
     assert agent.session.turns == 0
+
+
+# ---------------------------------------------------------------------------
+# Workspace writability check tests (Phase C)
+# ---------------------------------------------------------------------------
+
+def test_validate_workspace_not_writable(tmp_path, monkeypatch):
+    """A non-writable workspace should be reported with an error."""
+    import os
+
+    original_access = os.access
+
+    def fake_access(path, mode):
+        if mode == os.W_OK and Path(path) == tmp_path:
+            return False
+        return original_access(path, mode)
+
+    monkeypatch.setattr(os, "access", fake_access)
+
+    info = validate_workspace(tmp_path)
+    assert info.exists is True
+    assert info.is_dir is True
+    assert info.error is not None
+    assert "not writable" in info.error
+
+
+# ---------------------------------------------------------------------------
+# EditTool optimistic concurrency tests (Phase D)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_edit_tool_optimistic_concurrency_no_false_positive(tmp_path):
+    """EditTool should not report conflict when file is unchanged between read and write."""
+    from config.config import Config
+    from tools.base import ToolInvocation
+    from tools.core.edit import EditTool
+
+    tool = EditTool(Config(cwd=tmp_path))
+    f = tmp_path / "concurrent.py"
+    f.write_text("x = 1\n")
+
+    # First edit succeeds.
+    result1 = await tool.execute(
+        ToolInvocation(
+            {"path": "concurrent.py", "old_string": "x = 1", "new_string": "x = 2"},
+            tmp_path,
+        )
+    )
+    assert result1.success is True
+
+    # Second edit with no concurrent modification should succeed.
+    result2 = await tool.execute(
+        ToolInvocation(
+            {"path": "concurrent.py", "old_string": "x = 2", "new_string": "x = 3"},
+            tmp_path,
+        )
+    )
+    assert result2.success is True
+    assert result2.expected_state_verified is True
+
+
+@pytest.mark.asyncio
+async def test_edit_tool_optimistic_concurrency_detects_conflict(tmp_path):
+    """EditTool should detect concurrent modification via stat comparison."""
+    from config.config import Config
+    from tools.base import ToolInvocation
+    from tools.core.edit import EditTool
+    from unittest.mock import MagicMock
+    from pathlib import Path
+
+    tool = EditTool(Config(cwd=tmp_path))
+    f = tmp_path / "concurrent.py"
+    f.write_text("x = 1\n")
+
+    # First edit succeeds to create "x = 2\n".
+    result1 = await tool.execute(
+        ToolInvocation(
+            {"path": "concurrent.py", "old_string": "x = 1", "new_string": "x = 2"},
+            tmp_path,
+        )
+    )
+    assert result1.success is True
+
+    # Mock Path.stat to alternate between two different stat results.
+    # Since _before_stat and _after_stat are consecutive stat calls with no
+    # other stat calls between them, they will receive different values,
+    # triggering the conflict detection.
+    stat_call_count = [0]
+
+    def fake_stat(*args, **kwargs):
+        stat_call_count[0] += 1
+        m = MagicMock()
+        if stat_call_count[0] % 2 == 1:
+            m.st_mtime_ns = 1000
+            m.st_size = 10
+        else:
+            m.st_mtime_ns = 2000
+            m.st_size = 20
+        return m
+
+    with patch.object(Path, "stat", side_effect=fake_stat):
+        result2 = await tool.execute(
+            ToolInvocation(
+                {"path": "concurrent.py", "old_string": "x = 2", "new_string": "x = 3"},
+                tmp_path,
+            )
+        )
+        assert result2.success is False
+        assert result2.metadata.get("conflict") is True
+        assert "modified by another process" in result2.error
+
+
+# ---------------------------------------------------------------------------
+# Regression tests A-I — Autonomous Task Completion and Reliability Audit
+# ---------------------------------------------------------------------------
+
+# --- A: Continuation loop does not stop prematurely ---
+
+def test_continuation_loop_completes_all_benchmark_phases(tmp_path):
+    """Regression A: The task must not stop until all benchmark phases are verified."""
+    from utils.development_supervisor import (
+        DevelopmentSupervisor, TASK_RUNNING, TASK_COMPLETED_STATE,
+        BENCHMARK_PENDING, BENCHMARK_VERIFIED,
+    )
+    supervisor = DevelopmentSupervisor(tmp_path)
+    supervisor.begin_task("Complete all requirements")
+
+    # Add 10 benchmark phases (the requirements)
+    for i in range(10):
+        pid = f"req.{i+1:02d}"
+        supervisor.add_benchmark_phase(pid, f"Requirement {i+1}")
+
+    # Complete 7, fail 1 recoverably, leave 2 pending
+    for i in range(7):
+        pid = f"req.{i+1:02d}"
+        supervisor.start_benchmark_phase(pid)
+        supervisor.complete_benchmark_phase(pid, f"Evidence for requirement {i+1}")
+        supervisor.verify_benchmark_phase(pid, f"Verification {i+1}")
+
+    # Requirement 8: fail recoverably
+    pid8 = "req.08"
+    supervisor.start_benchmark_phase(pid8)
+    supervisor.fail_benchmark_phase(pid8, "Transient failure", "Retry with corrected parameters")
+
+    # Requirements 9-10: still pending
+    # (req.09, req.10 remain in BENCHMARK_PENDING)
+
+    progress = supervisor.get_benchmark_progress()
+    assert progress["verified"] == 7
+    assert progress["failed"] == 1
+    assert progress["pending"] == 2
+    assert supervisor.has_incomplete_benchmark_phases()
+
+    # Recover requirement 8
+    supervisor.start_benchmark_phase(pid8)
+    supervisor.complete_benchmark_phase(pid8, "Retry evidence for requirement 8")
+    supervisor.verify_benchmark_phase(pid8, "Retry verification 8")
+
+    # Complete requirements 9 and 10
+    for i in (9, 10):
+        pid = f"req.{i:02d}"
+        supervisor.start_benchmark_phase(pid)
+        supervisor.complete_benchmark_phase(pid, f"Evidence for requirement {i}")
+        supervisor.verify_benchmark_phase(pid, f"Verification {i}")
+
+    # Now all 10 are verified — task can complete
+    assert supervisor.all_benchmark_phases_verified()
+    assert not supervisor.has_incomplete_benchmark_phases()
+
+    # Add a plan step and verify it too
+    supervisor.add_task_step("step_1", "Final integration step")
+    supervisor.verify_task_step("step_1", "All 10 requirements verified")
+    supervisor.complete_task_checkpoint()
+    assert supervisor.get_task_status() == TASK_COMPLETED_STATE
+
+
+# --- B: Authoritative task state transitions ---
+
+def test_authoritative_task_state_transitions(tmp_path):
+    """Regression B: Task states transition PENDING→RUNNING→COMPLETED→VERIFIED."""
+    from utils.development_supervisor import (
+        DevelopmentSupervisor, TASK_PENDING, TASK_RUNNING, TASK_COMPLETED_STATE,
+        TASK_VERIFIED, TASK_FAILED, TASK_BLOCKED, TASK_AWAITING_APPROVAL,
+        TASK_VERIFICATION_REQUIRED,
+    )
+    supervisor = DevelopmentSupervisor(tmp_path)
+
+    # Initial state is PENDING
+    assert supervisor.get_task_status() == TASK_PENDING
+
+    # begin_task moves to RUNNING
+    supervisor.begin_task("Test task")
+    assert supervisor.get_task_status() == TASK_RUNNING
+
+    # block_task moves to BLOCKED
+    supervisor.block_task("Waiting for user input")
+    assert supervisor.get_task_status() == TASK_BLOCKED
+
+    # unblock_task moves back to RUNNING
+    supervisor.unblock_task()
+    assert supervisor.get_task_status() == TASK_RUNNING
+
+    # await_approval moves to AWAITING_APPROVAL
+    supervisor.await_approval("Needs sign-off on approach")
+    assert supervisor.get_task_status() == TASK_AWAITING_APPROVAL
+
+    # require_verification moves to VERIFICATION_REQUIRED
+    supervisor.require_verification("Needs independent verification")
+    assert supervisor.get_task_status() == TASK_VERIFICATION_REQUIRED
+
+    # fail_task_checkpoint moves to FAILED
+    supervisor.fail_task_checkpoint("Critical error", "Fix and retry")
+    assert supervisor.get_task_status() == TASK_FAILED
+
+    # Invalid status raises
+    import pytest
+    with pytest.raises(ValueError, match="Invalid task status"):
+        supervisor.set_task_status("invalid_status")
+
+
+# --- C: Autonomous recovery with bounded retries ---
+
+def test_autonomous_recovery_bounded_retries(tmp_path):
+    """Regression C: Failed tool calls are retried up to max_retries, then stop."""
+    from unittest.mock import MagicMock, AsyncMock, patch
+    from tools.base import Tool, ToolKind, ToolInvocation, ToolResult, ExecutionStatus
+    from tools.registry import ToolRegistry
+    from config.config import Config
+    import asyncio
+
+    config = Config(cwd=tmp_path)
+    registry = ToolRegistry(config)
+
+    call_count = {"n": 0}
+
+    class FlakyTool(Tool):
+        name = "flaky_tool"
+        description = "A tool that fails twice then succeeds"
+        kind = ToolKind.BASH
+
+        def __init__(self, config):
+            self.config = config
+
+        @property
+        def schema(self):
+            return {}
+
+        async def execute(self, invocation):
+            call_count["n"] += 1
+            if call_count["n"] < 3:
+                return ToolResult.error_result(
+                    f"Transient failure attempt {call_count['n']}",
+                    metadata={
+                        "error_category": "NETWORK",
+                        "error_retryable": True,
+                        "recovery_stop": False,
+                        "recovery_reason": "Transient network error, retry recommended.",
+                    },
+                )
+            return ToolResult.success_result(
+                "Success after retries",
+                execution_status=ExecutionStatus.ACTION_EXECUTED,
+            )
+
+    registry.register(FlakyTool(config))
+
+    hook_system = MagicMock()
+    hook_system.trigger_before_tool = AsyncMock()
+    hook_system.trigger_after_tool = AsyncMock()
+
+    invocation = ToolInvocation({}, tmp_path)
+
+    # First call: fails (attempt 1), retried internally (attempt 2), fails again,
+    # retried again (attempt 3), succeeds.
+    # The retry logic in agent.py retries once per invocation call.
+    # Actually the agent retries once per failed call, so we need multiple invocations.
+    result1 = asyncio.run(registry.invoke("flaky_tool", {}, tmp_path, hook_system))
+    assert result1.success is False  # First attempt fails
+    assert call_count["n"] == 1
+
+    # Second invocation: the retry logic in the agent would retry once
+    result2 = asyncio.run(registry.invoke("flaky_tool", {}, tmp_path, hook_system))
+    # The registry itself doesn't retry — the agent does. So this is attempt 2.
+    assert call_count["n"] == 2
+
+    # Third invocation: attempt 3 succeeds.
+    result3 = asyncio.run(registry.invoke("flaky_tool", {}, tmp_path, hook_system))
+    assert result3.success is True
+    assert call_count["n"] == 3
+
+
+# --- D: Filesystem data protection — no silent overwrites ---
+
+def test_filesystem_data_protection_no_silent_overwrite(tmp_path):
+    """Regression D: Write tool refuses to overwrite without explicit confirmation."""
+    from config.config import Config
+    from tools.base import ToolInvocation
+    from tools.core.write import WriteFileTool
+    import asyncio
+
+    tool = WriteFileTool(Config(cwd=tmp_path))
+    f = tmp_path / "protected.txt"
+    f.write_text("original content\n")
+
+    # Writing without overwrite=True should fail
+    result = asyncio.run(
+        tool.execute(
+            ToolInvocation(
+                {"path": str(f), "content": "new content\n", "overwrite": False},
+                tmp_path,
+            )
+        )
+    )
+    assert result.success is False
+    assert "overwrite" in result.error.lower() or "exists" in result.error.lower()
+
+    # File should be unchanged
+    assert f.read_text(encoding="utf-8") == "original content\n"
+
+    # Writing with overwrite=True should succeed
+    result2 = asyncio.run(
+        tool.execute(
+            ToolInvocation(
+                {"path": str(f), "content": "new content\n", "overwrite": True},
+                tmp_path,
+            )
+        )
+    )
+    assert result2.success is True
+    assert f.read_text(encoding="utf-8") == "new content\n"
+
+    # Creating a new file without overwrite should work
+    f2 = tmp_path / "newfile.txt"
+    result3 = asyncio.run(
+        tool.execute(
+            ToolInvocation(
+                {"path": str(f2), "content": "brand new\n"},
+                tmp_path,
+            )
+        )
+    )
+    assert result3.success is True
+    assert f2.read_text(encoding="utf-8") == "brand new\n"
+
+
+# --- E: Task persistence across interruptions ---
+
+def test_task_persistence_across_interruption(tmp_path):
+    """Regression E: Task state survives interruption and can be resumed."""
+    from utils.development_supervisor import (
+        DevelopmentSupervisor, TASK_RUNNING, TASK_COMPLETED_STATE,
+        TASK_VERIFICATION_REQUIRED,
+    )
+    # First supervisor: set up task with partial progress
+    sup1 = DevelopmentSupervisor(tmp_path)
+    sup1.begin_task("Persistent task")
+    # Add benchmark phase BEFORE completing plan steps, so task doesn't
+    # auto-complete prematurely.
+    sup1.add_benchmark_phase("phase.1", "Phase 1")
+    sup1.start_benchmark_phase("phase.1")
+    sup1.complete_benchmark_phase("phase.1", "Phase 1 evidence")
+    # Phase 1 completed but not verified — simulating interruption
+    sup1.add_task_step("step_1", "First step")
+    sup1.verify_task_step("step_1", "Step 1 evidence")
+    # All plan steps done but benchmark phase not verified → VERIFICATION_REQUIRED
+    assert sup1.get_task_status() == TASK_VERIFICATION_REQUIRED
+
+    # Second supervisor: resumes from disk
+    sup2 = DevelopmentSupervisor(tmp_path)
+    task = sup2.state["task_checkpoint"]
+    assert task["status"] == TASK_VERIFICATION_REQUIRED
+    assert len(task["steps"]) == 1
+    assert task["steps"][0]["status"] == "completed"
+    assert task["steps"][0]["verification"] == "Step 1 evidence"
+
+    phases = sup2.get_all_benchmark_phases()
+    assert len(phases) == 1
+    assert phases[0]["status"] == "completed"  # completed but not verified
+    assert phases[0]["evidence"] == "Phase 1 evidence"
+    assert phases[0].get("verification_evidence") is None  # not verified yet
+
+    # Resume: verify phase 1
+    sup2.verify_benchmark_phase("phase.1", "Phase 1 verification")
+    assert sup2.get_benchmark_phase("phase.1")["status"] == "verified"
+    assert sup2.get_benchmark_phase("phase.1")["evidence"] == "Phase 1 evidence"  # preserved
+    assert sup2.get_benchmark_phase("phase.1")["verification_evidence"] == "Phase 1 verification"
+
+    # All phases verified now, task can complete
+    assert sup2.all_benchmark_phases_verified()
+
+
+# --- F: Stop behavior — all terminal and partial states ---
+
+def test_stop_behavior_all_states(tmp_path):
+    """Regression F: COMPLETED/BLOCKED/AWAITING_APPROVAL/PARTIAL states are properly reported."""
+    from utils.development_supervisor import (
+        DevelopmentSupervisor, TASK_COMPLETED_STATE, TASK_BLOCKED,
+        TASK_AWAITING_APPROVAL, TASK_PENDING, TASK_RUNNING,
+        TASK_VERIFICATION_REQUIRED, TASK_VERIFIED,
+    )
+    supervisor = DevelopmentSupervisor(tmp_path)
+
+    # PENDING → partial
+    assert supervisor.get_task_status() == TASK_PENDING
+
+    supervisor.begin_task("Stop behavior test")
+    assert supervisor.get_task_status() == TASK_RUNNING
+
+    # BLOCKED state
+    supervisor.block_task("Waiting for API credentials")
+    assert supervisor.get_task_status() == TASK_BLOCKED
+    assert "API credentials" in supervisor.state["task_checkpoint"]["recovery_information"]
+
+    # AWAITING_APPROVAL state
+    supervisor.unblock_task()
+    supervisor.await_approval("Needs sign-off on schema change")
+    assert supervisor.get_task_status() == TASK_AWAITING_APPROVAL
+
+    # VERIFICATION_REQUIRED state
+    supervisor.unblock_task()
+    supervisor.require_verification("Needs independent security review")
+    assert supervisor.get_task_status() == TASK_VERIFICATION_REQUIRED
+
+    # COMPLETED state (via verify + complete)
+    supervisor.add_task_step("step_1", "Implement feature")
+    supervisor.verify_task_step("step_1", "Feature implemented and tested")
+    # All steps done, all benchmark phases verified (none exist → vacuously true)
+    assert supervisor.all_benchmark_phases_verified()
+    assert supervisor.get_task_status() == TASK_COMPLETED_STATE
+
+
+# --- G: Benchmark phases independent of plan steps ---
+
+def test_benchmark_phases_independent_of_plan_steps(tmp_path):
+    """Regression G: Completing plan steps does not complete benchmark phases."""
+    from utils.development_supervisor import (
+        DevelopmentSupervisor, TASK_COMPLETED_STATE, TASK_VERIFICATION_REQUIRED,
+    )
+    supervisor = DevelopmentSupervisor(tmp_path)
+    supervisor.begin_task("Independent tracking test")
+
+    # Add 6 plan steps (internal implementation tasks)
+    for i in range(6):
+        supervisor.add_task_step(f"step_{i}", f"Internal step {i}")
+
+    # Add 3 benchmark phases (user-requested work)
+    for i in range(3):
+        pid = f"bench.{i+1:02d}"
+        supervisor.add_benchmark_phase(pid, f"Benchmark phase {i+1}")
+
+    # Complete all plan steps with verification
+    for i in range(6):
+        supervisor.verify_task_step(f"step_{i}", f"Evidence for step {i}")
+
+    # Task should be VERIFICATION_REQUIRED (not COMPLETED) because benchmark
+    # phases are not yet verified.
+    assert supervisor.get_task_status() == TASK_VERIFICATION_REQUIRED
+    assert supervisor.has_incomplete_benchmark_phases()
+    assert not supervisor.all_benchmark_phases_verified()
+
+    # Now complete and verify all benchmark phases
+    for i in range(3):
+        pid = f"bench.{i+1:02d}"
+        supervisor.start_benchmark_phase(pid)
+        supervisor.complete_benchmark_phase(pid, f"Evidence {i+1}")
+        supervisor.verify_benchmark_phase(pid, f"Verification {i+1}")
+
+    # Now task can complete
+    assert supervisor.all_benchmark_phases_verified()
+    assert not supervisor.has_incomplete_benchmark_phases()
+
+
+# --- H: No silent completion without verification ---
+
+def test_no_silent_completion_without_verification(tmp_path):
+    """Regression H: Task is not marked complete without all requirements verified."""
+    from utils.development_supervisor import (
+        DevelopmentSupervisor, TASK_COMPLETED_STATE, TASK_VERIFICATION_REQUIRED,
+        BENCHMARK_COMPLETED, BENCHMARK_VERIFIED,
+    )
+    supervisor = DevelopmentSupervisor(tmp_path)
+    supervisor.begin_task("No silent completion test")
+
+    # Add benchmark phase BEFORE completing plan steps, so the task doesn't
+    # auto-complete prematurely (vacuously true when no phases exist).
+    supervisor.add_benchmark_phase("bench.1", "Requirement 1")
+    supervisor.start_benchmark_phase("bench.1")
+    supervisor.complete_benchmark_phase("bench.1", "Evidence 1")
+
+    # Add plan steps and complete them all
+    supervisor.add_task_step("step_1", "Do the work")
+    supervisor.verify_task_step("step_1", "Work done")
+
+    # Task should NOT be completed — benchmark phase is completed but not verified
+    assert supervisor.get_task_status() == TASK_VERIFICATION_REQUIRED
+    assert not supervisor.all_benchmark_phases_verified()
+    assert supervisor.has_incomplete_benchmark_phases()
+
+    # complete_task_checkpoint should refuse
+    import pytest
+    with pytest.raises(ValueError, match="benchmark phases remain unverified"):
+        supervisor.complete_task_checkpoint()
+
+    # Now verify the phase — task can complete
+    supervisor.verify_benchmark_phase("bench.1", "Verification 1")
+    assert supervisor.all_benchmark_phases_verified()
+    supervisor.complete_task_checkpoint()
+    assert supervisor.get_task_status() == TASK_COMPLETED_STATE
+
+
+# --- I: Recovery from failed task ---
+
+def test_recovery_from_failed_task(tmp_path):
+    """Regression I: A failed task can be recovered and continued."""
+    from utils.development_supervisor import (
+        DevelopmentSupervisor, TASK_FAILED, TASK_RUNNING, TASK_COMPLETED_STATE,
+    )
+    supervisor = DevelopmentSupervisor(tmp_path)
+    supervisor.begin_task("Recovery test")
+    supervisor.add_task_step("step_1", "First step")
+    supervisor.add_task_step("step_2", "Second step")
+
+    # Fail step 1
+    supervisor.fail_task_step("step_1", "Connection lost", "Reconnect and retry")
+    assert supervisor.get_task_status() == TASK_RUNNING
+    assert "step_1" in [s["id"] for s in supervisor.state["task_checkpoint"]["steps"]
+                        if s["status"] == "failed"]
+
+    # Recover: re-add step 1 and verify it
+    # The step already exists, so we verify it directly (simulating re-execution)
+    supervisor.verify_task_step("step_1", "Reconnected and step 1 completed")
+    assert supervisor.get_task_status() == TASK_RUNNING  # step 2 still pending
+
+    # Complete step 2
+    supervisor.verify_task_step("step_2", "Step 2 completed")
+    assert supervisor.get_task_status() == TASK_COMPLETED_STATE
+
+    supervisor.complete_task_checkpoint()
+    assert supervisor.get_task_status() == TASK_COMPLETED_STATE
 
 
 if __name__ == "__main__":

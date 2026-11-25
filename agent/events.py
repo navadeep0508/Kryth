@@ -66,7 +66,7 @@ class AgentEvent:
                 "execution_status": execution_status.value if execution_status else None,
                 "task_checkpoint": task_checkpoint,
                 "execution_record": execution_record,
-                "interruption_type": str(interruption_type) if interruption_type else None,
+                "interruption_type": (interruption_type.value if hasattr(interruption_type, "value") else str(interruption_type)) if interruption_type else None,
                 "interruption_reason": interruption_reason,
                 "interruption_exception_type": type(interruption_exception).__name__ if interruption_exception else None,
                 "interruption_exception_message": str(interruption_exception) if interruption_exception else None,

@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import os
 from pathlib import Path
 
 from tools.base import FileDiff, Tool, ToolConfirmation, ToolInvocation, ToolKind, ToolResult
@@ -138,6 +141,8 @@ class EditTool(Tool):
                 }
             )
 
+        # Capture file signature before reading for optimistic concurrency control.
+        _before_stat = path.stat()
         old_content = path.read_text(encoding='utf-8')
 
         if not params.old_string:
@@ -173,6 +178,15 @@ class EditTool(Tool):
                 "No change made - old_string equals new_string"
             )
 
+        # Optimistic concurrency: verify the file hasn't changed since we read it.
+        _after_stat = path.stat()
+        if (_after_stat.st_mtime_ns, _after_stat.st_size) != (_before_stat.st_mtime_ns, _before_stat.st_size):
+            return ToolResult.error_result(
+                f"File {path} was modified by another process since it was read. "
+                f"Re-read the file and retry the edit.",
+                metadata={"conflict": True, "path": str(path)},
+            )
+
         try:
             path.write_text(new_content, encoding="utf-8")
         except IOError as e:
@@ -204,6 +218,7 @@ class EditTool(Tool):
         return ToolResult.success_result(
             f"Edited {path}: replaced {replace_count} occurrence(s){diff_msg}",
             diff=FileDiff(path=path, old_content=old_content, new_content=new_content),
+            expected_state_verified=True,
             metadata={
                 "path": str(path),
                 "replaced_count": replace_count,

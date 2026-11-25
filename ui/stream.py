@@ -104,14 +104,18 @@ async def stream_turn(tui: TUI, agent: Agent, message: str) -> str | None:
                 else:
                     if interruption_type:
                         tui.gap()
-                        interruption_label = InterruptionType(interruption_type).value.replace("_", " ").title()
+                        try:
+                            interruption_label = InterruptionType(interruption_type).value.replace("_", " ").title()
+                        except ValueError:
+                            # Unknown or legacy serialized value — display as-is
+                            interruption_label = str(interruption_type).replace("_", " ").title()
                         detail = interruption_reason or "Inspect current state before resuming."
                         if interruption_exc_type and interruption_exc_msg:
                             detail += f" ({interruption_exc_type}: {interruption_exc_msg})"
                         tui.print_block(
                             f"[warning]Task interrupted ({interruption_label}). {detail}[/warning]"
                         )
-                    elif task_checkpoint.get("status") == "in_progress" or task_checkpoint.get("failed_steps"):
+                    elif task_checkpoint.get("status") in {"running", "in_progress"} or task_checkpoint.get("failed_steps"):
                         pending = task_checkpoint.get("pending_steps") or []
                         failed_steps = task_checkpoint.get("failed_steps") or []
                         details = []

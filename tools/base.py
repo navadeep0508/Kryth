@@ -26,6 +26,10 @@ class ExecutionStatus(str, Enum):
     TASK_COMPLETED = "TASK_COMPLETED"
     ACTION_FAILED = "ACTION_FAILED"
     VERIFICATION_FAILED = "VERIFICATION_FAILED"
+    TASK_BLOCKED = "TASK_BLOCKED"
+    TASK_AWAITING_APPROVAL = "TASK_AWAITING_APPROVAL"
+    TASK_VERIFICATION_REQUIRED = "TASK_VERIFICATION_REQUIRED"
+    TASK_PARTIAL = "TASK_PARTIAL"
 
 
 class InterruptionType(str, Enum):
@@ -136,7 +140,13 @@ class ToolResult:
             self.user_objective_completed = True
         if self.execution_status == ExecutionStatus.TASK_COMPLETED and self.verification.get("passed") is True:
             self.user_objective_completed = True
-        if self.execution_status in {ExecutionStatus.STATE_VERIFIED, ExecutionStatus.TASK_COMPLETED}:
+        # Non-terminal and partially-terminal statuses should not be overridden
+        # by the verification check — they represent intentional stop states.
+        _verification_override_statuses = {
+            ExecutionStatus.STATE_VERIFIED,
+            ExecutionStatus.TASK_COMPLETED,
+        }
+        if self.execution_status in _verification_override_statuses:
             evidence_present = (
                 self.verification.get("verified") is True
                 or self.verification.get("passed") is True
@@ -179,6 +189,14 @@ class ToolResult:
 
         if self.execution_status == ExecutionStatus.VERIFICATION_FAILED:
             return f"Verification failed after the action executed: {self.error}\n\n{self.output}"
+
+        if self.execution_status in {
+            ExecutionStatus.TASK_BLOCKED,
+            ExecutionStatus.TASK_AWAITING_APPROVAL,
+            ExecutionStatus.TASK_VERIFICATION_REQUIRED,
+            ExecutionStatus.TASK_PARTIAL,
+        }:
+            return f"Task stopped ({self.execution_status.value}): {self.error or self.output}\n\n{self.output}"
 
         return f"Error: {self.error}\n\nOutput:\n{self.output}"
 

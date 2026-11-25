@@ -10,6 +10,7 @@ instead of silently creating a nested project).
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,6 +118,10 @@ class WorkspaceValidator:
             info.is_dir = self.cwd.is_dir()
             if not info.is_dir:
                 info.error = f"Path is not a directory: {self.cwd}"
+                return info
+
+            if not os.access(self.cwd, os.W_OK):
+                info.error = f"Directory is not writable: {self.cwd}"
                 return info
 
             info.is_empty, info.file_count, info.dir_count = self._inspect_contents()

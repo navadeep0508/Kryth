@@ -16,6 +16,12 @@ class WriteFileParams(BaseModel):
         True,
         description='Create parent directories if they are yet to exist.'
     )
+    overwrite: bool = Field(
+        False,
+        description='Explicitly confirm overwriting an existing file. '
+                    'Set to true to replace an existing file; '
+                    'use the edit tool for partial modifications instead.'
+    )
 
 class WriteFileTool(Tool):
     name = 'write'
@@ -53,13 +59,21 @@ class WriteFileTool(Tool):
 
         action = "Create" if is_new_file else 'Overwrite'
 
-        return ToolConfirmation(
+        # No silent overwrites: require explicit overwrite confirmation.
+        confirmation = ToolConfirmation(
             tool_name=self.name,
             params=invocation.params,
             description=f"{action} file: {path}",
             diff=diff,
             affected_paths=[path],
         )
+        if not is_new_file and not params.overwrite:
+            confirmation.description = (
+                f"Refuse overwrite: {path} exists. Set overwrite=true to replace, "
+                "or use the edit tool for partial modifications."
+            )
+            confirmation.is_dangerous = True
+        return confirmation
 
     async def execute(self, invocation: ToolInvocation) -> ToolResult:
         params = WriteFileParams(**invocation.params)
@@ -67,11 +81,13 @@ class WriteFileTool(Tool):
 
         # Code integrity validation: check before writing.
         validator = CodeIntegrityValidator(invocation.cwd)
-        pre_report = validator.validate_write(path, params.content)
+        pre_report = validator.validate_write(path, params.content, allow_overwrite=params.overwrite)
         if not pre_report.is_valid:
             error_msgs = [i.message for i in pre_report.errors]
+            summary = error_msgs[0] if error_msgs else "Validation failed"
             return ToolResult.error_result(
-                "Code integrity check failed:\n" + "\n".join(error_msgs),
+                f"Code integrity check failed: {summary}"
+                + ("\n" + "\n".join(error_msgs[1:]) if len(error_msgs) > 1 else ""),
                 metadata={
                     "integrity_report": pre_report.to_dict(),
                     "path": str(path),
@@ -88,6 +104,19 @@ class WriteFileTool(Tool):
                 )
             except:
                 pass
+
+        # No silent overwrites: refuse to overwrite without explicit confirmation.
+        if not is_new_file and not params.overwrite:
+            return ToolResult.error_result(
+                f"File already exists: {path}. "
+                f"Set overwrite=true to explicitly replace it, "
+                f"or use the edit tool for partial modifications.",
+                metadata={
+                    "path": str(path),
+                    "overwrite_required": True,
+                    "integrity_report": pre_report.to_dict(),
+                },
+            )
 
         try:
             if params.create_directories:

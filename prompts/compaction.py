@@ -22,6 +22,6 @@ IMPORTANT: Structure your response EXACTLY as follows:
 [What is the immediate next action to take? Be very specific - this is what the agent should do first.]
 
 ## KEY CONTEXT
-[Any important decisions, constraints, user preferences, technical context or assumptions that must persist.]
+[Any important decisions, constraints, active working directory (`cwd`), user preferences, technical context or assumptions that must persist.]
 
 Be extremely specific with file paths and function names. The goal is to allow seamless continuation without redoing any completed work."""

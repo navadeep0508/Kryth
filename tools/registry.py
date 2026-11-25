@@ -10,12 +10,12 @@ import logging
 
 from tools.core.error_recovery import (
     ErrorCategory,
+    ErrorRecoveryEngine,
     classify_error,
-    record_failure,
-    recovery_plan,
 )
 from tools.subagents.subagents import SubAgentTool, get_default_subagent_definitions
 from utils.development_supervisor import DevelopmentSupervisor
+from utils.paths import PathOutsideWorkspaceError
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,9 @@ class ToolRegistry:
         self._mcp_tools: dict[str, Tool] = {}
         self.config = config
         self.development_supervisor = DevelopmentSupervisor(config.cwd)
+        # Per-registry error recovery engine so failures from one session
+        # cannot poison tool invocations in a different session.
+        self._error_engine = ErrorRecoveryEngine()
     
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -150,14 +153,25 @@ class ToolRegistry:
                         return result
         try:
             result = await tool.execute(invocation)
+        except PathOutsideWorkspaceError as e:
+            logger.warning(f"Tool {name} rejected out-of-workspace path: {e}")
+            result = ToolResult.error_result(
+                f"{e} (working directory: {cwd})",
+                metadata={
+                    "tool_name": name,
+                    "error_category": ErrorCategory.INVALID_PATH.value,
+                    "error_retryable": False,
+                },
+            )
         except Exception as e:
             logger.exception(f"Tool {name} raised unexpected error")
-            # PHASE 7 — structured error recovery: classify the error, record the
-            # failure, and build a recovery plan. Stop repeating the same approach
-            # after two similar failures.
-            classification = classify_error(e)
-            record_failure(classification.category, str(e))
-            plan = recovery_plan(classification.category, str(e))
+            # Classify the exception and record it in the per-registry engine
+            # so the agent gets structured recovery guidance. We do NOT block
+            # future tool calls here — one tool's failure must not poison the
+            # entire execution environment.
+            classification = self._error_engine.classify(e)
+            self._error_engine.record_failure(classification.category, str(e))
+            plan = self._error_engine.recovery_plan(classification.category, str(e))
             result = ToolResult.error_result(
                 f"Internal error: {e}\n\n"
                 f"Category: {classification.category.value}\n"
