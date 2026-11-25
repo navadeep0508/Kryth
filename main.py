@@ -1,7 +1,16 @@
 from pathlib import Path
 import sys
 
-from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
+try:
+    from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
+except (ImportError, AssertionError):
+    # prompt_toolkit.output.win32 asserts win32 at import time and is
+    # Windows-only. On non-Windows platforms this error can never be raised,
+    # so define a fallback that is never raised but keeps the `except`
+    # clause in run() valid.
+    class NoConsoleScreenBufferError(Exception):
+        """Fallback stand-in for prompt_toolkit's Windows-only
+        NoConsoleScreenBufferError on non-Windows platforms."""
 
 # Ensure the project root is on sys.path so all sub-packages resolve
 # correctly regardless of the working directory or shadowing namespace packages.
